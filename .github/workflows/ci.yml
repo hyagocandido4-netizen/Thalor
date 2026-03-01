@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  ci:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Python syntax (compileall)
+        run: |
+          python -m compileall -q src/natbin
+
+      - name: PowerShell syntax (parse)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Recurse -Filter *.ps1 -Path scripts
+          $all = @()
+          foreach ($f in $files) {
+            $tokens = $null
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errs) | Out-Null
+            if ($errs -and $errs.Count -gt 0) {
+              foreach ($e in $errs) {
+                $all += "$($f.FullName): $($e.Message) (line $($e.Extent.StartLineNumber))"
+              }
+            }
+          }
+          if ($all.Count -gt 0) {
+            $all -join "`n" | Write-Error
+            exit 1
+          }
+
+      - name: Hidden unicode / bidi guard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pattern = '[\uFEFF\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]'
+          $exts = @('*.py','*.ps1','*.md','*.yml','*.yaml','*.toml','*.cfg','*.ini','*.txt','.gitignore','.gitattributes','.editorconfig')
+          $hits = @()
+          foreach ($ext in $exts) {
+            $hits += Get-ChildItem -Recurse -File -Filter $ext -ErrorAction SilentlyContinue |
+              Select-String -Pattern $pattern -AllMatches -ErrorAction SilentlyContinue |
+              ForEach-Object { "$($_.Path):$($_.LineNumber)" }
+          }
+          if ($hits.Count -gt 0) {
+            'Found hidden/bidi unicode control characters in:' | Write-Error
+            ($hits -join "`n") | Write-Error
+            exit 1
+          }
+      - name: Repo selfcheck
+        run: python scripts/tools/selfcheck_repo.py

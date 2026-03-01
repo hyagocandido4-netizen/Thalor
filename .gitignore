@@ -1,0 +1,74 @@
+# ================================
+# Python
+# ================================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtualenvs
+.venv/
+venv/
+ENV/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ================================
+# OS / editors
+# ================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ================================
+# Secrets / local config
+# ================================
+.env
+.env.*
+!.env.example
+
+# Local config variants (do not version)
+configs/variants/
+config_*.yml
+config_*.yaml
+
+# ================================
+# Runtime artifacts (generated)
+# ================================
+# IMPORTANT: these are output directories and should never be committed.
+data/
+runs/
+exports/
+backups/
+
+# Common artifacts
+*.log
+*.csv
+*.parquet
+*.feather
+*.sqlite3
+*.db
+*.joblib
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# SQLite sidecars
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Patch/backup suffixes
+*.bak_*
+*.orig
+*.rej

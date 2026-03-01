@@ -1,0 +1,32 @@
+data:
+  asset: EURUSD-OTC
+  interval_sec: 300
+  db_path: data/market_otc.sqlite3
+  max_batch: 1000
+  timezone: America/Sao_Paulo
+phase2:
+  dataset_path: data/dataset_phase2.csv
+  runs_dir: runs
+  n_splits: 6
+  threshold_min: 0.55
+  threshold_max: 0.85
+  threshold_step: 0.01
+  ev_threshold_min: -0.05
+  ev_threshold_max: 0.4
+  ev_threshold_step: 0.01
+best:
+  tune_dir: runs/tune_mw_topk_20260223_214242
+  threshold: -0.04
+  bounds:
+    vol_lo: 0.00031397402224875
+    vol_hi: 0.0009644496189460499
+    bb_lo: 0.0025425925728969
+    bb_hi: 0.007999010589314251
+    atr_lo: 0.0004874242659127
+    atr_hi: 0.0013692436237367
+  k: 1
+  thresh_on: ev
+  gate_mode: meta
+  meta_model: logreg
+  gate_version: meta_v1
+  notes: Frozen from ONLINE tune_mw_topk (P2.2 meta gate, gate=meta, meta=logreg).
