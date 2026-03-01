@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 
-BIDI_PATTERN = re.compile(r"[﻿‎‏؜‪-‮⁦-⁩]")
+BIDI_PATTERN = re.compile(r"[--]")
 
 # Strong-ish patterns (likely leakage when used inside features)
 RE_SHIFT_NEG = re.compile(r"shift\(\s*-\s*\d+\s*\)")

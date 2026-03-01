@@ -56,6 +56,7 @@ if (-not $env:LOOP_LOG_ENABLE) { $env:LOOP_LOG_ENABLE = "1" }
 if (-not $env:LOOP_LOG_DIR) { $env:LOOP_LOG_DIR = "runs\logs" }
 if (-not $env:LOOP_LOG_RETENTION_DAYS) { $env:LOOP_LOG_RETENTION_DAYS = "14" }
 if (-not $env:LOOP_STATUS_ENABLE) { $env:LOOP_STATUS_ENABLE = "1" }
+if (-not $env:LEGACY_RUNTIME_CLEANUP_ENABLE) { $env:LEGACY_RUNTIME_CLEANUP_ENABLE = "1" }
 if (-not $env:REGIME_MODE_DEFAULT) { $env:REGIME_MODE_DEFAULT = "hard" }
 if (-not $env:GATE_FAIL_CLOSED) { $env:GATE_FAIL_CLOSED = "1" }
 if (-not $env:MARKET_CONTEXT_FAIL_CLOSED) { $env:MARKET_CONTEXT_FAIL_CLOSED = "1" }
@@ -189,6 +190,24 @@ function Ensure-LoopTranscriptCurrentDay {
     $transcriptPath = $newPath
     try { Write-Host "[LOG] Start-Transcript failed: $($_.Exception.Message)" -ForegroundColor Yellow } catch {}
   }
+}
+
+function Resolve-TranscriptPathForStatus {
+  if ($transcriptPath) { return ($transcriptPath | AsStr) }
+  if (-not $script:TranscriptLogDir) { return "" }
+  $baseName = if ($script:TranscriptBaseName) { $script:TranscriptBaseName } else { "observe_loop_auto" }
+  try {
+    $dayTagNow = Get-RepoDateTag
+    if (-not $dayTagNow) { $dayTagNow = (Get-Date).ToString("yyyyMMdd") }
+    $candidate = Join-Path $script:TranscriptLogDir ("{0}_{1}.log" -f $baseName, $dayTagNow)
+    if (Test-Path $candidate) { return $candidate }
+  } catch {}
+  try {
+    $latest = Get-ChildItem -Path $script:TranscriptLogDir -Filter ("{0}_*.log" -f $baseName) -File -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latest) { return ($latest.FullName | AsStr) }
+  } catch {}
+  return ""
 }
 
 # Lock de processo (evita duas instancias do auto-loop rodando em paralelo)
@@ -669,7 +688,7 @@ try {
           pending = $gPending
         }
         market_context = $ctxSnap
-        transcript_path = ($transcriptPath | AsStr)
+        transcript_path = (Resolve-TranscriptPathForStatus)
         log_enabled = [bool]$logEnabled
       }
 
@@ -759,7 +778,7 @@ try {
         quota = $prevQuota
         settle = $prevSettle
         market_context = $ctxSnap
-        transcript_path = ($transcriptPath | AsStr)
+        transcript_path = (Resolve-TranscriptPathForStatus)
         log_enabled = [bool]$logEnabled
       }
       if ($prevStatus) {
@@ -1299,6 +1318,39 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
     }
   }
 
+  function Invoke-LegacyRuntimeCleanupIfNeeded {
+    $enabled = (($env:LEGACY_RUNTIME_CLEANUP_ENABLE | AsStr).ToLowerInvariant()) -notin @("0","false","f","no","n","off","")
+    if (-not $enabled) { return }
+
+    $stampPath = ".\runs\legacy_runtime_cleanup.last.txt"
+    $today = Get-RepoDayStamp
+    try {
+      if (Test-Path $stampPath) {
+        $prev = ((Get-Content $stampPath -Raw) | AsStr).Trim()
+        if ($prev -eq $today) { return }
+      }
+    } catch {}
+
+    try {
+      $raw = & $py -m natbin.legacy_runtime_cleanup
+      if ($LASTEXITCODE -ne 0) { throw "legacy_runtime_cleanup exit=$LASTEXITCODE" }
+      if ($raw) {
+        if ($raw -is [System.Array]) { $raw = ($raw | Select-Object -Last 1) }
+        $line = (($raw | AsStr)).Trim()
+        if ($line) {
+          Write-Host "[P37] legacy_runtime_cleanup_ok: $line" -ForegroundColor DarkGray
+        } else {
+          Write-Host "[P37] legacy_runtime_cleanup_ok: {}" -ForegroundColor DarkGray
+        }
+      } else {
+        Write-Host "[P37] legacy_runtime_cleanup_ok: {}" -ForegroundColor DarkGray
+      }
+      Set-Content -Path $stampPath -Value $today -Encoding UTF8
+    } catch {
+      Write-Host "[P37] WARN: legacy_runtime_cleanup falhou: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+  }
+
   function Invoke-QuotaSettleOnly {
     param(
       [Parameter(Mandatory=$true)]$QuotaDecision,
@@ -1310,10 +1362,22 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
 
     $env:LOOKBACK_CANDLES = "$Lookback"
 
-    & $py -m natbin.collect_recent
+    $collectOut = & $py -m natbin.collect_recent
+    if ($collectOut) {
+      foreach ($ln in @($collectOut)) {
+        $s = ($ln | AsStr)
+        if ($s) { Write-Host $s }
+      }
+    }
     if ($LASTEXITCODE -ne 0) { throw "collect_recent falhou" }
 
-    & $py -m natbin.make_dataset
+    $datasetOut = & $py -m natbin.make_dataset
+    if ($datasetOut) {
+      foreach ($ln in @($datasetOut)) {
+        $s = ($ln | AsStr)
+        if ($s) { Write-Host $s }
+      }
+    }
     if ($LASTEXITCODE -ne 0) { throw "make_dataset falhou" }
 
     Refresh-DailySummary
@@ -1330,8 +1394,8 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
       $msg = ($msg -replace '; skip$','; settle-only (collect + dataset + summary), skip auto params + observe')
     }
     Write-Host $msg -ForegroundColor DarkGray
-    Write-Host "[P32] quota_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE)" -ForegroundColor DarkGray
-    return $gap2
+    Write-Host "[P32] quota_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE) LEGACY_RUNTIME_CLEANUP_ENABLE=$($env:LEGACY_RUNTIME_CLEANUP_ENABLE)" -ForegroundColor DarkGray
+    return ,$gap2
   }
 
   function Restore-MarketContextEnv {
@@ -1678,7 +1742,7 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
   if ($startupWarnCount -gt 0) {
     Write-Host ("[P26w] startup_hydration warnings: " + (($startupWarns -join ' | ') | AsStr)) -ForegroundColor DarkYellow
   }
-  Write-Host "[P26] TOPK_ROLLING_MINUTES=$($env:TOPK_ROLLING_MINUTES) TOPK_MIN_GAP_MINUTES=$($env:TOPK_MIN_GAP_MINUTES) TOPK_PACING_ENABLE=$($env:TOPK_PACING_ENABLE) VOL_TARGET_TRADES_PER_DAY=$($env:VOL_TARGET_TRADES_PER_DAY) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE) RUNTIME_RETENTION_DAYS=$($env:RUNTIME_RETENTION_DAYS) STATE_RECONCILE_DAYS=$($env:STATE_RECONCILE_DAYS) LOOP_LOG_RETENTION_DAYS=$($env:LOOP_LOG_RETENTION_DAYS) LOOP_STATUS_ENABLE=$($env:LOOP_STATUS_ENABLE)" -ForegroundColor DarkGray
+  Write-Host "[P26] TOPK_ROLLING_MINUTES=$($env:TOPK_ROLLING_MINUTES) TOPK_MIN_GAP_MINUTES=$($env:TOPK_MIN_GAP_MINUTES) TOPK_PACING_ENABLE=$($env:TOPK_PACING_ENABLE) VOL_TARGET_TRADES_PER_DAY=$($env:VOL_TARGET_TRADES_PER_DAY) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE) RUNTIME_RETENTION_DAYS=$($env:RUNTIME_RETENTION_DAYS) STATE_RECONCILE_DAYS=$($env:STATE_RECONCILE_DAYS) LOOP_LOG_RETENTION_DAYS=$($env:LOOP_LOG_RETENTION_DAYS) LOOP_STATUS_ENABLE=$($env:LOOP_STATUS_ENABLE) LEGACY_RUNTIME_CLEANUP_ENABLE=$($env:LEGACY_RUNTIME_CLEANUP_ENABLE)" -ForegroundColor DarkGray
 
 
   Save-LoopStatus -Phase "startup" -State "running" -Message "loop_initialized"
@@ -1693,28 +1757,39 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
       [void](Restore-MarketContextEnv)
       Invoke-RuntimePruneIfNeeded
       Invoke-StateReconcileIfNeeded
+      Invoke-LegacyRuntimeCleanupIfNeeded
 
       $preQuota = Get-QuotaSkipDecision -K $TopK
       if ($preQuota.Skip) {
         $settleOnSkip = (($env:QUOTA_SKIP_SETTLE_ENABLE | AsStr).ToLowerInvariant()) -notin @("0","false","f","no","n","off","")
         $gap = Get-EvalGapStatus
         $shouldSettle = $false
-        if ($settleOnSkip -and $gap -and ($gap.Pending -gt 0)) {
+        $gapPending = (Get-ObjProp -Obj $gap -Name "Pending" | AsInt)
+        if ($gapPending -eq 0) { $gapPending = (Get-ObjProp -Obj $gap -Name "pending" | AsInt) }
+        if ($settleOnSkip -and $gap -and ($gapPending -gt 0)) {
           $shouldSettle = $true
         }
 
         $sleepDecision = $preQuota
         if ($shouldSettle) {
           $gapAfter = Invoke-QuotaSettleOnly -QuotaDecision $preQuota -Lookback $LookbackCandles
-          if ($gapAfter -and ($gapAfter.Pending -gt 0)) {
-            Write-Host "[P31c] quota_pending_settle asset=$($gapAfter.Asset) day=$($gapAfter.Day) pending=$($gapAfter.Pending); sleep next candle" -ForegroundColor DarkGray
+          $gapAfterPending = (Get-ObjProp -Obj $gapAfter -Name "Pending" | AsInt)
+          if ($gapAfterPending -eq 0) { $gapAfterPending = (Get-ObjProp -Obj $gapAfter -Name "pending" | AsInt) }
+          if ($gapAfter -and ($gapAfterPending -gt 0)) {
+            $gapAfterAsset = (Get-ObjProp -Obj $gapAfter -Name "Asset" | AsStr)
+            if (-not $gapAfterAsset) { $gapAfterAsset = (Get-ObjProp -Obj $gapAfter -Name "asset" | AsStr) }
+            $gapAfterDay = (Get-ObjProp -Obj $gapAfter -Name "Day" | AsStr)
+            if (-not $gapAfterDay) { $gapAfterDay = (Get-ObjProp -Obj $gapAfter -Name "day" | AsStr) }
+            $gapAfterCount = (Get-ObjProp -Obj $gapAfter -Name "Count" | AsInt)
+            if ($gapAfterCount -eq 0) { $gapAfterCount = (Get-ObjProp -Obj $gapAfter -Name "count" | AsInt) }
+            Write-Host "[P31c] quota_pending_settle asset=$gapAfterAsset day=$gapAfterDay pending=$gapAfterPending; sleep next candle" -ForegroundColor DarkGray
             $sleepDecision = [pscustomobject]@{
               Skip = $true
               Kind = "quota_pending_settle"
               Message = ""
-              Asset = $gapAfter.Asset
-              Day = $gapAfter.Day
-              Count = $gapAfter.Count
+              Asset = $gapAfterAsset
+              Day = $gapAfterDay
+              Count = $gapAfterCount
               Allowed = 0
               TopK = $TopK
               NextAt = ""
@@ -1732,12 +1807,12 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
           if ($gap) {
             Write-Host "[P29b] quota_settle_status asset=$($gap.Asset) day=$($gap.Day) executed=$($gap.Count) eval=$($gap.Eval) pending=$($gap.Pending)" -ForegroundColor DarkGray
           }
-          Write-Host "[P32] quota_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE)" -ForegroundColor DarkGray
+          Write-Host "[P32] quota_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE) LEGACY_RUNTIME_CLEANUP_ENABLE=$($env:LEGACY_RUNTIME_CLEANUP_ENABLE)" -ForegroundColor DarkGray
           Save-LoopStatus -Phase "quota_skip" -State "blocked" -Message (($preQuota.Message | AsStr) -replace '; skip$','') -Quota $preQuota -EvalGap $gap
         }
         if ($shouldSettle -and $gapAfter) {
           $stMsg = ($preQuota.Message | AsStr)
-          if ($gapAfter.Pending -gt 0) {
+          if ($gapAfterPending -gt 0) {
             Save-LoopStatus -Phase "quota_pending_settle" -State "blocked" -Message (($stMsg -replace '; skip$','') + "; pending settlement") -Quota $preQuota -EvalGap $gapAfter
           } else {
             Save-LoopStatus -Phase "quota_settled" -State "blocked" -Message (($stMsg -replace '; skip$','') + "; settle-only complete") -Quota $preQuota -EvalGap $gapAfter
@@ -1810,7 +1885,7 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
         if ($skipPhase -eq "market_context_skip") {
           Write-Host "[P32] market_context_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE)" -ForegroundColor DarkGray
         } else {
-          Write-Host "[P32] quota_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE)" -ForegroundColor DarkGray
+          Write-Host "[P32] quota_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE) LEGACY_RUNTIME_CLEANUP_ENABLE=$($env:LEGACY_RUNTIME_CLEANUP_ENABLE)" -ForegroundColor DarkGray
         }
         if ($skipPhase) {
           Save-LoopStatus -Phase $skipPhase -State $skipState -Message $skipMessage -Quota $quotaNow

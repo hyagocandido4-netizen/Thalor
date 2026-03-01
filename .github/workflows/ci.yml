@@ -9,6 +9,7 @@ on:
 jobs:
   ci:
     runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,13 +34,9 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           # Legacy patch/migration scripts under scripts/patches are historical
-          # artifacts and are not part of the operational runtime. Some of them
-          # intentionally contain inline code snippets / escaped fragments that are
-          # not valid standalone PowerShell, so CI must not treat them as runtime
-          # scripts.
-          $files = Get-ChildItem -Recurse -Filter *.ps1 -Path scripts | Where-Object {
-            $_.FullName -notlike '*\scripts\patches\*'
-          }
+          # artifacts and are not part of the operational runtime.
+          $files = Get-ChildItem -Recurse -Filter *.ps1 -Path scripts |
+            Where-Object { $_.FullName -notlike '*\scripts\patches\*' }
 
           $all = @()
           foreach ($f in $files) {
@@ -52,30 +49,16 @@ jobs:
               }
             }
           }
+
           if ($all.Count -gt 0) {
-            $all -join "`n" | Write-Error
-            exit 1
+            $all | ForEach-Object { Write-Host $_ }
+            throw 'PowerShell parse errors found in operational scripts.'
           }
 
       - name: Hidden unicode / bidi guard
-        shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $pattern = '[\uFEFF\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]'
-          $exts = @('*.py','*.ps1','*.md','*.yml','*.yaml','*.toml','*.cfg','*.ini','*.txt','.gitignore','.gitattributes','.editorconfig')
+          python scripts/tools/check_hidden_unicode.py
 
-          $hits = @(
-            foreach ($ext in $exts) {
-              Get-ChildItem -Recurse -File -Filter $ext -ErrorAction SilentlyContinue |
-                Select-String -Pattern $pattern -AllMatches -ErrorAction SilentlyContinue |
-                ForEach-Object { "$($_.Path):$($_.LineNumber)" }
-            }
-          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-
-          if ($hits.Count -gt 0) {
-            'Found hidden/bidi unicode control characters in:' | Write-Error
-            ($hits -join "`n") | Write-Error
-            exit 1
-          }
       - name: Repo selfcheck
-        run: python scripts/tools/selfcheck_repo.py
+        run: |
+          python scripts/tools/selfcheck_repo.py

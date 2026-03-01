@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import pickle
 import sqlite3
 import time
@@ -399,8 +400,67 @@ def _default_live_signals_csv_path(row: dict[str, Any]) -> str:
     return str(Path("runs") / f"live_signals_v2_{asset}_{int(interval_sec)}s.csv")
 
 
+def _parse_builtin_live_signals_filename(name: str) -> tuple[str | None, str | None, int | None]:
+    """Parse standard live_signals_v2 filenames.
+
+    Returns (day_tag_yyyymmdd_or_None, sanitized_asset_or_None, interval_sec_or_None).
+    If the name does not look like a built-in filename, returns (None, None, None).
+    """
+    m = re.match(r"^live_signals_v2_(\d{8})_(.+)_(\d+)s\.csv$", name)
+    if m:
+        day_tag, asset_tag, interval_tag = m.groups()
+        try:
+            return day_tag, asset_tag, int(interval_tag)
+        except Exception:
+            return day_tag, asset_tag, None
+    m = re.match(r"^live_signals_v2_(\d{8})\.csv$", name)
+    if m:
+        return m.group(1), None, None
+    m = re.match(r"^live_signals_v2_(.+)_(\d+)s\.csv$", name)
+    if m:
+        asset_tag, interval_tag = m.groups()
+        try:
+            return None, asset_tag, int(interval_tag)
+        except Exception:
+            return None, asset_tag, None
+    return None, None, None
+
+
+def _resolve_live_signals_csv_path(row: dict[str, Any]) -> str:
+    default_path = _default_live_signals_csv_path(row)
+    override = os.getenv("LIVE_SIGNALS_PATH", "").strip()
+    if not override:
+        return default_path
+
+    # For built-in daily/scoped filenames, prefer the row-derived day/asset/interval.
+    # This prevents midnight contamination where the scheduler path is already on the
+    # new day while the evaluated candle still belongs to the previous day.
+    row_day = str(row.get("day") or "").replace("-", "")
+    row_asset = sanitize_asset(str(row.get("asset") or "UNKNOWN"))
+    try:
+        row_interval = int(row.get("interval_sec") or env_int("SIGNALS_INTERVAL_SEC", "300"))
+    except Exception:
+        row_interval = env_int("SIGNALS_INTERVAL_SEC", "300")
+
+    try:
+        name = Path(override).name
+        o_day, o_asset, o_interval = _parse_builtin_live_signals_filename(name)
+        is_builtin = name.startswith("live_signals_v2_") and name.endswith(".csv")
+        if is_builtin:
+            if o_day and row_day and o_day != row_day:
+                return default_path
+            if o_asset and row_asset and o_asset != row_asset:
+                return default_path
+            if o_interval and int(o_interval) != int(row_interval):
+                return default_path
+    except Exception:
+        return default_path
+
+    return override
+
+
 def append_csv(row: dict[str, Any]) -> str:
-    path = os.getenv("LIVE_SIGNALS_PATH", "").strip() or _default_live_signals_csv_path(row)
+    path = _resolve_live_signals_csv_path(row)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1351,7 +1411,7 @@ def main() -> None:
     try:
         out_csv = append_csv(row)
     except Exception as e:
-        out_csv = os.getenv("LIVE_SIGNALS_PATH", "").strip() or _default_live_signals_csv_path(row)
+        out_csv = _resolve_live_signals_csv_path(row)
         print(f"[WARN] csv_write failed (non-fatal): {e}")
 
     if emitted_now:
