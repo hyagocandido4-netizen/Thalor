@@ -63,12 +63,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $pattern = '[\uFEFF\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]'
           $exts = @('*.py','*.ps1','*.md','*.yml','*.yaml','*.toml','*.cfg','*.ini','*.txt','.gitignore','.gitattributes','.editorconfig')
-          $hits = @()
-          foreach ($ext in $exts) {
-            $hits += Get-ChildItem -Recurse -File -Filter $ext -ErrorAction SilentlyContinue |
-              Select-String -Pattern $pattern -AllMatches -ErrorAction SilentlyContinue |
-              ForEach-Object { "$($_.Path):$($_.LineNumber)" }
-          }
+
+          $hits = @(
+            foreach ($ext in $exts) {
+              Get-ChildItem -Recurse -File -Filter $ext -ErrorAction SilentlyContinue |
+                Select-String -Pattern $pattern -AllMatches -ErrorAction SilentlyContinue |
+                ForEach-Object { "$($_.Path):$($_.LineNumber)" }
+            }
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
           if ($hits.Count -gt 0) {
             'Found hidden/bidi unicode control characters in:' | Write-Error
             ($hits -join "`n") | Write-Error
