@@ -27,11 +27,20 @@ jobs:
         run: |
           python -m compileall -q src/natbin
 
-      - name: PowerShell syntax (parse)
+      - name: PowerShell syntax (parse operational scripts)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = Get-ChildItem -Recurse -Filter *.ps1 -Path scripts
+
+          # Legacy patch/migration scripts under scripts/patches are historical
+          # artifacts and are not part of the operational runtime. Some of them
+          # intentionally contain inline code snippets / escaped fragments that are
+          # not valid standalone PowerShell, so CI must not treat them as runtime
+          # scripts.
+          $files = Get-ChildItem -Recurse -Filter *.ps1 -Path scripts | Where-Object {
+            $_.FullName -notlike '*\scripts\patches\*'
+          }
+
           $all = @()
           foreach ($f in $files) {
             $tokens = $null
