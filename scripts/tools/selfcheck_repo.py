@@ -108,8 +108,10 @@ def main() -> None:
     else:
         _git_check_ignored(".env", True, root)
         _git_check_ignored(".env.example", False, root)
-        _git_check_ignored("runs", True, root)
-        _git_check_ignored("data", True, root)
+        # For ignored directories, use a trailing slash so `git check-ignore`
+        # works even when the directory is absent in a clean CI checkout.
+        _git_check_ignored("runs/", True, root)
+        _git_check_ignored("data/", True, root)
         _ok("gitignore hygiene ok")
 
 
