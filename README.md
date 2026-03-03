@@ -1,68 +1,136 @@
-# iq-bot
+# Thalor (iq-bot)
 
-WARNING: high risk
+> ⚠️ **ALTO RISCO**: este projeto lida com **opções binárias** e automação de trading.
+> Nada aqui é promessa de ganho, nem recomendação de investimento.
+> O objetivo é **engenharia + evidência + controle de risco**.
 
-This project deals with signals/automation for **binary options** (high risk). Nothing here is a promise of profit.
-The goal is engineering + statistical validation + risk control.
+**Thalor** (nome interno antigo: *iq-bot*) é um pipeline Windows-first para:
 
-## What is this?
+- coletar candles fechados da IQ Option (OTC ou não) em SQLite
+- gerar dataset/feature store
+- treinar/selecionar modelos com validação temporal (walk-forward / pseudo-futuro)
+- produzir sinais LIVE **ultra-seletivos** (Top‑K por dia + gates de regime/EV + fail-closed)
+- persistir e auditar tudo (CSV/SQLite + logs + status heartbeat)
 
-A Windows-first pipeline to:
-- collect closed candles into SQLite
-- generate features/datasets
-- train/select models with walk-forward / pseudo-future validation
-- run a very selective LIVE observer (Top-K per day + regime gate + EV gating)
-- audit LIVE performance and risk via a risk report (stake sizing with conservative statistics)
-
-Default target (can be changed in `config.yaml`):
-- Asset: `EURUSD-OTC`
-- Interval: `300s` (5 minutes)
-- Timezone: `America/Sao_Paulo`
-
-## Requirements
+## Requisitos
 
 - Windows 10/11
 - PowerShell 7 (`pwsh`)
 - Python 3.12
 
-## Setup (quick)
+## Setup
 
 ```powershell
-git clone https://github.com/hyagocandido4-netizen/iq-bot.git
-cd iq-bot
+# clone
+git clone https://github.com/hyagocandido4-netizen/Thalor.git
+cd Thalor
 
+# venv
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -U pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
+# credenciais (NUNCA commitar)
 Copy-Item .env.example .env
-# Edit .env with your credentials (DO NOT COMMIT)
+# edite .env com IQ_EMAIL / IQ_PASSWORD
 ```
 
-## Key commands
+> Dica: por padrão o bot usa `IQ_BALANCE_MODE=PRACTICE`.
 
-### Observe loop (LIVE)
+## Configuração
 
-Run once (debug):
+O arquivo `config.yaml` define defaults do repo:
+
+- `data.asset` (ex.: `EURUSD-OTC`)
+- `data.interval_sec` (ex.: `300` para 5 min)
+- `data.db_path` (ex.: `data/market_otc.sqlite3`)
+- `data.timezone` (ex.: `America/Sao_Paulo`)
+
+## Comandos principais
+
+### 1) Rodar o loop de observação (recomendado)
+
+O **orquestrador principal** é `scripts/scheduler/observe_loop_auto.ps1`.
+Ele pode (dependendo das flags) preparar o contexto e então observar:
+
+- coletar candles recentes
+- atualizar dataset
+- atualizar daily summary
+- capturar *market context* (payout/open) com cache e *freshness guard*
+- calcular decisão Top‑K (com gates)
+- persistir sinal em `runs/live_signals.sqlite3` (tabela `signals_v2`)
+
+Rodar **uma vez** (bom para debug):
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File .\scripts\scheduler\observe_loop.ps1 -Once
+pwsh -ExecutionPolicy Bypass -File .\scripts\scheduler\observe_loop_auto.ps1 -Once -TopK 3
 ```
 
-### Risk report (P3)
+Rodar como **daemon** (loop infinito):
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts\scheduler\observe_loop_auto.ps1 -TopK 3
+```
+
+### 2) Relatório de risco (stake sizing conservador)
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\scripts\tools\risk_report.ps1 -Bankroll 1000
 ```
 
-## Repository layout
+Docs: `docs/risk_report.md`
 
-- `src/natbin/` - Python modules
-- `scripts/` - PowerShell automation (setup/scheduler/tools/patches)
-- `data/` - local SQLite DBs (ignored by git)
-- `runs/` - live logs / model caches / run artifacts (ignored by git)
+## Variáveis de ambiente (as mais usadas)
 
-## Notes
+Você pode setar por sessão (PowerShell) antes de iniciar o loop:
 
-- This repo does not ship a license file yet. Until a license is added, default copyright applies.
-- Do not commit DBs, WAL/SHM files, or credentials.
+```powershell
+$env:TOPK_ROLLING_MINUTES = "360"   # janela de ranking (rolling)
+$env:TOPK_MIN_GAP_MINUTES = "30"    # cooldown entre trades
+$env:TOPK_PACING_ENABLE   = "1"     # quota/pacing por dia
+$env:VOL_TARGET_TRADES_PER_DAY = "3"
+
+$env:GATE_FAIL_CLOSED = "1"                 # se gate falhar, HOLD
+$env:MARKET_CONTEXT_FAIL_CLOSED = "1"       # se ctx/payout falhar, HOLD
+
+# observabilidade
+$env:LOOP_STATUS_ENABLE = "1"               # escreve status json (heartbeat)
+$env:LOOP_LOG_RETENTION_DAYS = "14"         # rotação de logs
+```
+
+Lista completa e explicação: `docs/ENV_VARS.md`
+
+## Artefatos de runtime
+
+- `data/` → DBs locais (ignorado no git)
+- `runs/` → logs/artefatos/caches (ignorado no git)
+  - `runs/live_signals.sqlite3` (`signals_v2`) = fonte de verdade de sinais
+  - `runs/logs/observe_loop_auto_YYYYMMDD.log` = transcript do loop
+  - `runs/observe_loop_auto_status*.json` = status heartbeat (opcional)
+
+Docs: `docs/OPERATIONS.md`
+
+## CI
+
+O CI faz *guardrails* rápidos e objetivos (sem rede):
+
+- `compileall` (sintaxe Python)
+- parse do PowerShell (scripts operacionais)
+- detector de unicode/bidi invisível
+- `selfcheck_repo.py` (imports + gitignore hygiene)
+- `leak_check.py` (integrity workflow)
+
+Docs: `docs/CI.md`
+
+## Documentação
+
+- `docs/ARCHITECTURE.md` — visão arquitetural (fluxo, DBs, estados)
+- `docs/OPERATIONS.md` — runbook operacional
+- `docs/ENV_VARS.md` — catálogo de env vars
+- `docs/risk_report.md` — avaliação e stake sizing
+- `docs/BACKLOG_BRAIN.md` — backlog do “cérebro” (ML + decisão)
+
+## Nota sobre licença
+
+Este repositório não inclui um arquivo de licença ainda.
+Até uma licença ser adicionada, aplica-se o copyright padrão.

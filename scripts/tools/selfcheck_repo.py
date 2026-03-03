@@ -102,6 +102,12 @@ def main() -> None:
             _fail(f"observe_loop_auto.ps1 missing helper function: {fn}")
     _ok("observe_loop_auto.ps1 helpers ok")
 
+
+
+    # .env.example should exist (settings.py references it and CI docs expect it)
+    if not (root / ".env.example").exists():
+        _fail(".env.example is missing (create it or restore from template)")
+
     # 4) Secret & artifact hygiene (gitignore)
     if not _git_available(root):
         print("[selfcheck][WARN] git not available; skipping gitignore checks")

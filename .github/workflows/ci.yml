@@ -62,3 +62,7 @@ jobs:
       - name: Repo selfcheck
         run: |
           python scripts/tools/selfcheck_repo.py
+
+      - name: Regression smoke
+        run: |
+          python scripts/tools/regression_smoke.py

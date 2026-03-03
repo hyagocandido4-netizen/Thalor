@@ -1,386 +1,112 @@
-\# BACKLOG\_BRAIN — Roadmap do “cérebro” (ML + decisão) do iq-bot
+# BACKLOG_BRAIN — Roadmap do “cérebro” (ML + decisão) do Thalor
 
+**Última atualização:** 2026-03-02 (BRT)
 
+**Objetivo central:** poucos sinais, alta convicção, decisões auditáveis, evolução incremental **sem autoengano**.
 
-\*\*Última atualização:\*\* 2026-02-22 (BRT)  
-
-\*\*Objetivo central:\*\* poucos sinais, alta convicção, decisões auditáveis, melhoria incremental sem autoengano.
-
-
-
-Este documento registra hipóteses, melhorias e experimentos do “cérebro” do bot (features, modelo, calibração, tuning, gating, sinais).  
-
-Tudo aqui deve virar \*\*commit rastreável\*\* quando entrar no core.
-
-
+Este documento registra hipóteses, melhorias e experimentos do “cérebro” do bot (features, modelo, calibração, tuning, gating, sinais). Tudo aqui deve virar **commit rastreável** quando entrar no core.
 
 ---
 
+## Princípios de evolução
 
+1) **Evidência > intuição**
+   - mudança só entra se passar nos testes (paper / multiwindow / live) com critérios claros.
 
-\## Princípios de evolução
+2) **Uma variável por vez (por padrão)**
+   - evitar pacotes grandes que impedem atribuir causa.
+   - exceção: quando mudanças são *acopladas por design* (ex.: schema + writer + reader) — nesse caso, documentar como “bundle”.
 
+3) **Auditabilidade total**
+   - todo sinal precisa ter explicação (`reason`, `gate`, `regime_ok`, `ev`, `rank`, etc.).
 
+4) **Fail-closed sempre que possível**
+   - falhou dado crítico? **HOLD**.
 
-1\) \*\*Evidência > intuição\*\*  
-
-&nbsp;  Mudança só entra se passar nos testes (paper/multiwindow/live) com critérios claros.
-
-
-
-2\) \*\*Uma variável por vez\*\*  
-
-&nbsp;  Evitar “pacotes de mudanças” que impedem saber o que causou melhora/piora.
-
-
-
-3\) \*\*Auditabilidade total\*\*  
-
-&nbsp;  Todo sinal deve ser justificável (reason, conf, rank, bounds, versão do modelo).
-
-
-
-4\) \*\*Sem promessas\*\*  
-
-&nbsp;  Métricas do projeto são hit rate/coverage/estabilidade. Não há promessa de ganho.
-
-
+5) **Sem promessas**
+   - métricas do projeto = hit rate / coverage / estabilidade.
+   - não existe promessa de lucro.
 
 ---
 
+## Métricas oficiais
 
+### Primárias
 
-\## Métricas oficiais
+- **Hit rate (apenas trades emitidos)**: acerto em `CALL/PUT` quando `reason=topk_emit`.
+- **Coverage**: % de candles que viram trade.
+- **Trades/dia**: alvo típico **≤ 3 por dia** (Top‑K/pacing), com testes controlados acima/abaixo.
 
+### Secundárias
 
-
-\### Primárias
-
-\- \*\*Hit rate (apenas trades emitidos)\*\*: acerto em CALL/PUT quando `reason=topk\_emit`.
-
-\- \*\*Coverage\*\*: % de candles que viram trade.
-
-\- \*\*Trades/dia\*\*: alvo típico \*\*≤ 2 por dia\*\* (Top-K), podendo testar variações.
-
-
-
-\### Secundárias
-
-\- \*\*Estabilidade multiwindow\*\*: hit rate ponderado por trades em janelas pseudo-futuras.
-
-\- \*\*Drift de calibração\*\*: distribuição de `proba\_up` e `conf` no tempo.
-
-\- \*\*Tempo de execução\*\*: robustez do loop (não travar; não exceder 2–3 min).
-
-
+- **Estabilidade multiwindow**: performance ponderada por trades em janelas pseudo-futuras.
+- **Drift de calibração**: distribuição de `proba_up`/`conf` no tempo.
+- **Robustez do loop**: não travar, não exceder tempo aceitável por ciclo.
 
 ---
 
+## Escada de testes (gating para entrar no core)
 
+1) **Paper holdout (rápido)**
+   - split temporal 80/20
+   - baseline
 
-\## Escada de testes (gating para entrar no core)
+2) **Multiwindow (pseudo‑futuro)**
+   - janelas sequenciais (expanding train)
+   - critério de robustez (não só média)
 
+3) **Live observe (sem execução)**
+   - loop rodando com persistência + logs
+   - validar estabilidade dos scores, gates, drift
 
-
-1\) \*\*Paper Holdout (rápido)\*\*
-
-&nbsp;  - split temporal 80/20
-
-&nbsp;  - gera baseline
-
-
-
-2\) \*\*Multiwindow (pseudo-futuro)\*\*
-
-&nbsp;  - 6 janelas sequenciais (expanding train)
-
-&nbsp;  - critério de robustez
-
-
-
-3\) \*\*Live Observe\*\*
-
-&nbsp;  - rodar com scheduler
-
-&nbsp;  - avaliar somente `topk\_emit` após atingir N mínimo
-
-
+4) **Live execution (PRACTICE primeiro)**
+   - só avaliar `CALL/PUT` com `reason=topk_emit`
+   - mínimo de trades antes de qualquer conclusão
 
 ---
 
-
-
-\## Critérios de aceite (Definition of Done)
-
-
+## Definition of Done (para entrar no core)
 
 Uma mudança só entra como “core” se:
 
-
-
-\- \*\*Multiwindow:\*\* melhora \*\*≥ +1,0 pp\*\* no hit rate ponderado  
-
-&nbsp; \*\*OU\*\* mantém hit rate e reduz coverage mantendo trades mínimos;
-
-\- \*\*Trades mínimos:\*\* multiwindow com \*\*≥ 60 trades\*\* (ou definido no experimento);
-
-\- \*\*Live (quando aplicável):\*\* após \*\*≥ 50 emits\*\*, manter ou melhorar hit rate sem explosão de sinais;
-
-\- \*\*Sem regressão operacional:\*\* loop continua estável (sem travar / sem lock / sem dataset 0).
-
-
+- [ ] não piora o CI (lint/sintaxe/guardrails)
+- [ ] não cria regressão operacional (loop, persistência, status, logs)
+- [ ] melhora métrica definida **ou** reduz risco (fail‑closed, consistência) com evidência
+- [ ] adiciona/atualiza testes de regressão quando aplicável
+- [ ] adiciona/atualiza docs (README/OPERATIONS/ENV)
 
 ---
 
+## Estado atual (resumo)
 
-
-\## Estado atual (baseline)
-
-
-
-\- Ativo: \*\*EURUSD-OTC\*\*
-
-\- Timeframe: \*\*5m\*\*
-
-\- Modelo base: \*\*HistGradientBoosting + calibração sigmoid\*\*
-
-\- Seleção: \*\*Top-K por dia (K=2)\*\* + gating por `conf >= threshold` + bounds `vol/bb/atr`
-
-\- Persistência: SQLite `signals\_v2` + CSV diário `live\_signals\_v2\_YYYYMMDD.csv`
-
-
+- Pipeline Windows-first com `observe_loop_auto.ps1` como orquestrador.
+- Sinais persistidos em `runs/live_signals.sqlite3` (`signals_v2`) e CSV diário/scoped.
+- Modelo/gate padrão atual tende a operar em modo **seletivo** (Top‑K) com múltiplos bloqueios (regime, CP, EV, market context, pacing).
 
 ---
 
+## Backlog priorizado (alto nível)
 
+### A) Qualidade e consistência (base)
 
-\## Backlog — Triagem (P0/P1/P2/P3)
+- [ ] Contratos estáveis de schema (signals/summary/state) + migrações explícitas
+- [ ] Testes de regressão (smoke) cobrindo invariantes críticas
+- [ ] Uma “fonte de verdade” por conceito (execução vs observação vs status)
 
+### B) Features / modelagem
 
+- [ ] Catálogo de features versionado (hash + documentação)
+- [ ] Feature ablation automatizada (impacto em EV e cobertura)
+- [ ] Monitor de drift (alerta quando `proba_up/conf` muda de regime)
 
-\### P0 — Correções / Riscos (obrigatório)
+### C) Calibração e gating
 
-> Baixo esforço, alto impacto em estabilidade e integridade.
+- [ ] Calibração por regime (volatilidade / horário / payout)
+- [ ] Gate adaptativo com fail-closed e explicações claras
+- [ ] Explorar “top‑k com pacing” vs “threshold fixo” com critérios formais
 
+### D) Operação e segurança
 
-
-\- \[ ] \*\*Guardas numéricas (NaN/Inf)\*\* em features
-
-&nbsp; - RSI: lidar com `avg\_loss=0`, evitar `inf/NaN` em massa
-
-&nbsp; - volratio: evitar divisão por zero e “volume ruim”
-
-&nbsp; - ATR: evitar divisão por close ~0 (raríssimo)
-
-&nbsp; - \*\*Teste:\*\* compileall + dataset build com sanity (sem colunas 100% Inf/NaN)
-
-
-
-\- \[ ] \*\*Gaps anômalos e labels\*\*
-
-&nbsp; - criar flag “gap\_too\_big” e descartar labels quando o próximo candle não for confiável
-
-&nbsp; - \*\*Teste:\*\* dataset não pode zerar; multiwindow não pode degradar forte
-
-
-
-\- \[ ] \*\*Remover auto-geração de arquivos dentro do loop\*\*
-
-&nbsp; - loop não deve reescrever `collect\_recent.py`
-
-&nbsp; - \*\*Teste:\*\* `observe\_loop.ps1 -Once` funciona com repo “limpo”
-
-
-
-\- \[ ] \*\*Metadados do sinal (auditabilidade)\*\*
-
-&nbsp; - gravar no `signals\_v2`: `model\_version`, `train\_rows`, `train\_end\_ts`, `best\_source`
-
-&nbsp; - \*\*Teste:\*\* linha do sinal deve conter esses campos sempre
-
-
-
----
-
-
-
-\### P1 — Melhorias práticas (ROI alto)
-
-> Melhoram performance/robustez com custo moderado.
-
-
-
-\- \[ ] \*\*Cache de modelo (treinar menos, inferir mais)\*\*
-
-&nbsp; - retreino 1x/dia (ou a cada N candles)
-
-&nbsp; - inferência a cada 5m com modelo persistido
-
-&nbsp; - \*\*Meta:\*\* reduzir falhas e tempo do loop; estabilizar comportamento
-
-
-
-\- \[ ] \*\*Tuning robusto por Multiwindow (seleção do best)\*\*
-
-&nbsp; - substituir seleção por um único holdout por otimização em multiwindow
-
-&nbsp; - \*\*Meta:\*\* reduzir “falso 58%” que cai para 52% quando endurece a validação
-
-
-
-\- \[ ] \*\*Ensemble simples (calibrated averaging)\*\*
-
-&nbsp; - combinar HGB + LogReg calibrados (média de probas)
-
-&nbsp; - \*\*Meta:\*\* aumentar robustez sem “milagre”
-
-&nbsp; - \*\*Aceite:\*\* multiwindow ≥ +1pp
-
-
-
-\- \[ ] \*\*Controle por alvo de trades/dia\*\*
-
-&nbsp; - em vez de threshold fixo, regular para manter volume (ex.: 2 trades/dia)
-
-&nbsp; - \*\*Meta:\*\* consistência operacional + menos sensibilidade a drift
-
-
-
-\- \[ ] \*\*Backtest com PnL simplificado (binário)\*\*
-
-&nbsp; - além do hit rate, simular payout/fee (parâmetros explícitos)
-
-&nbsp; - \*\*Meta:\*\* aproximar decisão do mundo real (sem promessas, só cenário)
-
-
-
----
-
-
-
-\### P2 — Inovações promissoras (experimental)
-
-> Testar como experimento separado; só entra se bater critérios.
-
-
-
-\- \[ ] \*\*Gating aprendido: “tradeável vs não tradeável” (2 estágios)\*\*
-
-&nbsp; - Estágio A: classificador HOLD vs OPERAR
-
-&nbsp; - Estágio B: direcional CALL/PUT
-
-&nbsp; - \*\*Meta:\*\* aumentar qualidade por trade mantendo poucos sinais
-
-
-
-\- \[ ] \*\*Conformal / uncertainty gating\*\*
-
-&nbsp; - transformar calibração em regra de abstinência com garantias locais
-
-&nbsp; - \*\*Meta:\*\* HOLD “explicável” + menos overtrading
-
-
-
-\- \[ ] \*\*Top-K dinâmico\*\*
-
-&nbsp; - K pode variar por regime (com guardrails rígidos)
-
-&nbsp; - \*\*Meta:\*\* aproveitar dias bons sem explodir volume
-
-
-
----
-
-
-
-\### P3 — Baixa prioridade / alto custo (não agora)
-
-> Só considerar após score live sólido e pipeline maduro.
-
-
-
-\- \[ ] \*\*Reinforcement Learning\*\*
-
-\- \[ ] \*\*Sentiment/news features para OTC\*\*
-
-&nbsp; - (OTC pode não refletir diretamente fundamentos do mercado “real”)
-
-
-
----
-
-
-
-\## Sugestões externas (Grok) — Triadas
-
-
-
-> Mantemos aqui como “entrada”, mas só sobe após teste.
-
-
-
-\### Aproveitar (candidatas P0/P1)
-
-\- Guardas NaN/Inf em RSI/ATR/volratio
-
-\- Melhorar regime filter (rolling bounds / controle de coverage)
-
-\- Ensemble (LogReg + HGB calibrados)
-
-\- Logging/auditabilidade mais rica
-
-\- Retreino com cadência (ex.: diário)
-
-
-
-\### Avaliar com cautela (P2/P3)
-
-\- Features “exóticas” (Ichimoku etc.): só se multiwindow sustentar
-
-\- Sentiment/news: provavelmente baixa correlação em OTC
-
-\- RL: custo alto / risco de overfitting
-
-
-
----
-
-
-
-\## Template para novas ideias (copiar/colar)
-
-
-
-\*\*Título:\*\*  
-
-\*\*Tipo:\*\* P0 / P1 / P2 / P3  
-
-\*\*Hipótese:\*\*  
-
-\*\*Mudança (técnica):\*\*  
-
-\*\*Métricas-alvo:\*\*  
-
-\*\*Teste mínimo:\*\* paper / multiwindow / live  
-
-\*\*Critério de aceite:\*\*  
-
-\*\*Risco principal:\*\*  
-
-\*\*Rollback:\*\* (como desfazer em 1 commit)
-
-
-
----
-
-
-
-\## Log de decisões (curto)
-
-
-
-\- 2026-02-22: Top-K por dia (K=2) promoveu melhora vs baseline em multiwindow (↑ hit rate, ↓ coverage).  
-
-\- 2026-02-22: Sincronização: coletar somente candles fechados e alinhar scheduler em :00:15, :05:15…
-
+- [ ] Runbook de incidentes (erro na API, payout inconsistente, DB lock)
+- [ ] Guardas contra execução indevida (market fechado, payout ruim, staleness)
+- [ ] Rotação e retenção de artefatos com auditoria
