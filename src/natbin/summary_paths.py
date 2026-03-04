@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+
+from .runtime_perf import load_json_cached
 
 import yaml
 from zoneinfo import ZoneInfo
@@ -155,11 +156,7 @@ def find_daily_summary_path(*, day: str, asset: str | None = None, interval_sec:
 
 
 def load_json_file(path: str | Path) -> Any | None:
-    p = Path(path)
-    try:
-        return json.loads(p.read_text(encoding='utf-8', errors='replace'))
-    except Exception:
-        return None
+    return load_json_cached(path)
 
 
 def load_daily_summary_checked(

@@ -73,3 +73,72 @@ Para uma refatoração grande, é útil preservar essas fronteiras:
 - scheduler como “thin orchestrator” chamando CLIs idempotentes
 
 Documento de plano: `docs/REFRACTOR_PLAN.md`
+
+
+## Contratos explícitos (Package B)
+
+A partir do Package B, os schemas duráveis deixam de viver só como detalhes espalhados no runtime:
+
+- `natbin.runtime_contracts`
+  - define versões e contratos de `signals_v2` e `executed`
+- `natbin.runtime_migrations`
+  - concentra as migrações explícitas desses artefatos
+
+Objetivo: preparar a extração futura de repositórios/serviços sem mudar o comportamento do bot.
+
+## Camada de repositórios (Package C)
+
+A partir do Package C, o acesso a persistência/estado começa a sair do observer e a entrar em uma camada própria:
+
+- `natbin.runtime_repos.SignalsRepository`
+- `natbin.runtime_repos.ExecutedStateRepository`
+- `natbin.runtime_repos.RuntimeTradeLedger`
+
+Objetivo: preservar o comportamento atual enquanto reduz o acoplamento do `observe_signal_topk_perday.py` com SQLite/state internamente.
+
+
+## Autos policy layer (Package F)
+
+A lógica dos controladores automáticos foi extraída para `src/natbin/autos/`,
+com `summary_loader.py`, `common.py` e políticas puras para volume, isoblend e
+hour-threshold. Os CLIs originais continuam existindo apenas como wrappers.
+
+
+## Observability / incident response (Package G)
+
+O runtime agora grava artefatos estruturados de observabilidade em `runs/`:
+
+- `runs/decisions/decision_latest_<asset>_<interval>.json` — último snapshot de decisão
+- `runs/decisions/decision_<day>_<asset>_<interval>_<ts>.json` — snapshots detalhados de decisões relevantes (ex.: trade emitido, bloqueio sério)
+- `runs/incidents/incidents_<day>_<asset>_<interval>.jsonl` — stream JSONL de incidentes/ações relevantes
+
+Essa camada é deliberadamente **não-bloqueante**: falhas de escrita de observabilidade não interrompem o observer.
+
+
+## Runtime scope / performance
+
+Pacote H introduz:
+
+- `runtime_scope.py` para naming canônico de artefatos escopados
+- `runtime_perf.py` para cache JSON mtime-based e IO idempotente (`write_text_if_changed`)
+
+Isso reduz duplicação e custo de IO sem alterar a policy do Thalor.
+
+
+## Runtime cycle foundation (Package I)
+
+O pacote I adiciona `runtime_cycle.py`, uma camada Python que descreve e pode
+executar um ciclo completo do runtime em etapas canônicas. Neste momento ela é
+aditiva: o loop PowerShell segue sendo a rota principal, mas a orquestração
+passa a ter um equivalente serializável/testável no lado Python.
+
+
+## Runtime daemon (Package J)
+
+Além do loop PowerShell principal, o projeto agora possui `natbin.runtime_daemon`
+como fundação Python para orquestração futura do ciclo completo.
+
+O Package K adiciona `natbin.runtime_quota`, que calcula snapshot explícito de
+quota/pacing a partir da fonte de verdade durável (`signals_v2`). Isso permite
+ao daemon Python razonar sobre `max_k_reached_today` e
+`pacing_quota_reached` sem depender de lógica embutida no shell.

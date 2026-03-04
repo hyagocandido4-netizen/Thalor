@@ -5,6 +5,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .observe_signal_topk_perday import load_cfg, write_daily_summary
@@ -50,6 +51,50 @@ def _existing_signal_days(db_path: str, wanted: list[str], asset: str, interval_
         con.close()
 
 
+def refresh_daily_summaries(*, cfg: dict[str, Any], wanted: list[str], db_path: str, out_dir: str, force_today_stub: bool = True) -> dict[str, Any]:
+    tz = ZoneInfo(cfg.get("data", {}).get("timezone", "UTC"))
+    asset = cfg.get("data", {}).get("asset", "UNKNOWN")
+    interval_sec = int(cfg.get("data", {}).get("interval_sec", 300))
+    dataset_path = cfg.get("phase2", {}).get("dataset_path", "data/dataset_phase2.csv")
+
+    existing = _existing_signal_days(db_path, wanted, asset, interval_sec)
+    today = datetime.now(tz=tz).strftime("%Y-%m-%d")
+
+    refreshed: list[str] = []
+    forced_stub_days: list[str] = []
+    skipped_missing_days: list[str] = []
+
+    for day in wanted:
+        should_write = day in existing
+        if force_today_stub and day == today:
+            should_write = True
+        if not should_write:
+            skipped_missing_days.append(day)
+            continue
+        out = write_daily_summary(
+            day=day,
+            tz=tz,
+            asset=asset,
+            interval_sec=interval_sec,
+            dataset_path=dataset_path,
+            db_path=db_path,
+            out_dir=out_dir,
+        )
+        refreshed.append(out)
+        if day not in existing:
+            forced_stub_days.append(day)
+
+    return {
+        "asset": asset,
+        "interval_sec": interval_sec,
+        "days_requested": wanted,
+        "days_written": len(refreshed),
+        "refreshed": refreshed,
+        "forced_stub_days": forced_stub_days,
+        "skipped_missing_days": skipped_missing_days,
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=2)
@@ -59,35 +104,9 @@ def main() -> None:
 
     cfg, _best = load_cfg()
     tz = ZoneInfo(cfg.get("data", {}).get("timezone", "UTC"))
-    asset = cfg.get("data", {}).get("asset", "UNKNOWN")
-    interval_sec = int(cfg.get("data", {}).get("interval_sec", 300))
-    dataset_path = cfg.get("phase2", {}).get("dataset_path", "data/dataset_phase2.csv")
-
     wanted = _target_days(tz=tz, days=args.days)
-    existing = _existing_signal_days(args.db_path, wanted, asset, interval_sec)
-
-    refreshed: list[str] = []
-    for day in wanted:
-        if day not in existing:
-            continue
-        out = write_daily_summary(
-            day=day,
-            tz=tz,
-            asset=asset,
-            interval_sec=interval_sec,
-            dataset_path=dataset_path,
-            db_path=args.db_path,
-            out_dir=args.out_dir,
-        )
-        refreshed.append(out)
-
-    print(json.dumps({
-        "asset": asset,
-        "interval_sec": interval_sec,
-        "days_requested": wanted,
-        "days_written": len(refreshed),
-        "refreshed": refreshed,
-    }, ensure_ascii=False))
+    result = refresh_daily_summaries(cfg=cfg, wanted=wanted, db_path=args.db_path, out_dir=args.out_dir)
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":

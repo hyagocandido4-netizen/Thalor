@@ -100,6 +100,8 @@ $env:LOOP_LOG_RETENTION_DAYS = "14"         # rotação de logs
 
 Lista completa e explicação: `docs/ENV_VARS.md`
 
+> Runtime hardening: o auto-loop agora aplica timeouts explícitos para `collect_recent`, `make_dataset`, `refresh_daily_summary`, autos e `observe_loop.ps1`.
+
 ## Artefatos de runtime
 
 - `data/` → DBs locais (ignorado no git)
@@ -122,9 +124,34 @@ O CI faz *guardrails* rápidos e objetivos (sem rede):
 
 Docs: `docs/CI.md`
 
+## Contratos de runtime
+
+A refatoração agora tem um módulo explícito de contratos/migrações:
+
+- `src/natbin/runtime_contracts.py` — schemas/versionamento dos artefatos duráveis
+- `src/natbin/runtime_migrations.py` — migrações explícitas de `signals_v2` e `executed`
+
+Smokes específicos dos pacotes:
+
+```powershell
+python scripts/tools/runtime_contract_smoke.py
+python scripts/tools/runtime_repos_smoke.py
+python scripts/tools/runtime_orchestration_smoke.py
+python scripts/tools/autos_refactor_smoke.py
+python scripts/tools/runtime_observability_smoke.py
+python scripts/tools/runtime_scope_smoke.py
+python scripts/tools/runtime_cycle_smoke.py
+```
+
 ## Documentação
 
 - `docs/ARCHITECTURE.md` — visão arquitetural (fluxo, DBs, estados)
+- `docs/RUNTIME_REPOSITORIES.md` — camada de repositórios/ledger do runtime
+- `docs/AUTOS_POLICY_LAYER.md` — camada de políticas/refatoração dos autos
+- `docs/OBSERVABILITY.md` — snapshots estruturados, incidentes e health report
+- `docs/RUNTIME_SCOPE.md` — camada canônica de paths escopados + helpers de performance
+- `docs/RUNTIME_CYCLE.md` — plano/CLI Python de um ciclo do runtime (fundação para afinar o shell)
+- `docs/RUNTIME_QUOTA.md` — camada Python de quota/pacing para o daemon
 - `docs/OPERATIONS.md` — runbook operacional
 - `docs/ENV_VARS.md` — catálogo de env vars
 - `docs/risk_report.md` — avaliação e stake sizing
@@ -134,3 +161,10 @@ Docs: `docs/CI.md`
 
 Este repositório não inclui um arquivo de licença ainda.
 Até uma licença ser adicionada, aplica-se o copyright padrão.
+
+
+## Runtime daemon (experimental foundation)
+
+Package J adiciona um daemon Python aditivo (`python -m natbin.runtime_daemon`) e um wrapper PowerShell fino em `scripts/scheduler/observe_loop_auto_py.ps1`. O loop PowerShell principal continua sendo o caminho operacional recomendado neste estágio.
+
+O Package K adiciona `runtime_quota.py`, um snapshot explícito de quota/pacing, e suporte opcional a `--quota-aware-sleep` / `--quota-json` no daemon Python.

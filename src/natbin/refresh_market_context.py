@@ -9,11 +9,11 @@ from pathlib import Path
 from natbin.settings import load_settings
 from natbin.iq_client import IQClient, IQConfig
 from .envutil import env_bool, env_float, env_int, env_str
+from .runtime_scope import market_context_path as scoped_market_context_path
 
 
 def default_market_context_path(asset: str, interval_sec: int) -> Path:
-    tag = ''.join(ch if (ch.isalnum() or ch in '-_') else '_' for ch in str(asset or 'UNKNOWN')).strip('_') or 'UNKNOWN'
-    return Path('runs') / f"market_context_{tag}_{int(interval_sec)}s.json"
+    return scoped_market_context_path(asset=asset, interval_sec=interval_sec, out_dir='runs')
 
 
 def infer_market_open_from_db(db_path: str, asset: str, interval_sec: int) -> tuple[bool, str, int | None]:

@@ -66,3 +66,39 @@ jobs:
       - name: Regression smoke
         run: |
           python scripts/tools/regression_smoke.py
+
+      - name: Runtime contracts smoke
+        run: |
+          python scripts/tools/runtime_contract_smoke.py
+
+      - name: Runtime repositories smoke
+        run: |
+          python scripts/tools/runtime_repos_smoke.py
+
+      - name: Runtime orchestration smoke
+        run: |
+          python scripts/tools/runtime_orchestration_smoke.py
+
+      - name: Autos refactor smoke
+        run: |
+          python scripts/tools/autos_refactor_smoke.py
+
+      - name: Runtime observability smoke
+        run: |
+          python scripts/tools/runtime_observability_smoke.py
+
+      - name: Runtime scope/perf smoke
+        run: |
+          python scripts/tools/runtime_scope_smoke.py
+
+      - name: Runtime cycle smoke
+        run: |
+          python scripts/tools/runtime_cycle_smoke.py
+
+      - name: Runtime daemon smoke
+        run: |
+          python scripts/tools/runtime_daemon_smoke.py
+
+      - name: Runtime quota smoke
+        run: |
+          python scripts/tools/runtime_quota_smoke.py

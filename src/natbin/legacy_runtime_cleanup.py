@@ -6,21 +6,20 @@ import shutil
 from pathlib import Path
 
 from .summary_paths import daily_summary_path, repo_asset, repo_interval_sec, sanitize_asset
+from .runtime_scope import effective_env_path as scoped_effective_env_path, market_context_path as scoped_market_context_path, loop_status_path as scoped_loop_status_path, transcript_log_path as scoped_transcript_log_path, live_signals_csv_path as scoped_live_signals_csv_path
 
 
 def _scoped_csv_candidates(day_tag: str, asset: str, interval_sec: int, out_dir: Path) -> list[Path]:
-    tag = sanitize_asset(asset)
+    day = f"{day_tag[:4]}-{day_tag[4:6]}-{day_tag[6:8]}"
     return [
-        out_dir / f"live_signals_v2_{day_tag}_{tag}_{int(interval_sec)}s.csv",
+        scoped_live_signals_csv_path(day=day, asset=asset, interval_sec=interval_sec, out_dir=out_dir),
         out_dir / f"live_signals_v2_{day_tag}_{int(interval_sec)}s.csv",
     ]
 
 
 def _scoped_log_candidates(day_tag: str, asset: str, interval_sec: int, out_dir: Path) -> list[Path]:
-    tag = sanitize_asset(asset)
-    return [
-        out_dir / f"observe_loop_auto_{tag}_{int(interval_sec)}s_{day_tag}.log",
-    ]
+    day = f"{day_tag[:4]}-{day_tag[4:6]}-{day_tag[6:8]}"
+    return [scoped_transcript_log_path(day=day, asset=asset, interval_sec=interval_sec, out_dir=out_dir)]
 
 
 def _move_if_pair_exists(legacy: Path, scoped: Path, archive_dir: Path) -> bool:
@@ -53,9 +52,9 @@ def main() -> None:
 
     # sidecars
     sidecar_pairs = [
-        (runs / "effective_env.json", runs / f"effective_env_{sanitize_asset(asset)}_{interval_sec}s.json"),
-        (runs / "market_context.json", runs / f"market_context_{sanitize_asset(asset)}_{interval_sec}s.json"),
-        (runs / "observe_loop_auto_status.json", runs / f"observe_loop_auto_status_{sanitize_asset(asset)}_{interval_sec}s.json"),
+        (runs / "effective_env.json", scoped_effective_env_path(asset=asset, interval_sec=interval_sec, out_dir=runs)),
+        (runs / "market_context.json", scoped_market_context_path(asset=asset, interval_sec=interval_sec, out_dir=runs)),
+        (runs / "observe_loop_auto_status.json", scoped_loop_status_path(asset=asset, interval_sec=interval_sec, out_dir=runs)),
     ]
     for legacy, scoped in sidecar_pairs:
         if _move_if_pair_exists(legacy, scoped, archive_dir):

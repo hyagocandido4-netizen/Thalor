@@ -60,6 +60,14 @@ if (-not $env:LEGACY_RUNTIME_CLEANUP_ENABLE) { $env:LEGACY_RUNTIME_CLEANUP_ENABL
 if (-not $env:REGIME_MODE_DEFAULT) { $env:REGIME_MODE_DEFAULT = "hard" }
 if (-not $env:GATE_FAIL_CLOSED) { $env:GATE_FAIL_CLOSED = "1" }
 if (-not $env:MARKET_CONTEXT_FAIL_CLOSED) { $env:MARKET_CONTEXT_FAIL_CLOSED = "1" }
+if (-not $env:COLLECT_RECENT_TIMEOUT_SEC) { $env:COLLECT_RECENT_TIMEOUT_SEC = "120" }
+if (-not $env:MAKE_DATASET_TIMEOUT_SEC) { $env:MAKE_DATASET_TIMEOUT_SEC = "120" }
+if (-not $env:REFRESH_DAILY_SUMMARY_TIMEOUT_SEC) { $env:REFRESH_DAILY_SUMMARY_TIMEOUT_SEC = "90" }
+if (-not $env:REFRESH_MARKET_CONTEXT_TIMEOUT_SEC) { $env:REFRESH_MARKET_CONTEXT_TIMEOUT_SEC = "60" }
+if (-not $env:AUTO_VOLUME_TIMEOUT_SEC) { $env:AUTO_VOLUME_TIMEOUT_SEC = "60" }
+if (-not $env:AUTO_ISOBLEND_TIMEOUT_SEC) { $env:AUTO_ISOBLEND_TIMEOUT_SEC = "60" }
+if (-not $env:AUTO_HOURTHR_TIMEOUT_SEC) { $env:AUTO_HOURTHR_TIMEOUT_SEC = "60" }
+if (-not $env:OBSERVE_LOOP_TIMEOUT_SEC) { $env:OBSERVE_LOOP_TIMEOUT_SEC = "180" }
 
 # --- /defaults ---
 
@@ -232,6 +240,8 @@ $script:TranscriptRetentionDays = 14
 $loopStartedAtUtc = [DateTimeOffset]::UtcNow.ToString("o")
 $logEnabled = $false
 $script:StatusSeq = 0
+$script:ManagedFailurePhase = ""
+$script:ManagedFailureInfo = $null
 try {
   $lockStream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
 } catch {
@@ -869,16 +879,10 @@ try {
         return
       }
 
-      $raw = & $py -m natbin.refresh_market_context
-      if ($LASTEXITCODE -ne 0) { throw "refresh_market_context exit=$LASTEXITCODE" }
+      $timeoutSec = Get-TimeoutSec -EnvName "REFRESH_MARKET_CONTEXT_TIMEOUT_SEC" -DefaultSec 60
+      $res = Invoke-PythonModuleManaged -Name "refresh_market_context" -Module "natbin.refresh_market_context" -TimeoutSec $timeoutSec -StatusPhase "market_context" -StatusMessage "refresh_market_context" -EchoStdErr
 
-      $line = $null
-      if ($raw -is [System.Array]) {
-        $line = ($raw | Where-Object { $_ -and $_.Trim().StartsWith("{") -and $_.Trim().EndsWith("}") } | Select-Object -Last 1)
-      } else {
-        $s = [string]$raw
-        if ($s.Trim().StartsWith("{") -and $s.Trim().EndsWith("}")) { $line = $s.Trim() }
-      }
+      $line = Get-LastJsonLine -Lines $res.StdOut
       if (-not $line -and (Test-Path $ctxPath)) {
         $line = Get-Content $ctxPath -Raw
       }
@@ -896,6 +900,7 @@ try {
       if (-not $env:MARKET_CONTEXT_SOURCE) { $env:MARKET_CONTEXT_SOURCE = "fallback" }
       Save-EffectiveEnv
       Write-Host "[P30] WARN: refresh_market_context falhou: $($_.Exception.Message); fallback PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) fresh=$($env:MARKET_CONTEXT_FRESH) stale=$($env:MARKET_CONTEXT_STALE)" -ForegroundColor DarkYellow
+      throw
     }
   }
 
@@ -946,6 +951,191 @@ try {
     if ($nextAt) { $extra = " next_at=$nextAt" }
     Write-Host "[P31b] quota_sleep kind=$kind sleep_s=$sleepSec$extra" -ForegroundColor DarkGray
     Start-Sleep -Seconds $sleepSec
+  }
+
+  function Get-TimeoutSec {
+    param([string]$EnvName, [int]$DefaultSec)
+    $v = [System.Environment]::GetEnvironmentVariable($EnvName)
+    if ($null -eq $v -or (AsStr $v) -eq "") { return [int]$DefaultSec }
+    try {
+      $n = [int]$v
+      if ($n -lt 1) { return [int]$DefaultSec }
+      return $n
+    } catch {
+      return [int]$DefaultSec
+    }
+  }
+
+  function Reset-ManagedFailure {
+    $script:ManagedFailurePhase = ""
+    $script:ManagedFailureInfo = $null
+  }
+
+  function Get-LastNonEmptyLine {
+    param($Lines)
+    if ($null -eq $Lines) { return "" }
+    $arr = @($Lines)
+    for ($i = $arr.Count - 1; $i -ge 0; $i--) {
+      $s = ($arr[$i] | AsStr)
+      if ($s) { return $s }
+    }
+    return ""
+  }
+
+  function Get-TailText {
+    param($Lines, [int]$MaxLines = 20)
+    if ($null -eq $Lines) { return "" }
+    $tail = @($Lines | Where-Object { $_ -ne $null } | Select-Object -Last $MaxLines)
+    if (-not $tail) { return "" }
+    return (($tail | ForEach-Object { $_ | AsStr }) -join "`n")
+  }
+
+  function Get-LastJsonLine {
+    param($Lines)
+    if ($null -eq $Lines) { return "" }
+    $arr = @($Lines)
+    for ($i = $arr.Count - 1; $i -ge 0; $i--) {
+      $s = (($arr[$i] | AsStr)).Trim()
+      if ($s.StartsWith("{") -and $s.EndsWith("}")) { return $s }
+    }
+    return ""
+  }
+
+  function Invoke-ManagedProcess {
+    param(
+      [Parameter(Mandatory=$true)][string]$Name,
+      [Parameter(Mandatory=$true)][string]$FilePath,
+      [string[]]$ArgumentList = @(),
+      [int]$TimeoutSec = 120,
+      [string]$StatusPhase = "",
+      [string]$StatusMessage = "",
+      [switch]$EchoOutput,
+      [switch]$EchoStdErr
+    )
+
+    $tmpDir = Join-Path $runsDir "tmp"
+    New-Item -ItemType Directory -Force $tmpDir | Out-Null
+    $token = [Guid]::NewGuid().ToString("N")
+    $stdoutPath = Join-Path $tmpDir ("{0}.{1}.out.log" -f $Name, $token)
+    $stderrPath = Join-Path $tmpDir ("{0}.{1}.err.log" -f $Name, $token)
+    $proc = $null
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+    try {
+      if ($StatusPhase) {
+        $runningExtra = [ordered]@{ step = $Name; timeout_sec = [int]$TimeoutSec }
+        Save-LoopStatus -Phase $StatusPhase -State "running" -Message ((($StatusMessage | AsStr) -ne "") ? $StatusMessage : $Name) -Extra $runningExtra
+      }
+
+      $proc = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $repoRoot -NoNewWindow -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+      $completed = $proc.WaitForExit(([int]$TimeoutSec) * 1000)
+      $sw.Stop()
+
+      if (-not $completed) {
+        try {
+          if ($proc) { $proc.Kill($true) }
+        } catch {
+          try { if ($proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } } catch {}
+        }
+        try { if ($proc) { $proc.WaitForExit(5000) | Out-Null } } catch {}
+      }
+
+      $stdout = @()
+      $stderr = @()
+      if (Test-Path $stdoutPath) { $stdout = @(Get-Content $stdoutPath -Encoding UTF8 -ErrorAction SilentlyContinue) }
+      if (Test-Path $stderrPath) { $stderr = @(Get-Content $stderrPath -Encoding UTF8 -ErrorAction SilentlyContinue) }
+
+      if ($EchoOutput) {
+        foreach ($ln in $stdout) {
+          $s = ($ln | AsStr)
+          if ($s) { Write-Host $s }
+        }
+      }
+      if ($EchoStdErr -or (-not $completed)) {
+        foreach ($ln in $stderr) {
+          $s = ($ln | AsStr)
+          if ($s) { Write-Host $s -ForegroundColor DarkYellow }
+        }
+      }
+
+      if (-not $completed) {
+        $msg = "$Name timeout after ${TimeoutSec}s"
+        $info = [ordered]@{
+          step = $Name
+          exit_kind = "timeout"
+          timeout_sec = [int]$TimeoutSec
+          duration_sec = [int][Math]::Round($sw.Elapsed.TotalSeconds)
+          command = ((@($FilePath) + @($ArgumentList)) -join " ")
+          stdout_tail = (Get-TailText -Lines $stdout)
+          stderr_tail = (Get-TailText -Lines $stderr)
+        }
+        $script:ManagedFailurePhase = $StatusPhase
+        $script:ManagedFailureInfo = $info
+        Write-Host "[P40] $msg" -ForegroundColor DarkYellow
+        throw $msg
+      }
+
+      $exitCode = 0
+      try { $exitCode = [int]$proc.ExitCode } catch { $exitCode = 0 }
+      $combined = ((@($stderr) + @($stdout)) -join "`n")
+      $exitKind = "ok"
+      if ($combined -match "KeyboardInterrupt") {
+        $exitKind = "interrupted"
+      } elseif ($exitCode -ne 0) {
+        $exitKind = "nonzero_exit"
+      }
+
+      if ($exitCode -ne 0) {
+        foreach ($ln in $stderr) {
+          $s = ($ln | AsStr)
+          if ($s) { Write-Host $s -ForegroundColor DarkYellow }
+        }
+        $msg = "$Name failed ($exitKind exit=$exitCode)"
+        $info = [ordered]@{
+          step = $Name
+          exit_kind = $exitKind
+          exit_code = $exitCode
+          timeout_sec = [int]$TimeoutSec
+          duration_sec = [int][Math]::Round($sw.Elapsed.TotalSeconds)
+          command = ((@($FilePath) + @($ArgumentList)) -join " ")
+          stdout_tail = (Get-TailText -Lines $stdout)
+          stderr_tail = (Get-TailText -Lines $stderr)
+        }
+        $script:ManagedFailurePhase = $StatusPhase
+        $script:ManagedFailureInfo = $info
+        Write-Host "[P40] $msg" -ForegroundColor DarkYellow
+        throw $msg
+      }
+
+      return [pscustomobject]@{
+        Name = $Name
+        ExitCode = $exitCode
+        ExitKind = $exitKind
+        DurationSec = [int][Math]::Round($sw.Elapsed.TotalSeconds)
+        StdOut = $stdout
+        StdErr = $stderr
+      }
+    }
+    finally {
+      foreach ($tmp in @($stdoutPath, $stderrPath)) {
+        try { if ($tmp -and (Test-Path $tmp)) { Remove-Item -Force $tmp -ErrorAction SilentlyContinue } } catch {}
+      }
+    }
+  }
+
+  function Invoke-PythonModuleManaged {
+    param(
+      [Parameter(Mandatory=$true)][string]$Name,
+      [Parameter(Mandatory=$true)][string]$Module,
+      [string[]]$ModuleArgs = @(),
+      [int]$TimeoutSec = 120,
+      [string]$StatusPhase = "",
+      [string]$StatusMessage = "",
+      [switch]$EchoOutput,
+      [switch]$EchoStdErr
+    )
+    $args = @('-m', $Module) + @($ModuleArgs)
+    return Invoke-ManagedProcess -Name $Name -FilePath $py -ArgumentList $args -TimeoutSec $TimeoutSec -StatusPhase $StatusPhase -StatusMessage $StatusMessage -EchoOutput:$EchoOutput -EchoStdErr:$EchoStdErr
   }
 
 
@@ -1224,15 +1414,19 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
   }
 
   function Refresh-DailySummary {
+    $timeoutSec = Get-TimeoutSec -EnvName "REFRESH_DAILY_SUMMARY_TIMEOUT_SEC" -DefaultSec 90
     try {
-      $sum = & $py -m natbin.refresh_daily_summary --days 2
-      if ($LASTEXITCODE -eq 0 -and $sum) {
-        Write-Host "[P29] summary_refresh_ok: $sum" -ForegroundColor DarkGray
-      } elseif ($LASTEXITCODE -ne 0) {
-        Write-Host "[P29] WARN: refresh_daily_summary exit=$LASTEXITCODE" -ForegroundColor DarkYellow
+      $res = Invoke-PythonModuleManaged -Name "refresh_daily_summary" -Module "natbin.refresh_daily_summary" -ModuleArgs @('--days','2') -TimeoutSec $timeoutSec -StatusPhase "summary_refresh" -StatusMessage "refresh_daily_summary" -EchoStdErr
+      $line = Get-LastJsonLine -Lines $res.StdOut
+      if (-not $line) { $line = Get-LastNonEmptyLine -Lines $res.StdOut }
+      if ($line) {
+        Write-Host "[P29] summary_refresh_ok: $line" -ForegroundColor DarkGray
+      } else {
+        Write-Host "[P29] summary_refresh_ok: {}" -ForegroundColor DarkGray
       }
     } catch {
       Write-Host "[P29] WARN: refresh_daily_summary falhou: $($_.Exception.Message)" -ForegroundColor DarkYellow
+      throw
     }
   }
 
@@ -1362,29 +1556,19 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
 
     $env:LOOKBACK_CANDLES = "$Lookback"
 
-    $collectOut = & $py -m natbin.collect_recent
-    if ($collectOut) {
-      foreach ($ln in @($collectOut)) {
-        $s = ($ln | AsStr)
-        if ($s) { Write-Host $s }
-      }
-    }
-    if ($LASTEXITCODE -ne 0) { throw "collect_recent falhou" }
+    $collectTimeout = Get-TimeoutSec -EnvName "COLLECT_RECENT_TIMEOUT_SEC" -DefaultSec 120
+    [void](Invoke-PythonModuleManaged -Name "collect_recent" -Module "natbin.collect_recent" -TimeoutSec $collectTimeout -StatusPhase "settle_collect" -StatusMessage "settle_only collect_recent" -EchoOutput -EchoStdErr)
 
-    $datasetOut = & $py -m natbin.make_dataset
-    if ($datasetOut) {
-      foreach ($ln in @($datasetOut)) {
-        $s = ($ln | AsStr)
-        if ($s) { Write-Host $s }
-      }
-    }
-    if ($LASTEXITCODE -ne 0) { throw "make_dataset falhou" }
+    $datasetTimeout = Get-TimeoutSec -EnvName "MAKE_DATASET_TIMEOUT_SEC" -DefaultSec 120
+    [void](Invoke-PythonModuleManaged -Name "make_dataset" -Module "natbin.make_dataset" -TimeoutSec $datasetTimeout -StatusPhase "settle_dataset" -StatusMessage "settle_only make_dataset" -EchoOutput -EchoStdErr)
 
     Refresh-DailySummary
 
     $gap2 = Get-EvalGapStatus
     if ($gap2) {
-      Write-Host "[P29b] quota_settle_status asset=$($gap2.Asset) day=$($gap2.Day) executed=$($gap2.Count) eval=$($gap2.Eval) pending=$($gap2.Pending)" -ForegroundColor DarkGray
+      $gPending2 = (Get-ObjProp -Obj $gap2 -Name "Pending" | AsInt)
+      if ($gPending2 -eq 0) { $gPending2 = (Get-ObjProp -Obj $gap2 -Name "pending" | AsInt) }
+      Write-Host "[P29b] quota_settle_status asset=$($gap2.Asset) day=$($gap2.Day) executed=$($gap2.Count) eval=$($gap2.Eval) pending=$gPending2" -ForegroundColor DarkGray
     }
 
     $msg = $QuotaDecision.Message
@@ -1395,7 +1579,7 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
     }
     Write-Host $msg -ForegroundColor DarkGray
     Write-Host "[P32] quota_frozen_today keep effective THRESHOLD=$($env:THRESHOLD) CPREG_ALPHA_END=$($env:CPREG_ALPHA_END) META_ISO_BLEND=$($env:META_ISO_BLEND) REGIME_MODE=$($env:REGIME_MODE) GATE_FAIL_CLOSED=$($env:GATE_FAIL_CLOSED) MARKET_CONTEXT_FAIL_CLOSED=$($env:MARKET_CONTEXT_FAIL_CLOSED) PAYOUT=$($env:PAYOUT) MARKET_OPEN=$($env:MARKET_OPEN) MARKET_CONTEXT_FRESH=$($env:MARKET_CONTEXT_FRESH) MARKET_CONTEXT_AGE_SEC=$($env:MARKET_CONTEXT_AGE_SEC) MARKET_CONTEXT_STALE=$($env:MARKET_CONTEXT_STALE) MARKET_CONTEXT_SOURCE=$($env:MARKET_CONTEXT_SOURCE) LEGACY_RUNTIME_CLEANUP_ENABLE=$($env:LEGACY_RUNTIME_CLEANUP_ENABLE)" -ForegroundColor DarkGray
-    return ,$gap2
+    return $gap2
   }
 
   function Restore-MarketContextEnv {
@@ -1567,7 +1751,10 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
     if (-not $env:VOL_SAFE_THR_MIN)         { $env:VOL_SAFE_THR_MIN = "0.02" }
     if (-not $env:VOL_SAFE_ALPHA_MAX)       { $env:VOL_SAFE_ALPHA_MAX = "0.12" }
 
-    $json = & $py -m natbin.auto_volume
+    $volTimeout = Get-TimeoutSec -EnvName "AUTO_VOLUME_TIMEOUT_SEC" -DefaultSec 60
+    $volRes = Invoke-PythonModuleManaged -Name "auto_volume" -Module "natbin.auto_volume" -TimeoutSec $volTimeout -StatusPhase "auto_volume" -StatusMessage "auto_volume" -EchoStdErr
+    $json = Get-LastJsonLine -Lines $volRes.StdOut
+    if (-not $json) { $json = Get-LastNonEmptyLine -Lines $volRes.StdOut }
     if (!$json) { throw "auto_volume nao retornou JSON" }
 
     $obj = $json | ConvertFrom-Json
@@ -1664,8 +1851,11 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
     # P16: auto META_ISO_BLEND from daily_summary
     try {
       if ($env:META_ISO_ENABLE -eq "1") {
-        $p16 = & $py -m natbin.auto_isoblend
-        if ($LASTEXITCODE -eq 0 -and $p16) {
+        $p16Timeout = Get-TimeoutSec -EnvName "AUTO_ISOBLEND_TIMEOUT_SEC" -DefaultSec 60
+        $p16Res = Invoke-PythonModuleManaged -Name "auto_isoblend" -Module "natbin.auto_isoblend" -TimeoutSec $p16Timeout -StatusPhase "auto_isoblend" -StatusMessage "auto_isoblend" -EchoStdErr
+        $p16 = Get-LastJsonLine -Lines $p16Res.StdOut
+        if (-not $p16) { $p16 = Get-LastNonEmptyLine -Lines $p16Res.StdOut }
+        if ($p16) {
           $o = $p16 | ConvertFrom-Json
           $scan16 = Get-ObjProp -Obj $o -Name "summary_scan"
           $p16Fail = (Get-ObjProp -Obj $o -Name "summary_fail_closed" | AsStr)
@@ -1693,8 +1883,11 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
     # P17: hour-aware threshold multiplier
     try {
       if ($env:P17_ENABLE -ne "0") {
-        $p17 = & $py -m natbin.auto_hourthr
-        if ($LASTEXITCODE -eq 0 -and $p17) {
+        $p17Timeout = Get-TimeoutSec -EnvName "AUTO_HOURTHR_TIMEOUT_SEC" -DefaultSec 60
+        $p17Res = Invoke-PythonModuleManaged -Name "auto_hourthr" -Module "natbin.auto_hourthr" -TimeoutSec $p17Timeout -StatusPhase "auto_hourthr" -StatusMessage "auto_hourthr" -EchoStdErr
+        $p17 = Get-LastJsonLine -Lines $p17Res.StdOut
+        if (-not $p17) { $p17 = Get-LastNonEmptyLine -Lines $p17Res.StdOut }
+        if ($p17) {
           $o = $p17 | ConvertFrom-Json
           $scan17 = Get-ObjProp -Obj $o -Name "summary_scan"
           $p17Fail = (Get-ObjProp -Obj $o -Name "summary_fail_closed" | AsStr)
@@ -1752,6 +1945,7 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
 
   while ($true) {
     try {
+      Reset-ManagedFailure
       Ensure-LoopTranscriptCurrentDay
       [void](Restore-EffectiveEnv)
       [void](Restore-MarketContextEnv)
@@ -1829,11 +2023,11 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
 
       $env:LOOKBACK_CANDLES = "$LookbackCandles"
 
-      & $py -m natbin.collect_recent
-      if ($LASTEXITCODE -ne 0) { throw "collect_recent falhou" }
+      $collectTimeout = Get-TimeoutSec -EnvName "COLLECT_RECENT_TIMEOUT_SEC" -DefaultSec 120
+      [void](Invoke-PythonModuleManaged -Name "collect_recent" -Module "natbin.collect_recent" -TimeoutSec $collectTimeout -StatusPhase "collect" -StatusMessage "collect_recent" -EchoOutput -EchoStdErr)
 
-      & $py -m natbin.make_dataset
-      if ($LASTEXITCODE -ne 0) { throw "make_dataset falhou" }
+      $datasetTimeout = Get-TimeoutSec -EnvName "MAKE_DATASET_TIMEOUT_SEC" -DefaultSec 120
+      [void](Invoke-PythonModuleManaged -Name "make_dataset" -Module "natbin.make_dataset" -TimeoutSec $datasetTimeout -StatusPhase "dataset" -StatusMessage "make_dataset" -EchoOutput -EchoStdErr)
 
       Refresh-DailySummary
 
@@ -1894,12 +2088,11 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
 
       # roda 1 ciclo do loop principal somente para OBSERVE (coleta/dataset ja feitos acima)
       if (-not $skipObserve) {
-        if ($TopK -gt 0) {
-          & pwsh -ExecutionPolicy Bypass -File $loop -Once -LookbackCandles $LookbackCandles -TopK $TopK -SkipCollect -SkipDataset
-        } else {
-          & pwsh -ExecutionPolicy Bypass -File $loop -Once -LookbackCandles $LookbackCandles -SkipCollect -SkipDataset
-        }
-        if ($LASTEXITCODE -ne 0) { throw "observe_loop.ps1 falhou (exit=$LASTEXITCODE)" }
+        $obsArgs = @('-ExecutionPolicy','Bypass','-File',$loop,'-Once','-LookbackCandles',"$LookbackCandles")
+        if ($TopK -gt 0) { $obsArgs += @('-TopK',"$TopK") }
+        $obsArgs += @('-SkipCollect','-SkipDataset')
+        $observeTimeout = Get-TimeoutSec -EnvName "OBSERVE_LOOP_TIMEOUT_SEC" -DefaultSec 180
+        [void](Invoke-ManagedProcess -Name "observe_loop_once" -FilePath 'pwsh' -ArgumentList $obsArgs -TimeoutSec $observeTimeout -StatusPhase "observe" -StatusMessage "observe_loop_once" -EchoOutput -EchoStdErr)
         Save-LoopStatus -Phase "cycle_ok" -State "ok" -Message "cycle_completed" -Quota $quotaNow
       } elseif (-not $skipPhase) {
         Save-LoopStatus -Phase "cycle_skipped" -State "blocked" -Message "skip_observe" -Quota $quotaNow
@@ -1911,7 +2104,15 @@ print(f"{asset}|{day}|{count}|{eval_count}|{pending}")
     } catch {
       $fail += 1
       Write-Host "[AUTOLOOP][ERR] $($_.Exception.Message)" -ForegroundColor Red
-      Save-LoopStatus -Phase "error" -State "error" -Message $_.Exception.Message -Extra @{ fail = $fail; max_failures = $MaxFailures; backoff_sec = $backoff }
+      $phaseErr = "error"
+      if (($script:ManagedFailurePhase | AsStr) -ne "") { $phaseErr = ($script:ManagedFailurePhase | AsStr) }
+      $extraErr = [ordered]@{ fail = $fail; max_failures = $MaxFailures; backoff_sec = $backoff }
+      if ($script:ManagedFailureInfo) {
+        foreach ($k in $script:ManagedFailureInfo.Keys) {
+          $extraErr[$k] = $script:ManagedFailureInfo[$k]
+        }
+      }
+      Save-LoopStatus -Phase $phaseErr -State "error" -Message $_.Exception.Message -Extra $extraErr
 
       if ($Once) { throw }
       if ($fail -ge $MaxFailures) { throw }

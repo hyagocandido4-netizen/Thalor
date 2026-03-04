@@ -14,6 +14,12 @@
 - `LOOP_LOG_RETENTION_DAYS` (ex.: `14`) — rotação/limpeza de logs do loop
 - `RUNTIME_RETENTION_DAYS` (ex.: `30`) — prune de artefatos em `runs/` e linhas em SQLite
 - `STATE_RECONCILE_DAYS` (ex.: `7`) — reconciliação de estado com fonte de verdade
+- `COLLECT_RECENT_TIMEOUT_SEC` (ex.: `120`) — timeout duro do `collect_recent` no auto-loop
+- `MAKE_DATASET_TIMEOUT_SEC` (ex.: `120`) — timeout duro do `make_dataset` no auto-loop
+- `REFRESH_DAILY_SUMMARY_TIMEOUT_SEC` (ex.: `90`) — timeout do refresh de summaries
+- `REFRESH_MARKET_CONTEXT_TIMEOUT_SEC` (ex.: `60`) — timeout do refresh de payout/open
+- `AUTO_VOLUME_TIMEOUT_SEC` / `AUTO_ISOBLEND_TIMEOUT_SEC` / `AUTO_HOURTHR_TIMEOUT_SEC` — timeout dos autos
+- `OBSERVE_LOOP_TIMEOUT_SEC` (ex.: `180`) — timeout do observe subprocess no auto-loop
 
 ## Top‑K
 

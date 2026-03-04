@@ -19,7 +19,17 @@ from zoneinfo import ZoneInfo
 
 from .gate_meta import GATE_VERSION, META_FEATURES, compute_scores, train_base_cal_iso_meta
 from .envutil import env_bool, env_float, env_int
-from .summary_paths import daily_summary_path
+from .runtime_migrations import ensure_executed_state_db as _ensure_executed_state_db
+from .runtime_migrations import ensure_signals_v2 as _ensure_signals_v2
+from .runtime_repos import RuntimeTradeLedger, SignalsRepository, preserve_existing_trade
+from .runtime_observability import (
+    append_incident_event,
+    build_incident_from_decision,
+    write_detailed_decision_snapshot,
+    write_latest_decision_snapshot,
+)
+from .summary_paths import daily_summary_path, sanitize_asset
+from .runtime_scope import live_signals_csv_path as scoped_live_signals_csv_path
 
 
 BASE_FIELDS = [
@@ -59,6 +69,10 @@ META_FIELDS = [
     "meta_model",
 ]
 ALL_FIELDS = BASE_FIELDS + META_FIELDS
+
+
+def _runtime_ledger() -> RuntimeTradeLedger:
+    return RuntimeTradeLedger(default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"))
 
 
 def load_cfg() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -166,174 +180,12 @@ def should_retrain(
 
 
 def ensure_signals_v2(con: sqlite3.Connection) -> None:
-    desired_pk = ["day", "asset", "interval_sec", "ts"]
-    desired_cols: dict[str, str] = {
-        "dt_local": "TEXT NOT NULL",
-        "day": "TEXT NOT NULL",
-        "asset": "TEXT NOT NULL",
-        "interval_sec": "INTEGER NOT NULL",
-        "ts": "INTEGER NOT NULL",
-        "proba_up": "REAL NOT NULL",
-        "conf": "REAL NOT NULL",
-        "score": "REAL",
-        "gate_mode": "TEXT",
-        "gate_mode_requested": "TEXT",
-        "gate_fail_closed": "INTEGER",
-        "gate_fail_detail": "TEXT",
-        "regime_ok": "INTEGER NOT NULL",
-        "thresh_on": "TEXT",
-        "threshold": "REAL NOT NULL",
-        "k": "INTEGER",
-        "rank_in_day": "INTEGER",
-        "executed_today": "INTEGER",
-        "budget_left": "INTEGER",
-        "action": "TEXT NOT NULL",
-        "reason": "TEXT NOT NULL",
-        "blockers": "TEXT",
-        "close": "REAL",
-        "payout": "REAL",
-        "ev": "REAL",
-        "model_version": "TEXT",
-        "train_rows": "INTEGER",
-        "train_end_ts": "INTEGER",
-        "best_source": "TEXT",
-        "tune_dir": "TEXT",
-        "feat_hash": "TEXT",
-        "gate_version": "TEXT",
-        "meta_model": "TEXT",
-        "market_context_stale": "INTEGER",
-        "market_context_fail_closed": "INTEGER",
-    }
+    """Compatibility wrapper over the explicit runtime migration module.
 
-    default_interval = env_int("SIGNALS_INTERVAL_SEC", "300")
-
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS signals_v2 (
-          dt_local TEXT NOT NULL,
-          day TEXT NOT NULL,
-          asset TEXT NOT NULL,
-          interval_sec INTEGER NOT NULL,
-          ts INTEGER NOT NULL,
-          proba_up REAL NOT NULL,
-          conf REAL NOT NULL,
-          score REAL,
-          gate_mode TEXT,
-          gate_mode_requested TEXT,
-          gate_fail_closed INTEGER,
-          gate_fail_detail TEXT,
-          regime_ok INTEGER NOT NULL,
-          thresh_on TEXT,
-          threshold REAL NOT NULL,
-          k INTEGER,
-          rank_in_day INTEGER,
-          executed_today INTEGER,
-          budget_left INTEGER,
-          action TEXT NOT NULL,
-          reason TEXT NOT NULL,
-          blockers TEXT,
-          close REAL,
-          payout REAL,
-          ev REAL,
-          model_version TEXT,
-          train_rows INTEGER,
-          train_end_ts INTEGER,
-          best_source TEXT,
-          tune_dir TEXT,
-          feat_hash TEXT,
-          gate_version TEXT,
-          meta_model TEXT,
-          market_context_stale INTEGER,
-          market_context_fail_closed INTEGER,
-          PRIMARY KEY(day, asset, interval_sec, ts)
-        )
-        """
-    )
-    con.execute("CREATE INDEX IF NOT EXISTS idx_signals_v2_ts ON signals_v2(ts)")
-    info = con.execute("PRAGMA table_info(signals_v2)").fetchall()
-    cols = {r[1] for r in info}
-    pk_cols = [r[1] for r in sorted([r for r in info if r[5]], key=lambda x: x[5])]
-
-    needs_rebuild = ("interval_sec" not in cols) or (pk_cols != desired_pk)
-    if needs_rebuild:
-        con.execute("ALTER TABLE signals_v2 RENAME TO signals_v2_old")
-        con.execute(
-            """
-            CREATE TABLE signals_v2 (
-              dt_local TEXT NOT NULL,
-              day TEXT NOT NULL,
-              asset TEXT NOT NULL,
-              interval_sec INTEGER NOT NULL,
-              ts INTEGER NOT NULL,
-              proba_up REAL NOT NULL,
-              conf REAL NOT NULL,
-              score REAL,
-              gate_mode TEXT,
-              gate_mode_requested TEXT,
-              gate_fail_closed INTEGER,
-              gate_fail_detail TEXT,
-              regime_ok INTEGER NOT NULL,
-              thresh_on TEXT,
-              threshold REAL NOT NULL,
-              k INTEGER,
-              rank_in_day INTEGER,
-              executed_today INTEGER,
-              budget_left INTEGER,
-              action TEXT NOT NULL,
-              reason TEXT NOT NULL,
-              blockers TEXT,
-              close REAL,
-              payout REAL,
-              ev REAL,
-              model_version TEXT,
-              train_rows INTEGER,
-              train_end_ts INTEGER,
-              best_source TEXT,
-              tune_dir TEXT,
-              feat_hash TEXT,
-              gate_version TEXT,
-              meta_model TEXT,
-              market_context_stale INTEGER,
-              market_context_fail_closed INTEGER,
-              PRIMARY KEY(day, asset, interval_sec, ts)
-            )
-            """
-        )
-        con.execute("CREATE INDEX IF NOT EXISTS idx_signals_v2_ts ON signals_v2(ts)")
-
-        old_cols = {r[1] for r in con.execute("PRAGMA table_info(signals_v2_old)").fetchall()}
-        select_expr = []
-        insert_cols = []
-        for c in desired_cols.keys():
-            if c == "asset":
-                if c in old_cols:
-                    select_expr.append("COALESCE(NULLIF(asset,''),'UNKNOWN') AS asset")
-                else:
-                    select_expr.append("'UNKNOWN' AS asset")
-                insert_cols.append(c)
-            elif c == "interval_sec":
-                if c in old_cols:
-                    select_expr.append(f"COALESCE(interval_sec,{int(default_interval)}) AS interval_sec")
-                else:
-                    select_expr.append(f"{int(default_interval)} AS interval_sec")
-                insert_cols.append(c)
-            elif c in old_cols:
-                select_expr.append(c)
-                insert_cols.append(c)
-        if insert_cols:
-            con.execute(
-                f"INSERT OR IGNORE INTO signals_v2 ({','.join(insert_cols)}) SELECT {','.join(select_expr)} FROM signals_v2_old"
-            )
-        con.execute("DROP TABLE signals_v2_old")
-        con.commit()
-        info = con.execute("PRAGMA table_info(signals_v2)").fetchall()
-        cols = {r[1] for r in info}
-
-    add_cols = {k: v.replace(" NOT NULL", "") for k, v in desired_cols.items() if k not in {"day","asset","interval_sec","ts"}}
-    for c, typ in add_cols.items():
-        if c not in cols:
-            con.execute(f"ALTER TABLE signals_v2 ADD COLUMN {c} {typ}")
-    con.commit()
+    Package B keeps the public helper name stable while moving schema knowledge
+    to :mod:`natbin.runtime_migrations`.
+    """
+    _ensure_signals_v2(con, default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"))
 
 
 TRADE_ACTIONS = {"CALL", "PUT"}
@@ -353,51 +205,22 @@ def _signal_pk(row: dict[str, Any]) -> tuple[str, str, int, int]:
     return day, asset, interval_sec, ts
 
 
-def _preserve_existing_trade(existing_action: str | None, incoming_action: str | None) -> bool:
-    """Preserve the first emitted trade row for a candle.
-
-    Rationale:
-      observe may revisit the same closed candle ts after restart or while the
-      scheduler is still within the same 5-minute window. If we already
-      persisted CALL/PUT for (day, asset, interval_sec, ts), later HOLD/duplicate
-      updates must not overwrite the historical trade decision.
-    """
-    existing = str(existing_action or "").upper()
-    return existing in TRADE_ACTIONS
-
-
 def write_sqlite_signal(row: dict[str, Any], db_path: str = "runs/live_signals.sqlite3") -> None:
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    try:
-        ensure_signals_v2(con)
-        day, asset, interval_sec, ts = _signal_pk(row)
-        existing = con.execute(
-            "SELECT action FROM signals_v2 WHERE day=? AND asset=? AND interval_sec=? AND ts=? LIMIT 1",
-            (day, asset, int(interval_sec), ts),
-        ).fetchone()
-        if existing is not None and _preserve_existing_trade(existing["action"], row.get("action")):
-            return
-        cols = list(row.keys())
-        placeholders = ",".join(["?"] * len(cols))
-        sql = f"INSERT OR REPLACE INTO signals_v2 ({','.join(cols)}) VALUES ({placeholders})"
-        con.execute(sql, [row[c] for c in cols])
-        con.commit()
-    finally:
-        con.close()
+    repo = SignalsRepository(db_path=db_path, default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"))
+    repo.write_row(row)
 
 
 def _default_live_signals_csv_path(row: dict[str, Any]) -> str:
-    day = str(row.get("day") or "").replace("-", "")
-    asset = sanitize_asset(str(row.get("asset") or "UNKNOWN"))
+    day = str(row.get("day") or "")
+    asset = str(row.get("asset") or "UNKNOWN")
     try:
         interval_sec = int(row.get("interval_sec") or env_int("SIGNALS_INTERVAL_SEC", "300"))
     except Exception:
         interval_sec = env_int("SIGNALS_INTERVAL_SEC", "300")
     if day:
-        return str(Path("runs") / f"live_signals_v2_{day}_{asset}_{int(interval_sec)}s.csv")
-    return str(Path("runs") / f"live_signals_v2_{asset}_{int(interval_sec)}s.csv")
+        return str(scoped_live_signals_csv_path(day=day, asset=asset, interval_sec=interval_sec, out_dir="runs"))
+    asset_tag = sanitize_asset(asset)
+    return str(Path("runs") / f"live_signals_v2_{asset_tag}_{int(interval_sec)}s.csv")
 
 
 def _parse_builtin_live_signals_filename(name: str) -> tuple[str | None, str | None, int | None]:
@@ -527,7 +350,7 @@ def append_csv(row: dict[str, Any]) -> str:
                     existing_action = rr.get("action")
                     break
 
-            if idx is not None and _preserve_existing_trade(existing_action, incoming.get("action")):
+            if idx is not None and preserve_existing_trade(existing_action, incoming.get("action")):
                 return str(p)
 
             if idx is None:
@@ -552,62 +375,8 @@ def append_csv(row: dict[str, Any]) -> str:
     raise RuntimeError(f"append_csv failed for {p}")
 
 def ensure_state_db(con: sqlite3.Connection) -> None:
-    con.execute("PRAGMA journal_mode=WAL;")
-    default_interval = env_int("SIGNALS_INTERVAL_SEC", "300")
-    info = con.execute("PRAGMA table_info(executed)").fetchall()
-    cols = {r[1] for r in info}
-    pk_cols = [r[1] for r in sorted([r for r in info if r[5]], key=lambda x: x[5])]
-
-    desired_pk = ["asset", "interval_sec", "day", "ts"]
-    if cols and (("asset" not in cols) or ("interval_sec" not in cols) or (pk_cols != desired_pk)):
-        con.execute("ALTER TABLE executed RENAME TO executed_legacy")
-        cols = set()
-
-    con.execute(
-        """
-        CREATE TABLE IF NOT EXISTS executed (
-          asset TEXT NOT NULL,
-          interval_sec INTEGER NOT NULL,
-          day TEXT NOT NULL,
-          ts INTEGER NOT NULL,
-          action TEXT NOT NULL,
-          conf REAL NOT NULL,
-          score REAL,
-          PRIMARY KEY(asset, interval_sec, day, ts)
-        )
-        """
-    )
-
-    legacy = con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='executed_legacy'"
-    ).fetchone()
-    if legacy:
-        old_cols = {r[1] for r in con.execute("PRAGMA table_info(executed_legacy)").fetchall()}
-        try:
-            if "interval_sec" in old_cols:
-                con.execute(
-                    """
-                    INSERT OR IGNORE INTO executed(asset, interval_sec, day, ts, action, conf, score)
-                    SELECT COALESCE(NULLIF(asset,''),'LEGACY'), COALESCE(interval_sec, ?), day, ts, action, conf, score
-                    FROM executed_legacy
-                    """,
-                    (int(default_interval),),
-                )
-            else:
-                con.execute(
-                    """
-                    INSERT OR IGNORE INTO executed(asset, interval_sec, day, ts, action, conf, score)
-                    SELECT COALESCE(NULLIF(asset,''),'LEGACY'), ?, day, ts, action, conf, score
-                    FROM executed_legacy
-                    """,
-                    (int(default_interval),),
-                )
-        except Exception:
-            pass
-        con.execute("DROP TABLE executed_legacy")
-
-    con.execute("CREATE INDEX IF NOT EXISTS idx_exe_asset_interval_day ON executed(asset, interval_sec, day)")
-    con.commit()
+    """Compatibility wrapper over the explicit runtime migration module."""
+    _ensure_executed_state_db(con, default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"))
 
 
 def state_path() -> Path:
@@ -619,140 +388,39 @@ def signals_db_path() -> Path:
 
 
 def _fetch_trade_rows_from_signals(asset: str, interval_sec: int, day: str, *, ts: int | None = None) -> list[sqlite3.Row]:
-    p = signals_db_path()
-    if not p.exists():
-        return []
-    con = sqlite3.connect(p)
-    con.row_factory = sqlite3.Row
-    try:
-        ensure_signals_v2(con)
-        sql = (
-            "SELECT asset, interval_sec, day, ts, action, conf, score "
-            "FROM signals_v2 WHERE asset=? AND interval_sec=? AND day=? AND action IN ('CALL','PUT')"
-        )
-        params: list[Any] = [str(asset), int(interval_sec), str(day)]
-        if ts is not None:
-            sql += " AND ts=?"
-            params.append(int(ts))
-        sql += " ORDER BY ts"
-        return list(con.execute(sql, tuple(params)).fetchall())
-    except Exception:
-        return []
-    finally:
-        con.close()
+    return _runtime_ledger().signals.fetch_trade_rows(asset, interval_sec, day, ts=ts)
 
 
 def _heal_state_from_signals(asset: str, interval_sec: int, day: str, *, ts: int | None = None) -> int:
-    rows = _fetch_trade_rows_from_signals(asset, interval_sec, day, ts=ts)
-    if not rows:
-        return 0
-    con = sqlite3.connect(state_path())
-    try:
-        ensure_state_db(con)
-        before = con.total_changes
-        for r in rows:
-            con.execute(
-                "INSERT OR IGNORE INTO executed(asset, interval_sec, day, ts, action, conf, score) VALUES(?,?,?,?,?,?,?)",
-                (
-                    str(r["asset"] or asset),
-                    int(r["interval_sec"] or interval_sec),
-                    str(r["day"] or day),
-                    int(r["ts"] or 0),
-                    str(r["action"] or "").upper(),
-                    float(r["conf"] or 0.0),
-                    r["score"],
-                ),
-            )
-        con.commit()
-        inserted = int(con.total_changes - before)
-        if inserted > 0:
-            print(f"[P36] state_heal_from_signals asset={asset} interval_sec={int(interval_sec)} day={day} inserted={inserted}")
-        return inserted
-    finally:
-        con.close()
+    return _runtime_ledger().heal_state_from_signals(asset, interval_sec, day, ts=ts, log=True)
 
 
 def _count_state_only(asset: str, interval_sec: int, day: str) -> int:
-    con = sqlite3.connect(state_path())
-    try:
-        ensure_state_db(con)
-        cur = con.execute(
-            "SELECT COUNT(*) FROM executed WHERE asset=? AND interval_sec=? AND day=?",
-            (asset, int(interval_sec), day),
-        )
-        return int(cur.fetchone()[0] or 0)
-    finally:
-        con.close()
+    return _runtime_ledger().state.count_day(asset, interval_sec, day)
 
 
 def _last_state_ts_only(asset: str, interval_sec: int, day: str) -> int | None:
-    con = sqlite3.connect(state_path())
-    try:
-        ensure_state_db(con)
-        cur = con.execute(
-            "SELECT MAX(ts) FROM executed WHERE asset=? AND interval_sec=? AND day=?",
-            (asset, int(interval_sec), day),
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        v = row[0]
-        return int(v) if v is not None else None
-    finally:
-        con.close()
+    return _runtime_ledger().state.last_ts(asset, interval_sec, day)
 
 
 def _already_state_only(asset: str, interval_sec: int, day: str, ts: int) -> bool:
-    con = sqlite3.connect(state_path())
-    try:
-        ensure_state_db(con)
-        cur = con.execute(
-            "SELECT 1 FROM executed WHERE asset=? AND interval_sec=? AND day=? AND ts=? LIMIT 1",
-            (asset, int(interval_sec), day, int(ts)),
-        )
-        return cur.fetchone() is not None
-    finally:
-        con.close()
+    return _runtime_ledger().state.exists(asset, interval_sec, day, int(ts))
 
 
 def executed_today_count(asset: str, interval_sec: int, day: str) -> int:
-    sig_rows = _fetch_trade_rows_from_signals(asset, interval_sec, day)
-    if sig_rows:
-        _heal_state_from_signals(asset, interval_sec, day)
-        return int(len(sig_rows))
-    return _count_state_only(asset, interval_sec, day)
+    return _runtime_ledger().executed_today_count(asset, interval_sec, day)
+
 
 def last_executed_ts(asset: str, interval_sec: int, day: str) -> int | None:
-    """Return the last emitted-trade ts for (asset, interval_sec, day) or None.
+    return _runtime_ledger().last_executed_ts(asset, interval_sec, day)
 
-    ``signals_v2`` is the durable source of truth. We only fall back to the
-    state DB when no durable trade rows exist yet.
-    """
-    sig_rows = _fetch_trade_rows_from_signals(asset, interval_sec, day)
-    if sig_rows:
-        _heal_state_from_signals(asset, interval_sec, day)
-        return max(int(r["ts"] or 0) for r in sig_rows)
-    return _last_state_ts_only(asset, interval_sec, day)
 
 def already_executed(asset: str, interval_sec: int, day: str, ts: int) -> bool:
-    sig_rows = _fetch_trade_rows_from_signals(asset, interval_sec, day, ts=int(ts))
-    if sig_rows:
-        _heal_state_from_signals(asset, interval_sec, day, ts=int(ts))
-        return True
-    return _already_state_only(asset, interval_sec, day, int(ts))
+    return _runtime_ledger().already_executed(asset, interval_sec, day, int(ts))
+
 
 def mark_executed(asset: str, interval_sec: int, day: str, ts: int, action: str, conf: float, score: float) -> None:
-    con = sqlite3.connect(state_path())
-    try:
-        ensure_state_db(con)
-        con.execute(
-            "INSERT OR REPLACE INTO executed(asset, interval_sec, day, ts, action, conf, score) VALUES(?,?,?,?,?,?,?)",
-            (asset, int(interval_sec), day, int(ts), action, float(conf), float(score)),
-        )
-        con.commit()
-    finally:
-        con.close()
-
+    _runtime_ledger().mark_executed(asset, interval_sec, day, int(ts), action, float(conf), float(score))
 
 def make_regime_mask(df: pd.DataFrame, bounds: dict[str, float]) -> np.ndarray:
     vol = df["f_vol48"].to_numpy(dtype=float)
@@ -1443,6 +1111,27 @@ def main() -> None:
     if summary_path:
         print(f"summary_ok: {summary_path}")
     # --- /P10 ---
+
+    latest_snapshot_path = ''
+    detailed_snapshot_path = ''
+    incident_path = ''
+    incident_kind = ''
+    try:
+        latest_snapshot_path = str(write_latest_decision_snapshot(row))
+        detailed = write_detailed_decision_snapshot(row)
+        if detailed is not None:
+            detailed_snapshot_path = str(detailed)
+        incident = build_incident_from_decision(row)
+        if incident is not None:
+            incident_kind = str(incident.get('incident_type') or '')
+            incident_p = append_incident_event(incident)
+            incident_path = str(incident_p)
+    except Exception as e:
+        print(f"[WARN] observability_write failed: {e}")
+    else:
+        if detailed_snapshot_path or incident_path:
+            print(f"[P38] observability_ok latest={latest_snapshot_path or '-'} detailed={detailed_snapshot_path or '-'} incident={incident_kind or '-'}")
+
     print("=== OBSERVE TOPK-PERDAY (latest) ===")
     print(
         {

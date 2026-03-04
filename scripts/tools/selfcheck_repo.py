@@ -85,12 +85,140 @@ def main() -> None:
         _fail(f"gate_meta API broken: {e}")
     _ok("gate_meta API ok")
 
+    # 1b) runtime contracts / migrations surface
+    try:
+        from natbin.runtime_contracts import (  # noqa: F401
+            RUNTIME_CONTRACTS_VERSION,
+            SIGNALS_V2_CONTRACT,
+            EXECUTED_STATE_CONTRACT,
+            contracts_manifest,
+        )
+        from natbin.runtime_migrations import (  # noqa: F401
+            ensure_signals_v2 as _ensure_signals_v2_contract,
+            ensure_executed_state_db as _ensure_executed_contract,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime contracts API broken: {e}")
+    _ok("runtime contracts API ok")
+
+    # 1c) runtime repositories surface
+    try:
+        from natbin.runtime_repos import (  # noqa: F401
+            SignalsRepository,
+            ExecutedStateRepository,
+            RuntimeTradeLedger,
+            preserve_existing_trade,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime repositories API broken: {e}")
+    _ok("runtime repositories API ok")
+
+    # 1d) autos policy layer surface
+    try:
+        from natbin.autos.summary_loader import SummaryScanResult, collect_checked_summaries  # noqa: F401
+        from natbin.autos.volume_policy import build_payload as _build_auto_volume_payload  # noqa: F401
+        from natbin.autos.isoblend_policy import compute_meta_iso_blend  # noqa: F401
+        from natbin.autos.hour_policy import compute_hour_threshold  # noqa: F401
+    except Exception as e:  # pragma: no cover
+        _fail(f"autos policy layer API broken: {e}")
+    _ok("autos policy layer API ok")
+
+    # 1e) runtime observability surface
+    try:
+        from natbin.runtime_observability import (  # noqa: F401
+            append_incident_event,
+            build_incident_from_decision,
+            build_decision_snapshot,
+            write_detailed_decision_snapshot,
+            write_latest_decision_snapshot,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime observability API broken: {e}")
+    _ok("runtime observability API ok")
+
+    # 1f) runtime scope/perf surface
+    try:
+        from natbin.runtime_scope import (  # noqa: F401
+            RuntimeScope,
+            build_scope,
+            decision_latest_path as _scope_decision_latest_path,
+            effective_env_path as _scope_effective_env_path,
+            live_signals_csv_path as _scope_live_signals_csv_path,
+            loop_status_path as _scope_loop_status_path,
+            market_context_path as _scope_market_context_path,
+            transcript_log_path as _scope_transcript_log_path,
+        )
+        from natbin.runtime_perf import (  # noqa: F401
+            apply_runtime_sqlite_pragmas,
+            load_json_cached,
+            write_text_if_changed,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime scope/perf API broken: {e}")
+    _ok("runtime scope/perf API ok")
+
+    # 1g) runtime cycle API surface
+    try:
+        from natbin.runtime_cycle import (  # noqa: F401
+            StepCommand,
+            StepOutcome,
+            build_auto_cycle_plan,
+            classify_outcome_kind,
+            run_plan,
+            run_step,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime cycle API broken: {e}")
+    _ok("runtime cycle API ok")
+
+    # 1h) runtime quota API surface
+    try:
+        from natbin.runtime_quota import (  # noqa: F401
+            OPEN as QUOTA_OPEN,
+            MAX_K_REACHED,
+            PACING_QUOTA_REACHED,
+            QuotaSnapshot,
+            build_quota_snapshot,
+            compute_quota_day_context,
+            pacing_allowed,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime quota API broken: {e}")
+    _ok("runtime quota API ok")
+
+    # 1h) runtime daemon API surface
+    try:
+        from natbin.runtime_daemon import (  # noqa: F401
+            SleepPlan,
+            acquire_lock,
+            classify_report_ok,
+            compute_day_reset_sleep,
+            compute_next_candle_sleep,
+            run_daemon,
+            run_once,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime daemon API broken: {e}")
+    _ok("runtime daemon API ok")
+
     # 2) observe import
     try:
         from natbin import observe_signal_topk_perday  # noqa: F401
     except Exception as e:  # pragma: no cover
         _fail(f"observe_signal_topk_perday import failed: {e}")
     _ok("observe_signal_topk_perday import ok")
+
+
+    # 2b) python daemon wrapper exists
+    ps1_py = root / "scripts" / "scheduler" / "observe_loop_auto_py.ps1"
+    if not ps1_py.exists():
+        _fail("scripts/scheduler/observe_loop_auto_py.ps1 not found")
+    txt_py = ps1_py.read_text(encoding="utf-8", errors="replace")
+    if "natbin.runtime_daemon" not in txt_py:
+        _fail("observe_loop_auto_py.ps1 does not call natbin.runtime_daemon")
+    if "QuotaAwareSleep" not in txt_py:
+        _fail("observe_loop_auto_py.ps1 missing QuotaAwareSleep switch")
+    _ok("observe_loop_auto_py.ps1 wrapper ok")
 
     # 3) observe_loop_auto.ps1 helpers
     ps1 = root / "scripts" / "scheduler" / "observe_loop_auto.ps1"
@@ -130,17 +258,17 @@ def main() -> None:
     except Exception as e:
         _fail(f"envutil imports check failed: {e}")
 
-    # pt-BR decimal comma safety (auto_volume)
+    # pt-BR decimal comma safety (autos common parser)
     try:
-        from natbin import auto_volume as _av
-        v = _av._f("0,07", 0.0)
+        from natbin.autos.common import as_float as _as_float
+        v = _as_float("0,07", 0.0)
         if abs(v - 0.07) > 1e-9:
-            _fail(f"auto_volume._f does not parse comma decimals: got {v}")
-        _ok("auto_volume locale float parse ok")
+            _fail(f"autos.common.as_float does not parse comma decimals: got {v}")
+        _ok("autos common locale float parse ok")
     except SystemExit:
         raise
     except Exception as e:
-        _fail(f"auto_volume locale parse check failed: {e}")
+        _fail(f"autos common locale parse check failed: {e}")
 
     print("[selfcheck] ALL OK")
 
