@@ -121,7 +121,14 @@ def main() -> None:
         env = dict(os.environ)
         env['PYTHONPATH'] = str(SRC) + ((env.get('PYTHONPATH') and (os.pathsep + env['PYTHONPATH'])) or '')
         env['TOPK_PACING_ENABLE'] = '1'
-        cp = subprocess.run([str(py), '-m', 'natbin.runtime_daemon', '--repo-root', str(tmp), '--topk', '3', '--quota-json'], cwd=str(ROOT), capture_output=True, text=True, env=env)
+        cp = subprocess.run([
+            str(py),
+            '-m', 'natbin.runtime_daemon',
+            '--repo-root', str(tmp),
+            '--topk', '3',
+            '--quota-json',
+            '--now-utc', now_utc.isoformat(timespec='seconds'),
+        ], cwd=str(ROOT), capture_output=True, text=True, env=env)
         if cp.returncode != 0:
             _fail(f'runtime_daemon --quota-json returned {cp.returncode}: {cp.stderr}')
         try:

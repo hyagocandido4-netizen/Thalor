@@ -51,6 +51,21 @@ def _fmt_utc(dt: datetime | None) -> str | None:
     return dt.astimezone(UTC).isoformat(timespec='seconds')
 
 
+def _parse_now_utc(raw: str | None) -> datetime | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception as e:  # pragma: no cover - defensive/CLI only
+        raise SystemExit(f'invalid --now-utc: {s!r} ({e})')
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 def compute_next_candle_sleep(interval_sec: int, *, offset_sec: int = 3, now_utc: datetime | None = None) -> SleepPlan:
     now = now_utc or _utcnow()
     epoch = int(now.timestamp())
@@ -156,6 +171,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument('--sleep-align-offset-sec', type=int, default=3)
     p.add_argument('--quota-aware-sleep', action='store_true', help='Use Python quota/pacing precheck to sleep until next relevant window/day')
     p.add_argument('--quota-json', action='store_true', help='Emit current quota snapshot JSON and exit')
+    p.add_argument('--now-utc', default=None, help='Optional ISO8601 UTC override for deterministic quota/sleep evaluation in tests/debugging')
     p.add_argument('--no-stop-on-failure', action='store_true')
     p.add_argument('--plan-json', action='store_true', help='Emit the canonical plan JSON and exit')
     return p
@@ -164,6 +180,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     ns = _build_parser().parse_args(argv)
     repo_root = Path(ns.repo_root).resolve()
+    now_override = _parse_now_utc(ns.now_utc)
     if ns.plan_json:
         plan = build_auto_cycle_plan(repo_root, topk=ns.topk, lookback_candles=ns.lookback_candles)
         rep = asdict(report_from_plan(repo_root, plan))
@@ -172,7 +189,12 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(rep, ensure_ascii=False, indent=2))
         return 0
     if ns.quota_json:
-        snap = build_quota_snapshot(repo_root, topk=ns.topk, sleep_align_offset_sec=ns.sleep_align_offset_sec)
+        snap = build_quota_snapshot(
+            repo_root,
+            topk=ns.topk,
+            sleep_align_offset_sec=ns.sleep_align_offset_sec,
+            now_utc=now_override,
+        )
         print(json.dumps(snap.as_dict(), ensure_ascii=False, indent=2))
         return 0
     if ns.once:
