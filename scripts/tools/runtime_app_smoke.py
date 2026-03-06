@@ -19,12 +19,14 @@ def main() -> int:
     assert payload["config"]["interval_sec"] > 0
     assert payload["config"]["asset"]
     assert payload["scoped_paths"]["signals_db"].endswith("live_signals.sqlite3")
+    assert payload["control_paths"]["plan"].endswith("plan.json")
 
-    cmd = [sys.executable, "-m", "natbin.runtime_app", "--json"]
+    cmd = [sys.executable, "-m", "natbin.runtime_app", "--repo-root", str(ROOT), "--json"]
     proc = subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True, text=True)
     cli_payload = json.loads(proc.stdout)
     assert cli_payload["config"]["asset"] == payload["config"]["asset"]
-    assert "commit_recommendation" in cli_payload["notes"]
+    assert cli_payload["health"]["asset"] == payload["config"]["asset"]
+    assert "control_plane" in cli_payload["notes"]
     print("runtime_app_smoke: ok")
     return 0
 

@@ -50,7 +50,7 @@ def main() -> None:
 
     obs = plan[-1]
     joined = " ".join(obs.argv)
-    for token in ("-Once", "-SkipCollect", "-SkipDataset", "-TopK 3"):
+    for token in ("natbin.runtime.observe_once", "--repo-root", "--topk 3", "--lookback-candles 2000"):
         if token not in joined:
             fail(f"observe_loop_once missing token {token}: {joined}")
     ok("observe loop step args ok")

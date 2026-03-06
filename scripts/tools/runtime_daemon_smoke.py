@@ -21,6 +21,7 @@ from natbin.runtime_daemon import (
     compute_next_candle_sleep,
     release_lock,
 )
+from natbin.runtime_cycle import repo_python_executable
 from natbin.runtime_scope import build_scope, daemon_lock_path
 
 
@@ -60,9 +61,7 @@ def main() -> None:
     _ok('classify_report_ok ok')
 
     repo = ROOT
-    py = repo / '.venv' / 'Scripts' / 'python.exe'
-    if not py.exists():
-        py = Path(sys.executable)
+    py = Path(repo_python_executable(repo))
     env = dict(**__import__('os').environ)
     env['PYTHONPATH'] = str(SRC) + ((env.get('PYTHONPATH') and (__import__('os').pathsep + env['PYTHONPATH'])) or '')
     cp = subprocess.run([str(py), '-m', 'natbin.runtime_daemon', '--repo-root', str(repo), '--plan-json'], cwd=str(repo), capture_output=True, text=True, env=env)

@@ -1,21 +1,70 @@
-# Runtime App Shell (Package L)
+# Runtime App (Package M)
 
-Package L adds a lightweight **Python app-shell description** for Thalor.
-
-It does **not** replace the live runtime loop. Instead, it provides a stable place to answer:
-
-- Which `asset` / `interval_sec` / `timezone` is the runtime using?
-- Which scoped runtime files belong to that scope?
-- Which refactor-era Python layers are available in the installation?
+Package M turns `natbin.runtime_app` into the **canonical control plane** for the
+single-asset runtime baseline.
 
 Main entrypoint:
 
 ```powershell
-python -m natbin.runtime_app --json
+python -m natbin.runtime_app status --repo-root . --json
 ```
 
-This is intended as a foundation for:
+Operational command:
 
-- future operator CLI consolidation,
-- cleaner status/health tooling,
-- easier milestone commits between refactor packages.
+```powershell
+python -m natbin.runtime_app observe --repo-root . --topk 3
+```
+
+## Role in the architecture
+
+`runtime_app` is now responsible for:
+
+- resolving `repo_root`
+- resolving `config/base.yaml` with fallback to `config.yaml`
+- writing effective config dumps
+- exposing the canonical cycle plan
+- exposing quota / precheck / health snapshots
+- exposing execution / orders / reconciliation snapshots
+- calling the Python runtime daemon / cycle
+- writing control-plane artifacts under `runs/control/<scope>/`
+
+## Public commands
+
+- `status`
+- `plan`
+- `quota`
+- `precheck`
+- `health`
+- `observe`
+- `orders`
+- `reconcile`
+
+The legacy invocation still works:
+
+```powershell
+python -m natbin.runtime_app --repo-root . --json
+```
+
+That is treated as `status --json` for compatibility.
+
+## Control-plane artifacts
+
+For each runtime scope, Package M writes:
+
+- `runs/control/<scope>/plan.json`
+- `runs/control/<scope>/quota.json`
+- `runs/control/<scope>/precheck.json`
+- `runs/control/<scope>/health.json`
+- `runs/control/<scope>/loop_status.json`
+- `runs/control/<scope>/effective_config.json`
+- `runs/control/<scope>/execution.json`
+- `runs/control/<scope>/orders.json`
+- `runs/control/<scope>/reconcile.json`
+
+## Important compatibility note
+
+The legacy observer step (`observe_signal_topk_perday.py`) still consumes
+`config.yaml` for model/tuning fields that have not been migrated yet.
+Therefore Package M makes `config/base.yaml` the preferred control-plane config
+while keeping `config.yaml` present as a compatibility input for the legacy
+observer path.

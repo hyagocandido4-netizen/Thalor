@@ -15,6 +15,7 @@ SRC = ROOT / 'src'
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from natbin.runtime_cycle import repo_python_executable
 from natbin.runtime_quota import (
     MAX_K_REACHED,
     OPEN,
@@ -35,10 +36,26 @@ def _fail(msg: str) -> None:
     raise SystemExit(2)
 
 
-def _write_config(repo: Path) -> None:
+def _write_legacy_config(repo: Path, *, asset: str = 'EURUSD-OTC', interval_sec: int = 300, timezone: str = 'UTC') -> None:
     (repo / 'runs').mkdir(parents=True, exist_ok=True)
     (repo / 'config.yaml').write_text(
-        'data:\n  asset: EURUSD-OTC\n  interval_sec: 300\n  timezone: UTC\n',
+        f'data:\n  asset: {asset}\n  interval_sec: {int(interval_sec)}\n  timezone: {timezone}\n',
+        encoding='utf-8',
+    )
+
+
+def _write_modern_config(repo: Path, *, asset: str = 'GBPUSD-OTC', interval_sec: int = 60, timezone: str = 'UTC') -> None:
+    (repo / 'runs').mkdir(parents=True, exist_ok=True)
+    (repo / 'config').mkdir(parents=True, exist_ok=True)
+    (repo / 'config' / 'base.yaml').write_text(
+        '\n'.join([
+            'version: "2.0"',
+            'assets:',
+            f'  - asset: {asset}',
+            f'    interval_sec: {int(interval_sec)}',
+            f'    timezone: {timezone}',
+            '',
+        ]),
         encoding='utf-8',
     )
 
@@ -83,6 +100,31 @@ def _trade_row(day: str, ts: int) -> dict[str, object]:
     }
 
 
+def _assert_quota_json(repo: Path, *, now_utc: datetime, expected_kind: str, expected_asset: str, expected_interval_sec: int) -> None:
+    py = Path(repo_python_executable(ROOT))
+    env = dict(os.environ)
+    env['PYTHONPATH'] = str(SRC) + ((env.get('PYTHONPATH') and (os.pathsep + env['PYTHONPATH'])) or '')
+    env['TOPK_PACING_ENABLE'] = '1'
+    cp = subprocess.run([
+        str(py),
+        '-m', 'natbin.runtime_daemon',
+        '--repo-root', str(repo),
+        '--topk', '3',
+        '--quota-json',
+        '--now-utc', now_utc.isoformat(timespec='seconds'),
+    ], cwd=str(ROOT), capture_output=True, text=True, env=env)
+    if cp.returncode != 0:
+        _fail(f'runtime_daemon --quota-json returned {cp.returncode}: {cp.stderr}')
+    try:
+        payload = json.loads(cp.stdout)
+    except Exception as e:
+        _fail(f'runtime_daemon --quota-json not json: {e}')
+    if payload.get('kind') != expected_kind:
+        _fail(f'expected daemon quota-json kind={expected_kind}, got {payload}')
+    if payload.get('asset') != expected_asset or int(payload.get('interval_sec') or 0) != int(expected_interval_sec):
+        _fail(f'expected daemon quota-json scope={expected_asset}/{expected_interval_sec}, got {payload}')
+
+
 def main() -> None:
     if pacing_allowed(k=3, pacing_enabled=True, sec_of_day=0) != 1:
         _fail('pacing_allowed start-of-day mismatch')
@@ -93,8 +135,9 @@ def main() -> None:
     _ok('pacing helpers ok')
 
     tmp = Path(tempfile.mkdtemp(prefix='thalor_quota_smoke_'))
+    tmp_modern = Path(tempfile.mkdtemp(prefix='thalor_quota_modern_smoke_'))
     try:
-        _write_config(tmp)
+        _write_legacy_config(tmp)
         now_utc = datetime(2026, 3, 3, 7, 0, 0, tzinfo=UTC)
         snap0 = build_quota_snapshot(tmp, topk=3, now_utc=now_utc, pacing_enabled=True)
         if snap0.kind != OPEN or snap0.allowed_now != 1 or snap0.executed != 0:
@@ -115,31 +158,35 @@ def main() -> None:
             _fail(f'expected max_k snapshot, got {snap2.as_dict()}')
         _ok('max_k quota snapshot ok')
 
-        py = ROOT / '.venv' / 'Scripts' / 'python.exe'
-        if not py.exists():
-            py = Path(sys.executable)
-        env = dict(os.environ)
-        env['PYTHONPATH'] = str(SRC) + ((env.get('PYTHONPATH') and (os.pathsep + env['PYTHONPATH'])) or '')
-        env['TOPK_PACING_ENABLE'] = '1'
-        cp = subprocess.run([
-            str(py),
-            '-m', 'natbin.runtime_daemon',
-            '--repo-root', str(tmp),
-            '--topk', '3',
-            '--quota-json',
-            '--now-utc', now_utc.isoformat(timespec='seconds'),
-        ], cwd=str(ROOT), capture_output=True, text=True, env=env)
-        if cp.returncode != 0:
-            _fail(f'runtime_daemon --quota-json returned {cp.returncode}: {cp.stderr}')
-        try:
-            payload = json.loads(cp.stdout)
-        except Exception as e:
-            _fail(f'runtime_daemon --quota-json not json: {e}')
-        if payload.get('kind') != MAX_K_REACHED:
-            _fail(f'expected daemon quota-json max_k, got {payload}')
-        _ok('runtime_daemon --quota-json ok')
+        _assert_quota_json(
+            tmp,
+            now_utc=now_utc,
+            expected_kind=MAX_K_REACHED,
+            expected_asset='EURUSD-OTC',
+            expected_interval_sec=300,
+        )
+        _ok('runtime_daemon --quota-json ok (legacy config.yaml)')
+
+        _write_modern_config(tmp_modern, asset='GBPUSD-OTC', interval_sec=60, timezone='UTC')
+        modern_now_utc = datetime(2026, 3, 3, 7, 0, 0, tzinfo=UTC)
+        modern_snap = build_quota_snapshot(tmp_modern, topk=2, now_utc=modern_now_utc, pacing_enabled=False)
+        if modern_snap.kind != OPEN:
+            _fail(f'expected open snapshot for config/base.yaml repo, got {modern_snap.as_dict()}')
+        if modern_snap.asset != 'GBPUSD-OTC' or modern_snap.interval_sec != 60 or modern_snap.timezone != 'UTC':
+            _fail(f'expected config/base.yaml scoped quota snapshot, got {modern_snap.as_dict()}')
+        _ok('config/base.yaml quota snapshot ok')
+
+        _assert_quota_json(
+            tmp_modern,
+            now_utc=modern_now_utc,
+            expected_kind=OPEN,
+            expected_asset='GBPUSD-OTC',
+            expected_interval_sec=60,
+        )
+        _ok('runtime_daemon --quota-json ok (config/base.yaml)')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(tmp_modern, ignore_errors=True)
 
     print('[smoke] ALL OK')
 

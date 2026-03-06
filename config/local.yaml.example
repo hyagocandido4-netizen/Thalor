@@ -1,0 +1,13 @@
+# Optional local overlay / example for Package M.
+# Keep config/base.yaml as the canonical runtime-control file.
+
+broker:
+  email: your_email@example.com
+  password: your_password_here
+  balance_mode: PRACTICE
+
+assets:
+  - asset: EURUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    topk_k: 3

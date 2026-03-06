@@ -39,37 +39,54 @@ Copy-Item .env.example .env
 
 ## Configuração
 
-O arquivo `config.yaml` define defaults do repo:
+O runtime agora prefere `config/base.yaml` como configuração moderna do repo e,
+se ele não existir, cai automaticamente para o legado `config.yaml`.
 
-- `data.asset` (ex.: `EURUSD-OTC`)
-- `data.interval_sec` (ex.: `300` para 5 min)
+Defaults principais do escopo:
+
+- `asset` / `interval_sec` / `timezone` no primeiro item de `assets` (`config/base.yaml`)
+- ou `data.asset` / `data.interval_sec` / `data.timezone` no legado `config.yaml`
 - `data.db_path` (ex.: `data/market_otc.sqlite3`)
-- `data.timezone` (ex.: `America/Sao_Paulo`)
+
+Compatibilidade e precedência:
+
+- `.env` legado com `IQ_EMAIL` / `IQ_PASSWORD` / `IQ_BALANCE_MODE` continua suportado
+- overrides modernos `THALOR__*` têm precedência sobre `IQ_*` e sobre o YAML
+- CLIs Python com `--repo-root` resolvem `config/base.yaml`, `config.yaml` e `.env` relativos à raiz informada
 
 ## Comandos principais
 
-### 1) Rodar o loop de observação (recomendado)
+### 1) Control plane canônico (Package M)
 
-O **orquestrador principal** é `scripts/scheduler/observe_loop_auto.ps1`.
-Ele pode (dependendo das flags) preparar o contexto e então observar:
+O entrypoint operacional do runtime agora é o **control plane Python**:
 
-- coletar candles recentes
-- atualizar dataset
-- atualizar daily summary
-- capturar *market context* (payout/open) com cache e *freshness guard*
-- calcular decisão Top‑K (com gates)
-- persistir sinal em `runs/live_signals.sqlite3` (tabela `signals_v2`)
+```powershell
+python -m natbin.runtime_app status --repo-root . --json
+python -m natbin.runtime_app plan --repo-root . --json
+python -m natbin.runtime_app quota --repo-root . --json
+python -m natbin.runtime_app precheck --repo-root . --json
+python -m natbin.runtime_app health --repo-root . --json
+```
 
-Rodar **uma vez** (bom para debug):
+Rodar **um ciclo**:
+
+```powershell
+python -m natbin.runtime_app observe --repo-root . --once --topk 3
+```
+
+Rodar em **loop**:
+
+```powershell
+python -m natbin.runtime_app observe --repo-root . --topk 3
+```
+
+### 2) Wrapper fino para o Task Scheduler
+
+O `scripts/scheduler/observe_loop_auto.ps1` continua existindo, mas agora só
+resolve Python + `PYTHONPATH` e chama `runtime_app observe`.
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\scripts\scheduler\observe_loop_auto.ps1 -Once -TopK 3
-```
-
-Rodar como **daemon** (loop infinito):
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File .\scripts\scheduler\observe_loop_auto.ps1 -TopK 3
 ```
 
 ### 2) Relatório de risco (stake sizing conservador)
@@ -163,8 +180,18 @@ Este repositório não inclui um arquivo de licença ainda.
 Até uma licença ser adicionada, aplica-se o copyright padrão.
 
 
-## Runtime daemon (experimental foundation)
+## Runtime daemon / cycle / state
 
-Package J adiciona um daemon Python aditivo (`python -m natbin.runtime_daemon`) e um wrapper PowerShell fino em `scripts/scheduler/observe_loop_auto_py.ps1`. O loop PowerShell principal continua sendo o caminho operacional recomendado neste estágio.
+Package M estabelece o split base:
 
-O Package K adiciona `runtime_quota.py`, um snapshot explícito de quota/pacing, e suporte opcional a `--quota-aware-sleep` / `--quota-json` no daemon Python.
+- `runtime_app` = control plane
+- `runtime.daemon` = execution engine
+- `runtime.cycle` = plano canônico Python
+- `state.*` = contratos duráveis / repositórios / artefatos do control plane
+
+O CLI direto do daemon ainda existe para compatibilidade e debug:
+
+```powershell
+python -m natbin.runtime_daemon --plan-json
+python -m natbin.runtime_daemon --repo-root . --quota-json
+```

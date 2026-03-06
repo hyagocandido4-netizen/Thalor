@@ -1,50 +1,44 @@
-# Runtime daemon (Package J)
+# Runtime daemon (Package M baseline)
 
-O módulo `src/natbin/runtime_daemon.py` introduz uma fundação Python-nativa para
-rodar o ciclo do Thalor em loop, sem depender diretamente do agendador
-PowerShell como orquestrador principal.
+The daemon is now the **Python execution engine** behind the control plane.
 
-## Estado atual
+Implementation module:
 
-Ele é **aditivo**:
-- o `observe_loop_auto.ps1` continua sendo o entrypoint operacional principal
-- o daemon Python existe para permitir a futura redução da camada shell
+- `src/natbin/runtime/daemon.py`
 
-## CLI
+Compatibility shim:
 
-Planejamento apenas:
+- `src/natbin/runtime_daemon.py`
 
-```bash
-python -m natbin.runtime_daemon --plan-json
-```
+## Role
 
-Um ciclo só:
+The daemon is responsible for:
 
-```bash
-python -m natbin.runtime_daemon --once --topk 3
-```
+- loading runtime context from `runtime_app` / control-plane state
+- running the canonical Python cycle plan
+- evaluating precheck + failsafe before each cycle
+- writing status + health + control-plane artifacts
+- handling scoped daemon lock + sleep
 
-Loop contínuo:
+## Entry strategy
 
-```bash
-python -m natbin.runtime_daemon --topk 3
-```
-
-Wrapper PowerShell:
+Operationally, the preferred route is now:
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File .\scripts\scheduler\observe_loop_auto_py.ps1 -TopK 3
+python -m natbin.runtime_app observe --repo-root . --topk 3
 ```
 
-## Responsabilidades
+The direct daemon CLI still exists for compatibility and diagnostics:
 
-- montar o plano canônico via `runtime_cycle`
-- executar o plano em loop
-- alinhar o sleep ao próximo candle
-- aplicar lock escopado por `asset + interval_sec`
+```powershell
+python -m natbin.runtime_daemon --plan-json
+python -m natbin.runtime_daemon --once --repo-root . --topk 3
+python -m natbin.runtime_daemon --quota-json --repo-root .
+```
 
-## Não-responsabilidades (por enquanto)
+## Control-plane relation
 
-- não substitui o scheduler PowerShell atual
-- não reimplementa quota/pacing em Python ainda
-- não toma posse do status/sidecars atuais
+`runtime_app` is the control plane.
+`runtime_daemon` is the execution engine.
+
+That is the Package M baseline split.

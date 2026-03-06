@@ -1,0 +1,78 @@
+# Example multi-asset portfolio config (Package O)
+# Copy to config.yaml or pass via --config.
+
+version: "2.0"
+
+runtime:
+  profile: default
+  quota_aware_sleep: true
+
+broker:
+  provider: iqoption
+  balance_mode: PRACTICE
+
+data:
+  # In portfolio mode we recommend partitioned paths (see multi_asset section).
+  # These values are treated as defaults when partitioning is disabled.
+  db_path: data/market_otc.sqlite3
+  dataset_path: data/dataset_phase2.csv
+  lookback_candles: 2000
+
+multi_asset:
+  enabled: true
+  max_parallel_assets: 2
+
+  # Max number of trades submitted per portfolio cycle.
+  portfolio_topk_total: 3
+
+  # Hard cap on open positions across ALL assets.
+  portfolio_hard_max_positions: 2
+
+  # Optional: hard cap of consuming intents per day for the whole portfolio.
+  portfolio_hard_max_trades_per_day: 6
+
+  # Risk: cap number of selections per cluster per cycle.
+  max_trades_per_cluster_per_cycle: 1
+
+  # Strongly recommended for safe parallelism: isolate each scope data DB + dataset file.
+  partition_data_paths: true
+  data_db_template: data/portfolio/market_{scope_tag}.sqlite3
+  dataset_path_template: data/portfolio/datasets/{scope_tag}/dataset.csv
+
+quota:
+  hard_max_trades_per_day: 3
+
+execution:
+  enabled: true
+  mode: paper
+  provider: iqoption
+  account_mode: PRACTICE
+  client_order_prefix: thalor
+  stake:
+    amount: 2.0
+    currency: BRL
+
+assets:
+  - asset: EURUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+    cluster_key: fx
+
+  - asset: USDJPY-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+    cluster_key: fx
+
+  - asset: BTCUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 0.7
+    cluster_key: crypto

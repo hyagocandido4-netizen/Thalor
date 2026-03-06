@@ -105,6 +105,63 @@ $env:MARKET_CONTEXT_FAIL_CLOSED = "1"
 
 Assim, se algum componente crítico falhar, o bot tende a **HOLD**.
 
+## Kill switch e drain mode (Package P)
+
+### Kill switch (stop imediato)
+
+- Criar o arquivo `runs/KILL_SWITCH`
+- ou exportar `THALOR_KILL_SWITCH=1`
+
+O runtime vai bloquear novas execuções (fail-closed).
+
+### Drain mode (stop “suave”)
+
+Bloqueia **novas submissões** (novos trades), mas permite a **reconciliação**.
+
+- Criar o arquivo `runs/DRAIN_MODE`
+- ou exportar `THALOR_DRAIN_MODE=1`
+
+### Ops CLI
+
+```bash
+python -m natbin.control.app ops killswitch on --reason "maintenance"
+python -m natbin.control.app ops killswitch off
+
+python -m natbin.control.app ops drain on --reason "broker latency"
+python -m natbin.control.app ops drain off
+```
+
+## Métricas / Health endpoints (Package P)
+
+Se `observability.metrics_enable: true`, o runtime expõe:
+
+- `GET /metrics`
+- `GET /livez`
+- `GET /readyz`
+- `GET /healthz`
+
+Config:
+
+```yaml
+observability:
+  metrics_enable: true
+  metrics_bind: 127.0.0.1:9108
+```
+
+## Structured logs (Package P)
+
+Além do transcript diário, o runtime pode escrever JSONL estruturado em:
+
+- `runs/logs/runtime_structured.jsonl`
+
+Config:
+
+```yaml
+observability:
+  structured_logs_enable: true
+  structured_logs_path: runs/logs/runtime_structured.jsonl
+```
+
 ## Problemas comuns
 
 ### “Sem sinais” / sempre HOLD

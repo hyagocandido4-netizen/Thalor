@@ -59,6 +59,19 @@ jobs:
         run: |
           python scripts/tools/check_hidden_unicode.py
 
+      - name: Config v2 smoke
+        run: |
+          python scripts/tools/config_smoke.py
+
+      - name: Config consumers smoke
+        run: |
+          python scripts/tools/config_consumers_smoke.py
+
+      - name: Runtime app smoke
+        run: |
+          python scripts/tools/runtime_app_smoke.py
+          python scripts/tools/repo_entrypoints_smoke.py
+
       - name: Repo selfcheck
         run: |
           python scripts/tools/selfcheck_repo.py
@@ -74,6 +87,10 @@ jobs:
       - name: Runtime repositories smoke
         run: |
           python scripts/tools/runtime_repos_smoke.py
+          python scripts/tools/execution_repo_smoke.py
+          python scripts/tools/broker_adapter_contract_smoke.py
+          python scripts/tools/execution_reconcile_smoke.py
+          python scripts/tools/runtime_execution_integration_smoke.py
 
       - name: Runtime orchestration smoke
         run: |
@@ -102,3 +119,19 @@ jobs:
       - name: Runtime quota smoke
         run: |
           python scripts/tools/runtime_quota_smoke.py
+
+      - name: Failsafe kernel smoke
+        run: |
+          python scripts/tools/failsafe_smoke.py
+
+      - name: Failsafe integration smoke
+        run: |
+          python scripts/tools/failsafe_integration_smoke.py
+
+      - name: Runtime daemon failsafe smoke
+        run: |
+          python scripts/tools/runtime_daemon_failsafe_smoke.py
+
+      - name: Runtime health smoke
+        run: |
+          python scripts/tools/health_smoke.py

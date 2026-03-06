@@ -42,3 +42,52 @@ Ela combina:
 - **não bloqueante**: falha de escrita de observabilidade não derruba o bot
 - **escopado por asset + interval**
 - **compatível com auditoria pós-rodada**
+
+## Métricas Prometheus-style (/metrics)
+
+**Package P** adiciona um servidor HTTP opcional com:
+
+* métricas no formato Prometheus
+* endpoints de saúde (liveness/readiness)
+
+### Como habilitar
+
+No `config/base.yaml` (ou no seu override), ajuste:
+
+```yaml
+observability:
+  metrics_enable: true
+  metrics_bind: 127.0.0.1:9108
+```
+
+### Endpoints
+
+* `GET /metrics` — texto Prometheus.
+* `GET /livez` — liveness probe.
+* `GET /readyz` — readiness probe (503 quando o loop está bloqueado por precheck).
+* `GET /healthz` — snapshot JSON (último ciclo + gates globais).
+
+Exemplos:
+
+```bash
+curl -s http://127.0.0.1:9108/metrics | head
+curl -s http://127.0.0.1:9108/readyz
+```
+
+## Structured logs (JSONL)
+
+Além de logs de transcript, **Package P** cria um canal de logs estruturados em
+JSONL (um JSON por linha), ideal para ingestão.
+
+Config:
+
+```yaml
+observability:
+  structured_logs_enable: true
+  structured_logs_path: runs/logs/runtime_structured.jsonl
+```
+
+Eventos típicos:
+
+* `runtime_daemon_cycle`
+* `portfolio_cycle`

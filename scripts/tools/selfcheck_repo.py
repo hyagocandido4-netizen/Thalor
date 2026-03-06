@@ -49,6 +49,8 @@ def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _git_available(cwd: Path) -> bool:
+    if not (cwd / ".git").exists():
+        return False
     try:
         cp = _run_git(["--version"], cwd)
         return cp.returncode == 0
@@ -201,6 +203,31 @@ def main() -> None:
         _fail(f"runtime daemon API broken: {e}")
     _ok("runtime daemon API ok")
 
+
+    # 1h1) runtime health API surface
+    try:
+        from natbin.runtime_health import (  # noqa: F401
+            build_health_payload,
+            build_status_payload,
+            write_health_payload,
+            write_status_payload,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"runtime health API broken: {e}")
+    _ok("runtime health API ok")
+
+    # 1i) config v2 surface
+    try:
+        from natbin.config import (  # noqa: F401
+            ResolvedConfig,
+            ThalorConfig,
+            load_resolved_config,
+            write_effective_config_latest,
+        )
+    except Exception as e:  # pragma: no cover
+        _fail(f"config v2 API broken: {e}")
+    _ok("config v2 API ok")
+
     # 2) observe import
     try:
         from natbin import observe_signal_topk_perday  # noqa: F401
@@ -209,28 +236,29 @@ def main() -> None:
     _ok("observe_signal_topk_perday import ok")
 
 
-    # 2b) python daemon wrapper exists
+    # 2b) thin scheduler wrappers point to runtime_app control plane
     ps1_py = root / "scripts" / "scheduler" / "observe_loop_auto_py.ps1"
     if not ps1_py.exists():
         _fail("scripts/scheduler/observe_loop_auto_py.ps1 not found")
     txt_py = ps1_py.read_text(encoding="utf-8", errors="replace")
-    if "natbin.runtime_daemon" not in txt_py:
-        _fail("observe_loop_auto_py.ps1 does not call natbin.runtime_daemon")
-    if "QuotaAwareSleep" not in txt_py:
-        _fail("observe_loop_auto_py.ps1 missing QuotaAwareSleep switch")
+    if "natbin.runtime_app" not in txt_py:
+        _fail("observe_loop_auto_py.ps1 does not call natbin.runtime_app")
+    if "QuotaJson" not in txt_py:
+        _fail("observe_loop_auto_py.ps1 missing QuotaJson switch")
     _ok("observe_loop_auto_py.ps1 wrapper ok")
 
-    # 3) observe_loop_auto.ps1 helpers
+    # 3) observe_loop_auto.ps1 is a thin runtime_app wrapper
     ps1 = root / "scripts" / "scheduler" / "observe_loop_auto.ps1"
     if not ps1.exists():
         _fail("scripts/scheduler/observe_loop_auto.ps1 not found")
     txt = ps1.read_text(encoding="utf-8", errors="replace")
-    for fn in ("AsStr", "AsInt", "AsFloat"):
-        if (f"function {fn}" not in txt) and (f"function\t{fn}" not in txt):
-            _fail(f"observe_loop_auto.ps1 missing helper function: {fn}")
-    _ok("observe_loop_auto.ps1 helpers ok")
-
-
+    if "natbin.runtime_app" not in txt:
+        _fail("observe_loop_auto.ps1 does not call natbin.runtime_app")
+    if "_bootstrap_python.ps1" not in txt:
+        _fail("observe_loop_auto.ps1 does not import _bootstrap_python.ps1")
+    if "collect_recent" in txt or "make_dataset" in txt or "observe_signal_topk_perday" in txt:
+        _fail("observe_loop_auto.ps1 is not thin enough (contains runtime logic)")
+    _ok("observe_loop_auto.ps1 thin wrapper ok")
 
     # .env.example should exist (settings.py references it and CI docs expect it)
     if not (root / ".env.example").exists():
