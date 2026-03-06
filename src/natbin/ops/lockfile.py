@@ -17,6 +17,17 @@ class LockAcquireResult:
     stale_removed: bool = False
     detail: str | None = None
 
+    def __bool__(self) -> bool:  # pragma: no cover
+        """Backwards-compatible truthiness.
+
+        Several legacy helpers treated lock acquisition as a boolean.
+        Returning a richer result object is useful for diagnostics, but we
+        keep `if acquire_lock(...):` semantics by mapping truthiness to
+        the `acquired` field.
+        """
+
+        return bool(self.acquired)
+
 
 def _utc_now() -> datetime:
     return datetime.now(tz=UTC)

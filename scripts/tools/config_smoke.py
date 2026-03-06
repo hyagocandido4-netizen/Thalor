@@ -88,7 +88,13 @@ def main() -> None:
             assert ctx.repo_root == str(tmp.resolve())
             assert ctx.resolved_config["asset"] == "GBPUSD-OTC"
             assert Path(ctx.scoped_paths["market_context"]).is_absolute(), ctx.scoped_paths["market_context"]
-            assert str(tmp / "runs") in ctx.scoped_paths["market_context"]
+            # Windows CI may represent temp paths using 8.3 short names.
+            # Compare using paths anchored to ctx.repo_root (the canonical
+            # representation chosen by build_context) instead of relying on
+            # raw string containment.
+            runs_root = (Path(ctx.repo_root) / "runs").resolve()
+            mc_path = Path(ctx.scoped_paths["market_context"]).resolve()
+            assert mc_path.is_relative_to(runs_root), f"market_context not under repo_root runs: {mc_path} vs {runs_root}"
             print("[smoke][OK] runtime_app build_context anchored to repo_root ok")
         finally:
             os.chdir(old_cwd)

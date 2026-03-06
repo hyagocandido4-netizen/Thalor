@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -63,12 +64,21 @@ def main() -> None:
         repo = Path(td)
         cfg = _write_cfg(repo)
         sig_repo = SignalsRepository(repo / 'runs' / 'live_signals.sqlite3', default_interval=300)
+        # Use a deterministic timestamp anchored to *today* in UTC.
+        # orders_payload() summarizes the current-day consumption based on
+        # time.time(), so the signal must belong to the same day to avoid
+        # flaky CI failures.
+        now = datetime.now(UTC)
+        midday = datetime(now.year, now.month, now.day, 12, 0, 0, tzinfo=UTC)
+        ts = int((int(midday.timestamp()) // 300) * 300)
+        day = midday.date().isoformat()
+        dt_local = midday.strftime('%Y-%m-%d %H:%M:%S')
         sig_repo.write_row({
-            'dt_local': '2026-03-05 00:00:00',
-            'day': '2026-03-05',
+            'dt_local': dt_local,
+            'day': day,
             'asset': 'EURUSD-OTC',
             'interval_sec': 300,
-            'ts': 1772668800,
+            'ts': ts,
             'proba_up': 0.6,
             'conf': 0.6,
             'score': 0.7,
@@ -91,7 +101,7 @@ def main() -> None:
             'ev': 0.2,
             'model_version': 'smoke',
             'train_rows': 10,
-            'train_end_ts': 1772668800,
+            'train_end_ts': ts,
             'best_source': 'smoke',
             'tune_dir': '',
             'feat_hash': 'smoke',
