@@ -104,4 +104,13 @@ def write_text_if_changed(path: str | Path, text: str, *, encoding: str = 'utf-8
     except Exception:
         pass
     p.write_text(text, encoding=encoding)
+    # Invalidate in-process caches for this path.
+    #
+    # On some filesystems (notably Windows runners) mtime/size can remain
+    # unchanged for rapid consecutive writes, which would otherwise keep stale
+    # cached JSON entries.
+    try:
+        _JSON_CACHE.pop(str(p.resolve()), None)
+    except Exception:
+        pass
     return True
