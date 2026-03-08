@@ -343,7 +343,6 @@ def execute_scope(
         scope.timezone,
         data_paths=data_paths,
         runtime_paths=runtime_paths,
-        execution_enabled=True,
     )
 
     if config_path is not None:
@@ -620,7 +619,10 @@ def run_portfolio_cycle(
         else:
             selected = allocation_payload.get('selected') or []
             selected_tags = [str(i.get('scope_tag')) for i in selected if isinstance(i, dict)]
-            for tag in selected_tags:
+            exec_disabled = bool(selected_tags) and not bool(getattr(cfg.execution, 'enabled', False))
+            if exec_disabled:
+                errors.append('execution_skipped:execution_disabled')
+            for tag in ([] if exec_disabled else selected_tags):
                 s = next((x for x in scopes if x.scope_tag == tag), None)
                 if s is None:
                     continue
