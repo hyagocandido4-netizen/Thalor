@@ -1,23 +1,30 @@
-name: Integrity
+name: integrity
 
 on:
   push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
 
 jobs:
-  leak_check:
+  leak-check:
     runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup Python
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Leak check (source)
+      - name: Install CI dependencies
         run: |
-          python src/natbin/leak_check.py --mode code
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Smoke - execution layer
+        run: |
+          python scripts/ci/smoke_execution_layer.py
+
+      - name: Leak check
+        run: |
+          python -m natbin.leak_check --config config/base.yaml

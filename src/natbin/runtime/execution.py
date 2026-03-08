@@ -405,19 +405,11 @@ def precheck_reconcile_if_enabled(*, repo_root: str | Path = '.', config_path: s
 
 def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Path | None = None) -> dict[str, Any]:
     ctx = _build_context(repo_root=repo_root, config_path=config_path)
-    if not execution_enabled(ctx):
-        payload = {
-            'enabled': False,
-            'mode': 'disabled',
-            'reason': 'execution_disabled',
-            'scope_tag': ctx.scope.scope_tag,
-        }
-        _write_execution_artifacts(repo_root=repo_root, ctx=ctx, orders_payload=payload)
-        return payload
+    enabled = execution_enabled(ctx)
 
     repo_root = Path(repo_root).resolve()
     repo = ExecutionRepository(execution_repo_path(repo_root))
-    adapter = adapter_from_context(ctx, repo_root=repo_root)
+    adapter = adapter_from_context(ctx, repo_root=repo_root) if enabled else None
 
     # Global gates (file/env backed) must be enforced even when running as a
     # subprocess from the portfolio runtime.
@@ -427,10 +419,13 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
 
     pre_result = None
     pre_detail: dict[str, Any] = {}
-    try:
-        pre_result, pre_detail = reconcile_scope(repo_root=repo_root, ctx=ctx, adapter=adapter)
-    except Exception as exc:
-        pre_detail = {'error': f'{type(exc).__name__}:{exc}'}
+    if adapter is not None:
+        try:
+            pre_result, pre_detail = reconcile_scope(repo_root=repo_root, ctx=ctx, adapter=adapter)
+        except Exception as exc:
+            pre_detail = {'error': f'{type(exc).__name__}:{exc}'}
+    else:
+        pre_detail = {'skipped': True, 'reason': 'execution_disabled'}
     latest = _latest_trade_row(repo_root=repo_root, ctx=ctx)
     created = False
     submitted = None
@@ -449,16 +444,15 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                 account_mode=planned.account_mode,
                 payload=planned.as_dict(),
             )
-        health = adapter.healthcheck()
         if latest_intent.intent_state == INTENT_PLANNED:
-            # Gate 1: explicit operators controls
-            if kill_active or drain_active:
-                blocked_reason = str(kill_reason or drain_reason or ('kill_switch' if kill_active else 'drain_mode'))
+            # Gate 0: execution disabled (paper mode) -> persist explicit skip entry
+            if not enabled:
+                blocked_reason = 'execution_disabled'
                 latest_intent = repo.save_intent(
                     replace(
                         latest_intent,
-                        last_error_code='gate_block',
-                        last_error_message=blocked_reason,
+                        last_error_code='execution_disabled',
+                        last_error_message='execution disabled in config',
                         updated_at_utc=utc_now_iso(),
                     )
                 )
@@ -469,20 +463,19 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                     intent_id=latest_intent.intent_id,
                     broker_name=latest_intent.broker_name,
                     account_mode=latest_intent.account_mode,
-                    payload={'reason': blocked_reason, 'kill_switch_active': kill_active, 'drain_mode_active': drain_active},
+                    payload={'reason': blocked_reason},
                 )
             else:
-                # Gate 2: entry deadline (never submit stale intents)
-                deadline = parse_utc_iso(str(latest_intent.entry_deadline_utc))
-                if _enforce_entry_deadline(ctx) and deadline is not None and utc_now() >= deadline:
-                    blocked_reason = 'entry_deadline_passed'
+                assert adapter is not None
+                health = adapter.healthcheck()
+                # Gate 1: explicit operators controls
+                if kill_active or drain_active:
+                    blocked_reason = str(kill_reason or drain_reason or ('kill_switch' if kill_active else 'drain_mode'))
                     latest_intent = repo.save_intent(
                         replace(
                             latest_intent,
-                            intent_state=INTENT_EXPIRED_UNSUBMITTED,
-                            broker_status='not_found',
-                            last_error_code='entry_deadline_passed',
-                            last_error_message='planned intent expired without submit',
+                            last_error_code='gate_block',
+                            last_error_message=blocked_reason,
                             updated_at_utc=utc_now_iso(),
                         )
                     )
@@ -493,17 +486,20 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                         intent_id=latest_intent.intent_id,
                         broker_name=latest_intent.broker_name,
                         account_mode=latest_intent.account_mode,
-                        payload={'reason': blocked_reason},
+                        payload={'reason': blocked_reason, 'kill_switch_active': kill_active, 'drain_mode_active': drain_active},
                     )
                 else:
-                    # Gate 3: broker health / fail-closed
-                    if not health.ready and bool(_execution_cfg(ctx).get('fail_closed', True)):
-                        blocked_reason = str(health.reason or 'broker_unready')
+                    # Gate 2: entry deadline (never submit stale intents)
+                    deadline = parse_utc_iso(str(latest_intent.entry_deadline_utc))
+                    if _enforce_entry_deadline(ctx) and deadline is not None and utc_now() >= deadline:
+                        blocked_reason = 'entry_deadline_passed'
                         latest_intent = repo.save_intent(
                             replace(
                                 latest_intent,
-                                last_error_code='broker_unready',
-                                last_error_message=blocked_reason,
+                                intent_state=INTENT_EXPIRED_UNSUBMITTED,
+                                broker_status='not_found',
+                                last_error_code='entry_deadline_passed',
+                                last_error_message='planned intent expired without submit',
                                 updated_at_utc=utc_now_iso(),
                             )
                         )
@@ -514,23 +510,47 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                             intent_id=latest_intent.intent_id,
                             broker_name=latest_intent.broker_name,
                             account_mode=latest_intent.account_mode,
-                            payload={'reason': blocked_reason, 'health': health.as_dict()},
+                            payload={'reason': blocked_reason},
                         )
                     else:
-                        latest_intent, submitted = submit_intent(repo_root=repo_root, ctx=ctx, repo=repo, adapter=adapter, intent=latest_intent)
+                        # Gate 3: broker health / fail-closed
+                        if not health.ready and bool(_execution_cfg(ctx).get('fail_closed', True)):
+                            blocked_reason = str(health.reason or 'broker_unready')
+                            latest_intent = repo.save_intent(
+                                replace(
+                                    latest_intent,
+                                    last_error_code='broker_unready',
+                                    last_error_message=blocked_reason,
+                                    updated_at_utc=utc_now_iso(),
+                                )
+                            )
+                            repo.add_event(
+                                event_id=hashlib.sha1(f'{latest_intent.intent_id}|intent_blocked|{blocked_reason}'.encode('utf-8')).hexdigest()[:32],
+                                event_type=EVENT_INTENT_BLOCKED,
+                                created_at_utc=utc_now_iso(),
+                                intent_id=latest_intent.intent_id,
+                                broker_name=latest_intent.broker_name,
+                                account_mode=latest_intent.account_mode,
+                                payload={'reason': blocked_reason, 'health': health.as_dict()},
+                            )
+                        else:
+                            latest_intent, submitted = submit_intent(repo_root=repo_root, ctx=ctx, repo=repo, adapter=adapter, intent=latest_intent)
 
     post_result = None
     post_detail: dict[str, Any] = {}
-    try:
-        post_result, post_detail = reconcile_scope(repo_root=repo_root, ctx=ctx, adapter=adapter)
-    except Exception as exc:
-        post_detail = {'error': f'{type(exc).__name__}:{exc}'}
+    if adapter is not None:
+        try:
+            post_result, post_detail = reconcile_scope(repo_root=repo_root, ctx=ctx, adapter=adapter)
+        except Exception as exc:
+            post_detail = {'error': f'{type(exc).__name__}:{exc}'}
+    else:
+        post_detail = {'skipped': True, 'reason': 'execution_disabled'}
     if latest_intent is not None:
         latest_intent = repo.get_intent(latest_intent.intent_id) or latest_intent
     day = latest_intent.day if latest_intent is not None else signal_day_from_ts(int(time.time()), timezone_name=str(ctx.config.timezone))
     summary = repo.execution_summary(asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, day=day)
     payload = {
-        'enabled': True,
+        'enabled': bool(enabled),
         'mode': str(_execution_cfg(ctx).get('mode') or 'paper'),
         'provider': str(_execution_cfg(ctx).get('provider') or 'fake'),
         'scope_tag': ctx.scope.scope_tag,

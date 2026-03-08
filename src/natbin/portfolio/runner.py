@@ -622,7 +622,7 @@ def run_portfolio_cycle(
             exec_disabled = bool(selected_tags) and not bool(getattr(cfg.execution, 'enabled', False))
             if exec_disabled:
                 errors.append('execution_skipped:execution_disabled')
-            for tag in ([] if exec_disabled else selected_tags):
+            for tag in selected_tags:
                 s = next((x for x in scopes if x.scope_tag == tag), None)
                 if s is None:
                     continue

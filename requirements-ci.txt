@@ -1,0 +1,8 @@
+# Minimal dependencies needed to run the CI smoke checks.
+# (The full runtime has more deps; this file is intentionally small.)
+
+pydantic>=2.7,<3
+pydantic-settings>=2.2,<3
+PyYAML>=6.0.1,<7
+# Needed on Windows runners for ZoneInfo timezones.
+tzdata>=2024.1
