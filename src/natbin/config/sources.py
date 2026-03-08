@@ -44,17 +44,27 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 
 
 def _normalize_gate_mode(raw: str | None) -> str | None:
+    """Normalize gate_mode into the *requested* mode used by scoring.
+
+    Historic configs sometimes used composite labels like ``cp_meta_iso`` or
+    ``meta_iso``. The scorer expects a stable small set: ``cp``, ``meta``,
+    ``iso`` or ``conf``.
+    """
     if raw is None:
         return None
     s = str(raw).strip().lower()
     if not s:
         return None
-    # Historic values used in repo config.yaml
-    if s in {"cp", "cp_meta", "cp_meta_iso"}:
-        return "cp_meta_iso"
-    if s in {"meta", "meta_iso"}:
-        return "meta_iso"
+    if s in {"cp", "cp_meta", "cp_meta_iso", "cp-meta-iso"}:
+        return "cp"
+    if s in {"meta", "meta_iso", "meta-iso"}:
+        return "meta"
+    if s == "iso":
+        return "iso"
+    if s == "conf":
+        return "conf"
     return s
+
 
 
 def legacy_yaml_to_model_dict(raw: dict[str, Any]) -> dict[str, Any]:
@@ -104,6 +114,13 @@ def legacy_yaml_to_model_dict(raw: dict[str, Any]) -> dict[str, Any]:
         dec["gate_mode"] = gm
     if best.get("meta_model") is not None:
         dec["meta_model"] = str(best.get("meta_model"))
+
+    # Optional tuning pointer / bounds (used by the legacy observer runtime).
+    if best.get("tune_dir") is not None:
+        dec["tune_dir"] = str(best.get("tune_dir"))
+    if isinstance(best.get("bounds"), dict):
+        dec["bounds"] = dict(best.get("bounds") or {})
+
     if best.get("k") is not None:
         dec.setdefault("rolling_minutes", 360)
     if dec:

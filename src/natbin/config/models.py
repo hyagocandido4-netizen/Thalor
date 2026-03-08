@@ -81,11 +81,18 @@ class DataSettings(BaseModel):
 
 
 class DecisionSettings(BaseModel):
-    # Keep strings flexible; gating modes evolved over the packages.
-    gate_mode: str = "cp_meta_iso"
+    # Requested gating mode for scoring. The scorer may report a more specific
+    # gate_used (e.g. cp_meta_iso), but config should stay stable.
+    gate_mode: str = "cp"
     meta_model: str = "hgb"
     thresh_on: str = "ev"
     threshold: float = 0.02
+
+    # Optional model registry / tuning pointer for live runtime.
+    # When set, this is recorded into decision snapshots for traceability.
+    tune_dir: str = ""
+    # Optional regime bounds used by make_regime_mask (keys: vol_lo/hi, bb_lo/hi, atr_lo/hi).
+    bounds: dict[str, float] = Field(default_factory=dict)
 
     rolling_minutes: int = 360
     min_gap_minutes: int = 30

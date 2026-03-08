@@ -27,7 +27,16 @@ from ..ops.structured_log import append_jsonl
 
 from . import allocator as _allocator
 from .models import CandidateDecision, PortfolioCycleReport, PortfolioScope
-from .paths import ScopeDataPaths, portfolio_allocation_latest_path, portfolio_cycle_latest_path, resolve_scope_data_paths, scope_tag as compute_scope_tag, scoped_env
+from .paths import (
+    ScopeDataPaths,
+    ScopeRuntimePaths,
+    portfolio_allocation_latest_path,
+    portfolio_cycle_latest_path,
+    resolve_scope_data_paths,
+    resolve_scope_runtime_paths,
+    scope_tag as compute_scope_tag,
+    scoped_env,
+)
 from .quota import compute_asset_quotas, compute_portfolio_quota
 from .subprocess import SubprocessOutcome, run_python_module
 
@@ -118,6 +127,18 @@ def _scope_data_paths(root: Path, cfg: Any, scope: PortfolioScope) -> ScopeDataP
         default_db_path=default_db,
         default_dataset_path=default_ds,
     )
+
+
+
+def _scope_runtime_paths(root: Path, cfg: Any, scope: PortfolioScope) -> ScopeRuntimePaths:
+    """Resolve per-scope runtime DB paths (signals/state).
+
+    We partition runtime sqlite DBs when multi-asset is enabled, so candidate
+    observation can run in parallel without SQLite locking.
+    """
+
+    partition = bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False))
+    return resolve_scope_runtime_paths(root, scope_tag=str(scope.scope_tag), partition_enable=partition)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -263,6 +284,7 @@ def candidate_scope(
     config_path: str | Path | None,
     scope: PortfolioScope,
     data_paths: ScopeDataPaths,
+    runtime_paths: ScopeRuntimePaths | None,
     topk: int,
     lookback_candles: int,
 ) -> tuple[SubprocessOutcome, CandidateDecision]:
@@ -273,6 +295,7 @@ def candidate_scope(
         scope.interval_sec,
         scope.timezone,
         data_paths=data_paths,
+        runtime_paths=runtime_paths,
         execution_enabled=False,
     )
 
@@ -310,10 +333,18 @@ def execute_scope(
     config_path: str | Path | None,
     scope: PortfolioScope,
     data_paths: ScopeDataPaths,
+    runtime_paths: ScopeRuntimePaths | None,
 ) -> tuple[SubprocessOutcome, dict[str, Any] | None]:
     """Submit + reconcile the latest signal for a scope via Package N."""
 
-    env = scoped_env(scope.asset, scope.interval_sec, scope.timezone, data_paths=data_paths, execution_enabled=True)
+    env = scoped_env(
+        scope.asset,
+        scope.interval_sec,
+        scope.timezone,
+        data_paths=data_paths,
+        runtime_paths=runtime_paths,
+        execution_enabled=True,
+    )
 
     if config_path is not None:
         env['THALOR_CONFIG_PATH'] = str(config_path)
@@ -409,6 +440,18 @@ def run_portfolio_cycle(
         except Exception as exc:
             errors.append(f'data_paths_failed:{s.scope_tag}:{type(exc).__name__}:{exc}')
 
+    # Pre-resolve per-scope runtime DB paths (signals/state).
+    runtime_paths_by_tag: dict[str, ScopeRuntimePaths] = {}
+    for s in scopes:
+        try:
+            runtime_paths_by_tag[s.scope_tag] = _scope_runtime_paths(Path(root), cfg, s)
+        except Exception as exc:
+            errors.append(f"runtime_paths_failed:{s.scope_tag}:{type(exc).__name__}:{exc}")
+            runtime_paths_by_tag[s.scope_tag] = resolve_scope_runtime_paths(
+                Path(root), scope_tag=str(s.scope_tag), partition_enable=False
+            )
+
+
     # --- Prepare phase (parallel-safe) ---
     if scopes:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -442,31 +485,87 @@ def run_portfolio_cycle(
                 except Exception as exc:
                     errors.append(f'prepare_failed:{s.scope_tag}:{type(exc).__name__}:{exc}')
 
-    # --- Candidate phase (sequential; signals db is shared) ---
-    for s in scopes:
+    # --- Candidate phase ---
+    # When multi-asset is enabled we partition runtime sqlite DBs per scope_tag
+    # (signals/state) so candidate observation can run in parallel without
+    # SQLite locking.
+    candidate_parallel = (
+        bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False))
+        and bool(getattr(getattr(cfg, 'multi_asset', None), 'partition_data_paths', True))
+        and len(scopes) > 1
+        and workers > 1
+    )
+
+    def _run_candidate(s: PortfolioScope) -> tuple[SubprocessOutcome, CandidateDecision, str | None]:
         try:
-            dp = data_paths_by_tag[s.scope_tag]
             outcome, cand = candidate_scope(
                 repo_root=root,
                 config_path=cfg_path,
                 scope=s,
-                data_paths=dp,
+                data_paths=data_paths_by_tag[s.scope_tag],
+                runtime_paths=runtime_paths_by_tag[s.scope_tag],
                 topk=topk,
                 lookback_candles=lookback_candles,
             )
-            candidate_results.append(
-                {
-                    'scope_tag': s.scope_tag,
-                    'asset': s.asset,
-                    'interval_sec': s.interval_sec,
-                    'outcome': outcome.as_dict(),
-                }
+            err: str | None = None
+            if outcome.returncode != 0:
+                err = f"candidate_failed:{s.scope_tag}:rc={outcome.returncode}"
+            return outcome, cand, err
+        except Exception as e:
+            outcome = SubprocessOutcome(
+                name=f"observe_once:{s.scope_tag}",
+                argv=[],
+                cwd=str(Path(root).resolve()),
+                returncode=1,
+                duration_sec=0.0,
+                stdout_tail='',
+                stderr_tail=f"exception:{type(e).__name__}:{e}",
             )
-            candidates.append(cand)
-            if int(outcome.returncode) != 0:
-                errors.append(f'candidate_failed:{s.scope_tag}:rc={outcome.returncode}')
-        except Exception as exc:
-            errors.append(f'candidate_exception:{s.scope_tag}:{type(exc).__name__}:{exc}')
+            cand = CandidateDecision(
+                scope_tag=s.scope_tag,
+                asset=s.asset,
+                interval_sec=s.interval_sec,
+                day=None,
+                ts=None,
+                action='HOLD',
+                score=0.0,
+                conf=0.0,
+                ev=-1.0,
+                reason='candidate_exception',
+                blockers='candidate_exception',
+                decision_path=str(
+                    scope_decision_latest_path(asset=s.asset, interval_sec=s.interval_sec, out_dir=Path(root) / 'runs')
+                ),
+                raw={'kind': 'candidate_exception', 'error': f"{type(e).__name__}:{e}"},
+            )
+            return outcome, cand, f"candidate_failed:{s.scope_tag}:exc={type(e).__name__}"
+
+    results_by_tag: dict[str, tuple[SubprocessOutcome, CandidateDecision, str | None]] = {}
+
+    if candidate_parallel:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(_run_candidate, s): s for s in scopes}
+            for fut in as_completed(futs):
+                s = futs[fut]
+                results_by_tag[s.scope_tag] = fut.result()
+    else:
+        for s in scopes:
+            results_by_tag[s.scope_tag] = _run_candidate(s)
+
+    for s in scopes:
+        outcome, cand, err = results_by_tag[s.scope_tag]
+        candidate_results.append(
+            {
+                'scope_tag': s.scope_tag,
+                'asset': s.asset,
+                'interval_sec': s.interval_sec,
+                'runtime_paths': runtime_paths_by_tag[s.scope_tag].as_dict(),
+                'outcome': outcome.as_dict(),
+            }
+        )
+        candidates.append(cand)
+        if err is not None:
+            errors.append(err)
 
     # --- Quota + allocation ---
     asset_quotas = []
@@ -529,7 +628,13 @@ def run_portfolio_cycle(
                     dp = data_paths_by_tag.get(s.scope_tag)
                     if dp is None:
                         continue
-                    outcome, payload = execute_scope(repo_root=root, config_path=cfg_path, scope=s, data_paths=dp)
+                    outcome, payload = execute_scope(
+                        repo_root=root,
+                        config_path=cfg_path,
+                        scope=s,
+                        data_paths=dp,
+                        runtime_paths=runtime_paths_by_tag.get(s.scope_tag),
+                    )
                     execution_results.append(
                         {
                             'scope_tag': s.scope_tag,
@@ -577,6 +682,7 @@ def run_portfolio_cycle(
         message=str(msg),
         scopes=[s.as_dict() for s in scopes],
         prepare=prepare_results,
+        candidate_results=candidate_results,
         candidates=[c.as_dict() for c in candidates],
         allocation=allocation_payload,
         execution=execution_results,

@@ -180,7 +180,7 @@ def build_runtime_plan(
     plan_steps = [asdict(s) for s in build_auto_cycle_plan(Path(ctx.repo_root), topk=topk, lookback_candles=lookback_candles)]
     notes = {
         'design': 'Package M: runtime_app is the canonical control plane. PowerShell wrappers are bootstrap-only.',
-        'config_status': 'config/base.yaml is preferred when present. config.yaml remains as legacy observer compatibility.',
+        'config_status': 'config/base.yaml is preferred when present. The observer is now config v2 aware; config.yaml is only an optional fallback for legacy tune fields.',
         'scheduler_status': 'observe_loop wrappers must call runtime_app observe and should not orchestrate runtime logic.',
     }
     payload = RuntimePlan(
@@ -226,7 +226,7 @@ def build_runtime_app_info(
         )
     notes = {
         'control_plane': 'runtime_app is the canonical control plane entrypoint for Package M.',
-        'legacy_observer': 'observe_signal_topk_perday still consumes config.yaml; keep config.yaml present while legacy observer remains in the runtime cycle.',
+        'legacy_observer': "observe_signal_topk_perday is now config v2 aware; config.yaml is only an optional fallback for legacy tune fields (tune_dir/bounds) if base.yaml doesn't provide them.",
         'wrapper': 'observe_loop*.ps1 should only bootstrap Python and call runtime_app observe.',
     }
     return RuntimeAppInfo(

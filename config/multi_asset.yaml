@@ -1,5 +1,15 @@
 version: "2.0"
 
+# Multi-asset demo config for Thalor v2.0.
+# Use this file to validate:
+#   - partitioned market DB + dataset per scope_tag
+#   - partitioned runtime DBs (signals/state) per scope_tag
+#   - parallel prepare/candidate when max_parallel_assets > 1
+#
+# Run:
+#   python -m natbin.runtime_app portfolio status --repo-root . --config config/multi_asset.yaml --json
+#   python -m natbin.runtime_app portfolio observe --repo-root . --config config/multi_asset.yaml --once --topk 3 --lookback-candles 2000 --json
+
 runtime:
   profile: default
   quota_aware_sleep: true
@@ -10,6 +20,7 @@ broker:
   balance_mode: PRACTICE
 
 data:
+  # Defaults (used only when multi_asset.partition_data_paths=false).
   db_path: data/market_otc.sqlite3
   dataset_path: data/dataset_phase2.csv
   lookback_candles: 2000
@@ -32,7 +43,6 @@ decision:
   fail_closed: true
 
 quota:
-
   target_trades_per_day: 3.0
   hard_max_trades_per_day: 3
   pacing_morning_cap: 1
@@ -76,12 +86,17 @@ failsafe:
   breaker_half_open_trials: 1
 
 multi_asset:
-  enabled: false
-  max_parallel_assets: 1
+  enabled: true
+  # Set to 1 to keep sequential; set to 2+ to validate parallel-safe partitioning.
+  max_parallel_assets: 2
+
+  # Portfolio selection limits
   portfolio_topk_total: 3
   portfolio_hard_max_positions: 1
   portfolio_hard_max_trades_per_day: null
   max_trades_per_cluster_per_cycle: 1
+
+  # Safe partitioning of per-asset data paths (recommended for parallel runs)
   partition_data_paths: true
   data_db_template: data/market_{scope_tag}.sqlite3
   dataset_path_template: data/datasets/{scope_tag}/dataset.csv
@@ -120,7 +135,16 @@ execution:
     heartbeat_ok: true
 
 assets:
+  # NOTE: adjust assets to the ones you actually trade (and that exist in your broker).
   - asset: EURUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+    cluster_key: fx
+
+  - asset: GBPUSD-OTC
     interval_sec: 300
     timezone: America/Sao_Paulo
     payout_default: 0.80

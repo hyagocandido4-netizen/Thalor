@@ -71,14 +71,122 @@ META_FIELDS = [
 ALL_FIELDS = BASE_FIELDS + META_FIELDS
 
 
+
+def _env_path(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s or None
+
+
+def _resolve_signals_db_path(default: str | Path = 'runs/live_signals.sqlite3') -> Path:
+    override = _env_path('THALOR_SIGNALS_DB_PATH') or _env_path('SIGNALS_DB_PATH')
+    p = Path(override) if override else Path(default)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return p
+
+
+def _resolve_state_db_path(default: str | Path = 'runs/live_topk_state.sqlite3') -> Path:
+    override = _env_path('THALOR_STATE_DB_PATH') or _env_path('STATE_DB_PATH')
+    p = Path(override) if override else Path(default)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return p
+
+
 def _runtime_ledger() -> RuntimeTradeLedger:
-    return RuntimeTradeLedger(default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"))
+    return RuntimeTradeLedger(
+        signals_db=_resolve_signals_db_path('runs/live_signals.sqlite3'),
+        state_db=_resolve_state_db_path('runs/live_topk_state.sqlite3'),
+        default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"),
+    )
 
 
 def load_cfg() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load observer configuration.
+
+    The runtime control plane uses **config v2** (config/base.yaml + env overrides).
+    The legacy observer used to read a hardcoded ``config.yaml`` only.
+
+    Package Q makes the observer **scope-aware** and **config-aware** by:
+    - Loading the resolved v2 config via `natbin.config.loader.load_resolved_config`
+      using `THALOR_CONFIG_PATH` / `--config` selection.
+    - Falling back to legacy ``config.yaml`` only when needed.
+
+    Returns:
+        (cfg_dict, best_dict)
+    """
+    # Prefer modern resolved config (Package M+).
+    try:
+        from .config.loader import load_resolved_config
+        from .config.paths import resolve_config_path, resolve_repo_root
+
+        repo_root = resolve_repo_root(repo_root=None, config_path=None)
+        cfg_path = resolve_config_path(repo_root=repo_root, config_path=None)
+
+        # Use explicit scope overrides when provided (portfolio runner sets these).
+        asset_env = os.getenv("ASSET") or None
+        interval_env = os.getenv("INTERVAL_SEC") or None
+        interval_sec_env = int(interval_env) if interval_env and interval_env.strip().isdigit() else None
+
+        rcfg = load_resolved_config(
+            config_path=cfg_path,
+            repo_root=repo_root,
+            asset=asset_env,
+            interval_sec=interval_sec_env,
+        )
+
+        best: dict[str, Any] = {
+            "threshold": float(rcfg.decision.threshold),
+            "thresh_on": str(rcfg.decision.thresh_on),
+            "gate_mode": str(rcfg.decision.gate_mode),
+            "meta_model": str(rcfg.decision.meta_model),
+            "tune_dir": str(getattr(rcfg.decision, "tune_dir", "") or ""),
+            "bounds": dict(getattr(rcfg.decision, "bounds", {}) or {}),
+            # Safe default; can be overridden by TOPK_K env / CLI.
+            "k": int(os.getenv("TOPK_K") or 3),
+        }
+
+        cfg: dict[str, Any] = {
+            "data": {
+                "asset": str(rcfg.asset),
+                "interval_sec": int(rcfg.interval_sec),
+                "timezone": str(rcfg.timezone),
+            },
+            "phase2": {"dataset_path": str(rcfg.data.dataset_path)},
+            "best": best,
+        }
+
+        # Backward compatibility: if tune_dir/bounds are not present in v2 config,
+        # try to read them from legacy root config.yaml (when available).
+        legacy_path = Path(repo_root) / "config.yaml"
+        if legacy_path.exists() and (not best.get("tune_dir") or not best.get("bounds")):
+            try:
+                legacy_cfg = yaml.safe_load(legacy_path.read_text(encoding="utf-8")) or {}
+                legacy_best = legacy_cfg.get("best") or {}
+                if not best.get("tune_dir") and legacy_best.get("tune_dir"):
+                    best["tune_dir"] = str(legacy_best.get("tune_dir"))
+                if (not best.get("bounds")) and isinstance(legacy_best.get("bounds"), dict):
+                    best["bounds"] = dict(legacy_best.get("bounds") or {})
+            except Exception:
+                # Never break runtime because of optional legacy fallback.
+                pass
+
+        return cfg, best
+    except Exception:
+        # Fall back to the original legacy behavior.
+        pass
+
     cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
     best = cfg.get("best") or {}
     return cfg, best
+
 
 
 def get_model_version() -> str:
@@ -206,7 +314,7 @@ def _signal_pk(row: dict[str, Any]) -> tuple[str, str, int, int]:
 
 
 def write_sqlite_signal(row: dict[str, Any], db_path: str = "runs/live_signals.sqlite3") -> None:
-    repo = SignalsRepository(db_path=db_path, default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"))
+    repo = SignalsRepository(db_path=_resolve_signals_db_path(db_path), default_interval=env_int("SIGNALS_INTERVAL_SEC", "300"))
     repo.write_row(row)
 
 
@@ -380,11 +488,11 @@ def ensure_state_db(con: sqlite3.Connection) -> None:
 
 
 def state_path() -> Path:
-    return Path("runs") / "live_topk_state.sqlite3"
+    return _resolve_state_db_path(Path('runs') / 'live_topk_state.sqlite3')
 
 
 def signals_db_path() -> Path:
-    return Path("runs") / "live_signals.sqlite3"
+    return _resolve_signals_db_path(Path('runs') / 'live_signals.sqlite3')
 
 
 def _fetch_trade_rows_from_signals(asset: str, interval_sec: int, day: str, *, ts: int | None = None) -> list[sqlite3.Row]:
@@ -730,6 +838,11 @@ def main() -> None:
 
     gate_env = os.getenv("GATE_MODE", "").strip()
     gate_mode = (gate_env or str(best.get("gate_mode", "meta"))).strip().lower()
+    # Config v2 / legacy compat: some sources used composite labels.
+    if gate_mode in ("cp_meta_iso", "cp_meta", "cp-meta-iso"):
+        gate_mode = "cp"
+    elif gate_mode in ("meta_iso", "meta-iso"):
+        gate_mode = "meta"
     if gate_mode not in ("meta", "iso", "conf", "cp"):
         gate_mode = "meta"
 
@@ -738,9 +851,15 @@ def main() -> None:
     if meta_model_type not in ("logreg", "hgb"):
         meta_model_type = "hgb"
 
-    dataset_path = cfg.get("phase2", {}).get("dataset_path", "data/dataset_phase2.csv")
+    dataset_path = (
+        os.getenv("DATASET_PATH")
+        or os.getenv("THALOR__DATA__DATASET_PATH")
+        or cfg.get("phase2", {}).get("dataset_path")
+        or "data/dataset_phase2.csv"
+    )
+    dataset_path = str(dataset_path)
     if not Path(dataset_path).exists():
-        dataset_path = "data/dataset_phase2.csv"
+        raise FileNotFoundError(f"dataset_not_found:{dataset_path} (run make_dataset before observe)")
 
     df = pd.read_csv(dataset_path)
     if len(df) == 0:
@@ -882,7 +1001,20 @@ def main() -> None:
         if gate_mode_requested == "meta":
             legit = gate_used_s in ("meta", "meta_iso")
         elif gate_mode_requested == "cp":
-            legit = gate_used_s.startswith("cp_") and (not gate_used_s.startswith("cp_fallback"))
+            # CP gating is considered "legit" only when it actually ran.
+            #
+            # compute_scores() can return:
+            #   - cp_meta / cp_meta_iso               (OK)
+            #   - cp_fallback_*                       (soft fallback path)
+            #   - cp_fail_closed_missing_cp_*         (hard fail-closed path)
+            #
+            # We treat both fallback and fail-closed as NOT legit so that
+            # gate_fail_closed is surfaced correctly in the decision payload.
+            legit = (
+                gate_used_s.startswith("cp_")
+                and (not gate_used_s.startswith("cp_fallback"))
+                and (not gate_used_s.startswith("cp_fail_closed"))
+            )
         if not legit:
             gate_fail_closed_active = True
             gate_fail_detail = gate_used_s or "unknown"
@@ -1154,7 +1286,7 @@ def main() -> None:
         }
     )
     print(f"csv_ok: {out_csv}")
-    print("sqlite_ok: runs/live_signals.sqlite3 (signals_v2)")
+    print(f"sqlite_ok: {signals_db_path()} (signals_v2)")
 
 
 if __name__ == "__main__":

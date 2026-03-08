@@ -173,6 +173,7 @@ class PortfolioCycleReport:
 
     scopes: list[dict[str, Any]]
     prepare: list[dict[str, Any]]
+    candidate_results: list[dict[str, Any]]
     candidates: list[dict[str, Any]]
     allocation: dict[str, Any] | None
     execution: list[dict[str, Any]]

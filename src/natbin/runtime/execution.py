@@ -109,6 +109,34 @@ def execution_repo_path(repo_root: str | Path) -> Path:
     return Path(repo_root).resolve() / 'runs' / 'runtime_execution.sqlite3'
 
 
+
+def signals_repo_db_path(repo_root: str | Path) -> Path:
+    """Resolve the signals sqlite DB path.
+
+    Multi-asset runs may partition signals DB per scope_tag to avoid SQLite
+    contention. The portfolio runner sets THALOR_SIGNALS_DB_PATH in the
+    observer/execution subprocess environment.
+
+    Precedence:
+      1) THALOR_SIGNALS_DB_PATH
+      2) SIGNALS_DB_PATH
+      3) <repo_root>/runs/live_signals.sqlite3
+    """
+
+    root = Path(repo_root).resolve()
+    override = os.getenv('THALOR_SIGNALS_DB_PATH') or os.getenv('SIGNALS_DB_PATH')
+    if override is not None and str(override).strip() != '':
+        p = Path(str(override).strip())
+        if not p.is_absolute():
+            p = root / p
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return p
+    return root / 'runs' / 'live_signals.sqlite3'
+
+
 def _build_context(repo_root: str | Path = '.', config_path: str | Path | None = None):
     from ..control.plan import build_context
 
@@ -164,7 +192,7 @@ def adapter_from_context(ctx, *, repo_root: str | Path):
 
 
 def _latest_trade_row(*, repo_root: str | Path, ctx) -> dict[str, Any] | None:
-    repo = SignalsRepository(Path(repo_root) / 'runs' / 'live_signals.sqlite3', default_interval=int(ctx.config.interval_sec))
+    repo = SignalsRepository(signals_repo_db_path(repo_root), default_interval=int(ctx.config.interval_sec))
     days = [signal_day_from_ts(int(time.time()), timezone_name=str(ctx.config.timezone))]
     for d in repo.distinct_recent_days(3):
         if d not in days:

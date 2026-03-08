@@ -282,7 +282,7 @@ def observe_payload(
 
 def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None) -> dict[str, Any]:
     from ..portfolio.runner import load_scopes
-    from ..portfolio.paths import resolve_scope_data_paths
+    from ..portfolio.paths import resolve_scope_data_paths, resolve_scope_runtime_paths
     from ..config.paths import resolve_repo_root, resolve_config_path
 
     root = resolve_repo_root(repo_root=repo_root, config_path=config_path)
@@ -302,7 +302,13 @@ def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | 
                 default_db_path=getattr(cfg.data, 'db_path', 'data/market_otc.sqlite3'),
                 default_dataset_path=getattr(cfg.data, 'dataset_path', 'data/dataset_phase2.csv'),
             )
-            scoped_paths.append({'scope': s.as_dict(), 'data_paths': dp.as_dict()})
+
+            rp = resolve_scope_runtime_paths(
+                root,
+                scope_tag=str(s.scope_tag),
+                partition_enable=bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False)),
+            )
+            scoped_paths.append({'scope': s.as_dict(), 'data_paths': dp.as_dict(), 'runtime_paths': rp.as_dict()})
         except Exception as exc:
             scoped_paths.append({'scope': s.as_dict(), 'error': f'{type(exc).__name__}:{exc}'})
 
@@ -386,6 +392,11 @@ def asset_prepare_payload(*, repo_root: str | Path = '.', config_path: str | Pat
     from ..portfolio.runner import _scope_data_paths  # type: ignore
 
     dp = _scope_data_paths(Path(root), cfg, scope)
+    runtime_paths = resolve_scope_runtime_paths(
+        Path(root),
+        scope_tag=str(scope.scope_tag),
+        partition_enable=bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False)),
+    )
     outcomes = prepare_scope(repo_root=root, config_path=cfg_path, scope=scope, data_paths=dp, lookback_candles=lookback_candles)
     return {
         'phase': 'asset_prepare',
@@ -399,6 +410,7 @@ def asset_prepare_payload(*, repo_root: str | Path = '.', config_path: str | Pat
 def asset_candidate_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None, asset: str, interval_sec: int, topk: int = 3, lookback_candles: int = 2000) -> dict[str, Any]:
     from ..config.paths import resolve_repo_root, resolve_config_path
     from ..portfolio.runner import load_scopes, candidate_scope
+    from ..portfolio.paths import resolve_scope_runtime_paths
 
     root = resolve_repo_root(repo_root=repo_root, config_path=config_path)
     cfg_path = resolve_config_path(repo_root=root, config_path=config_path)
@@ -410,7 +422,12 @@ def asset_candidate_payload(*, repo_root: str | Path = '.', config_path: str | P
     from ..portfolio.runner import _scope_data_paths  # type: ignore
 
     dp = _scope_data_paths(Path(root), cfg, scope)
-    outcome, cand = candidate_scope(repo_root=root, config_path=cfg_path, scope=scope, data_paths=dp, topk=topk, lookback_candles=lookback_candles)
+    runtime_paths = resolve_scope_runtime_paths(
+        Path(root),
+        scope_tag=str(scope.scope_tag),
+        partition_enable=bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False)),
+    )
+    outcome, cand = candidate_scope(repo_root=root, config_path=cfg_path, scope=scope, data_paths=dp, runtime_paths=runtime_paths, topk=topk, lookback_candles=lookback_candles)
     return {
         'phase': 'asset_candidate',
         'ok': int(outcome.returncode) == 0,

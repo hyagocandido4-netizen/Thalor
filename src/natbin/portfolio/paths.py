@@ -17,6 +17,47 @@ class ScopeDataPaths:
         return {k: str(v) for k, v in asdict(self).items()}
 
 
+
+@dataclass(frozen=True)
+class ScopeRuntimePaths:
+    """Per-scope runtime DB paths.
+
+    These are *runtime artifacts* (not market data) used by the observer and
+    execution layer:
+      - signals DB (signals_v2)
+      - state DB (executed_state)
+
+    When running multi-asset in parallel, we partition these DBs per scope_tag
+    to avoid SQLite contention.
+    """
+
+    signals_db_path: Path
+    state_db_path: Path
+
+    def as_dict(self) -> dict[str, Any]:
+        return {k: str(v) for k, v in asdict(self).items()}
+
+
+def resolve_scope_runtime_paths(
+    repo_root: str | Path,
+    *,
+    scope_tag: str,
+    partition_enable: bool,
+) -> ScopeRuntimePaths:
+    root = Path(repo_root).resolve()
+
+    if not partition_enable:
+        sig = root / 'runs' / 'live_signals.sqlite3'
+        st = root / 'runs' / 'live_topk_state.sqlite3'
+    else:
+        sig = root / 'runs' / 'signals' / str(scope_tag) / 'live_signals.sqlite3'
+        st = root / 'runs' / 'state' / str(scope_tag) / 'live_topk_state.sqlite3'
+
+    sig.parent.mkdir(parents=True, exist_ok=True)
+    st.parent.mkdir(parents=True, exist_ok=True)
+    return ScopeRuntimePaths(signals_db_path=sig, state_db_path=st)
+
+
 def scope_tag(asset: str, interval_sec: int) -> str:
     return build_scope(asset=str(asset), interval_sec=int(interval_sec)).scope_tag
 
@@ -77,6 +118,7 @@ def scoped_env(
     scope_timezone: str,
     *,
     data_paths: ScopeDataPaths | None = None,
+    runtime_paths: ScopeRuntimePaths | None = None,
     execution_enabled: bool | None = None,
 ) -> dict[str, str]:
     """Environment overrides for legacy modules.
@@ -99,6 +141,18 @@ def scoped_env(
                 # legacy fallbacks
                 'MARKET_DB_PATH': str(data_paths.db_path),
                 'DATASET_PATH': str(data_paths.dataset_path),
+            }
+        )
+
+
+    if runtime_paths is not None:
+        env.update(
+            {
+                'THALOR_SIGNALS_DB_PATH': str(runtime_paths.signals_db_path),
+                'THALOR_STATE_DB_PATH': str(runtime_paths.state_db_path),
+                # convenient aliases for ad-hoc tools
+                'SIGNALS_DB_PATH': str(runtime_paths.signals_db_path),
+                'STATE_DB_PATH': str(runtime_paths.state_db_path),
             }
         )
 
