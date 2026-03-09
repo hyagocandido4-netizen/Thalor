@@ -2,6 +2,12 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import json
+import os
+import random
+from contextlib import contextmanager
+from pathlib import Path
+
 from iqoptionapi.stable_api import IQ_Option
 
 from .envutil import env_bool, env_float, env_int
@@ -13,11 +19,135 @@ class IQConfig:
     password: str
     balance_mode: str = "PRACTICE"
 
+def _env_path(key: str, default: str) -> str:
+    v = os.environ.get(key)
+    return v.strip() if isinstance(v, str) and v.strip() else default
+
+
+@contextmanager
+def _file_lock(lock_path: Path):
+    """Cross-platform file lock (best-effort).
+
+    Used to coordinate throttling state between multiple processes.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock_path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt  # type: ignore
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl  # type: ignore
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield fh
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt  # type: ignore
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl  # type: ignore
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            fh.close()
+        except Exception:
+            pass
+
+
+def _throttle_schedule(*, min_interval_s: float, jitter_s: float, state_file: str, label: str) -> None:
+    """Best-effort cross-process throttling for IQ API calls.
+
+    Motivation: when running multi-asset pipelines in parallel, each scope runs in
+    its own process and can burst requests simultaneously. This throttle spreads
+    call start times to reduce rate-limit risk and smooth I/O.
+
+    Configure via env vars:
+      - IQ_THROTTLE_MIN_INTERVAL_S (float, default 0.0)
+      - IQ_THROTTLE_JITTER_S       (float, default 0.0)
+      - IQ_THROTTLE_STATE_FILE     (path, default 'runs/iq_throttle_state.json')
+
+    IMPORTANT: this is for stability only (not for evasion).
+    """
+    try:
+        mi = float(min_interval_s or 0.0)
+        js = float(jitter_s or 0.0)
+    except Exception:
+        return
+    if mi <= 0.0:
+        return
+    if js < 0.0:
+        js = 0.0
+
+    try:
+        state_path = Path(state_file)
+    except Exception:
+        state_path = Path("runs/iq_throttle_state.json")
+    lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+    now = time.time()
+    start_at = now
+
+    try:
+        with _file_lock(lock_path):
+            state: dict[str, Any] = {}
+            if state_path.exists():
+                try:
+                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    state = {}
+
+            next_utc = float(state.get("next_utc", 0.0) or 0.0)
+            start_at = max(now, next_utc)
+            if js > 0.0:
+                start_at += random.random() * js
+
+            new_next = float(start_at + mi)
+            state_out: dict[str, Any] = {
+                "next_utc": new_next,
+                "updated_utc": now,
+                "last_label": str(label),
+                "min_interval_s": mi,
+                "jitter_s": js,
+            }
+            try:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                state_path.write_text(json.dumps(state_out, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                # best-effort: if we can't write, still apply sleep below
+                pass
+    except Exception:
+        return
+
+    sleep_s = float(start_at - now)
+    if sleep_s > 0.0:
+        time.sleep(sleep_s)
 
 class IQClient:
     def __init__(self, cfg: IQConfig):
         self.cfg = cfg
         self.iq = IQ_Option(cfg.email, cfg.password)
+
+    def _maybe_throttle(self, label: str) -> None:
+        """Best-effort throttling (cross-process) for API calls.
+
+        Controlled by env vars (defaults disable):
+          - IQ_THROTTLE_MIN_INTERVAL_S
+          - IQ_THROTTLE_JITTER_S
+          - IQ_THROTTLE_STATE_FILE
+        """
+        mi = float(env_float("IQ_THROTTLE_MIN_INTERVAL_S", 0.0) or 0.0)
+        if mi <= 0.0:
+            return
+        js = float(env_float("IQ_THROTTLE_JITTER_S", 0.0) or 0.0)
+        state_file = _env_path("IQ_THROTTLE_STATE_FILE", "runs/iq_throttle_state.json")
+        _throttle_schedule(min_interval_s=mi, jitter_s=js, state_file=state_file, label=label)
 
     def _new_api(self) -> None:
         self.iq = IQ_Option(self.cfg.email, self.cfg.password)
@@ -50,6 +180,7 @@ class IQClient:
             if attempt > 1 and recreate_on_retry:
                 self._new_api()
             try:
+                self._maybe_throttle("connect")
                 ok, reason = self.iq.connect()
             except Exception as e:
                 ok, reason = False, f"{type(e).__name__}: {e}"
@@ -94,6 +225,7 @@ class IQClient:
         last_reason = None
         for attempt in range(1, max(1, retries) + 1):
             try:
+                self._maybe_throttle(f"call:{label}")
                 self.ensure_connection()
                 return fn()
             except Exception as e:
@@ -176,6 +308,7 @@ class IQClient:
         if payout_source == "fallback" and env_bool("IQ_MARKET_DIGITAL_ENABLE", False):
             dur_min = max(1, int(interval_sec // 60))
             try:
+                self._maybe_throttle(f"market_context:{asset}:{interval_sec}")
                 self.ensure_connection()
                 self.iq.subscribe_strike_list(asset, dur_min)
                 time.sleep(float(env_float("IQ_DIGITAL_PAYOUT_WAIT_S", 1.2)))
@@ -211,6 +344,7 @@ class IQClient:
         last_reason = None
         for attempt in range(1, max(1, retries) + 1):
             try:
+                self._maybe_throttle(f"candles:{asset}:{interval_sec}")
                 self.ensure_connection()
                 candles = self.iq.get_candles(asset, interval_sec, count, endtime)
                 if candles or not retry_empty:

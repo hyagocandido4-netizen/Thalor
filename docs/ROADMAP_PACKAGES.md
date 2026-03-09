@@ -90,6 +90,8 @@ Melhorar robustez operacional: sessões, credenciais, rate limits e observabilid
 - Rate limiting e backoff
 - Time filters e “human-like throttling” **para estabilidade**, não para evasão
 
+> Status (implementado): throttling cross-process no `IQClient` via env `IQ_THROTTLE_*` + docs (`.env.example` + guia operacional).
+
 ### DoD
 - Falhas de rede/autenticação não derrubam o runtime (retries + circuit breaker)
 - Não há credenciais expostas em logs

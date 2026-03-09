@@ -76,3 +76,14 @@ multi_asset:
   - `runs/portfolio_cycle_latest.json`
   - `runs/allocation_latest.json`
   - `runs/live_signals_v2_YYYYMMDD_<scope_tag>.csv`
+## Pacing de requisições (opcional)
+
+Além do `multi_asset.stagger_sec`, existe um **throttle cross-process** no `IQClient` (Package T) para reduzir bursts de chamadas quando você roda múltiplos subprocessos em paralelo.
+
+Configuração via env vars:
+
+- `IQ_THROTTLE_MIN_INTERVAL_S` (float; default `0.0`) — intervalo mínimo entre *inícios* de chamadas (entre processos).
+- `IQ_THROTTLE_JITTER_S` (float; default `0.0`) — jitter aleatório adicional (0..jitter) para espalhar chamadas.
+- `IQ_THROTTLE_STATE_FILE` (path; default `runs/iq_throttle_state.json`) — arquivo de estado compartilhado.
+
+> Importante: isto é **para estabilidade** (suavizar carga / reduzir risco de rate-limit), não para evasão.
