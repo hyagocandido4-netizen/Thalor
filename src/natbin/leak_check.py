@@ -200,17 +200,38 @@ def _print(findings: List[Finding]) -> int:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--repo-root",
+        type=str,
+        default=".",
+        help="Repository root (default: .)",
+    )
+    # NOTE: kept for CI/workflow compatibility. Currently unused by leak_check.
+    ap.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Config path (unused; kept for CI compatibility)",
+    )
     ap.add_argument("--mode", choices=["code", "data"], default="code")
     ap.add_argument("--csv", type=str, default="data/dataset_phase2.csv")
     ap.add_argument("--label", type=str, default="y_open_close")
     args = ap.parse_args()
 
-    root = Path(".").resolve()
+    root = Path(args.repo_root).resolve()
+
+    # If the caller passed --config, we intentionally ignore it for now.
+    # This tool only inspects source files (mode=code) or a dataset CSV (mode=data).
+    _ = args.config
+
     if args.mode == "code":
         rc = _print(scan_code(root))
         raise SystemExit(rc)
 
     csv_path = Path(args.csv)
+    if not csv_path.is_absolute():
+        csv_path = (root / csv_path).resolve()
+
     rc = _print(scan_data(csv_path, label=args.label))
     raise SystemExit(rc)
 
