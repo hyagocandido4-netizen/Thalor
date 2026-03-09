@@ -90,6 +90,10 @@ multi_asset:
   # Set to 1 to keep sequential; set to 2+ to validate parallel-safe partitioning.
   max_parallel_assets: 2
 
+  # Optional staggering (seconds) between scopes when running parallel phases.
+  # Each scope starts at i*stagger_sec (i is its index in the config).
+  stagger_sec: 0.0
+
   # Portfolio selection limits
   portfolio_topk_total: 3
   portfolio_hard_max_positions: 1

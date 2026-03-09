@@ -334,6 +334,7 @@ def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | 
         'multi_asset': {
             'enabled': bool(getattr(cfg.multi_asset, 'enabled', False)),
             'max_parallel_assets': int(getattr(cfg.multi_asset, 'max_parallel_assets', 1) or 1),
+            'stagger_sec': float(getattr(cfg.multi_asset, 'stagger_sec', 0.0) or 0.0),
             'portfolio_topk_total': int(getattr(cfg.multi_asset, 'portfolio_topk_total', 1) or 1),
             'portfolio_hard_max_positions': int(getattr(cfg.multi_asset, 'portfolio_hard_max_positions', 1) or 1),
             'partition_data_paths': bool(getattr(cfg.multi_asset, 'partition_data_paths', True)),
@@ -355,10 +356,26 @@ def portfolio_plan_payload(*, repo_root: str | Path = '.', config_path: str | Pa
         'repo_root': payload.get('repo_root'),
         'config_path': payload.get('config_path'),
         'steps': [
-            {'name': 'prepare', 'description': 'collect_recent + make_dataset + refresh_market_context (parallel-safe)'},
-            {'name': 'candidate', 'description': 'observe_once per scope with execution disabled (sequential; shared signals db)'},
+            {
+                'name': 'prepare',
+                'description': (
+                    'collect_recent + make_dataset + refresh_market_context '
+                    '(parallel when multi_asset.enabled + partition_data_paths + max_parallel_assets>1; '
+                    'optional stagger via multi_asset.stagger_sec)'
+                ),
+            },
+            {
+                'name': 'candidate',
+                'description': (
+                    'observe_once per scope (observer is execution-disabled). '
+                    'Parallel when multi_asset.enabled + partition_data_paths + max_parallel_assets>1; '
+                    'signals/state DB partitioned by scope_tag; '
+                    'optional stagger via multi_asset.stagger_sec'
+                ),
+            },
             {'name': 'allocate', 'description': 'portfolio_allocator chooses top candidates using quota + cluster caps'},
-            {'name': 'execute', 'description': 'package N process_latest_signal only for selected scopes'},
+            {'name': 'execute', 'description': 'execution layer (Package R): create intent -> place broker order -> reconcile'},
+            {'name': 'persist', 'description': 'writes runs/portfolio_cycle_latest.json + allocation_latest.json'},
         ],
         'scopes': scopes,
     }

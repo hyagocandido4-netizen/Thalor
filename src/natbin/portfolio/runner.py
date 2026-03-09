@@ -109,6 +109,27 @@ def load_scopes(*, repo_root: str | Path, config_path: str | Path | None = None)
     return scopes, cfg
 
 
+def compute_stagger_delay(idx: int, *, stagger_sec: float, workers: int) -> float:
+    """Compute per-scope start delay for multi-asset phases.
+
+    Behavior:
+      - workers <= 1 (sequential): constant delay between scopes (idx>0 => stagger_sec)
+      - workers > 1 (parallel): spread starts (idx>0 => idx*stagger_sec)
+    """
+
+    try:
+        ss = float(stagger_sec or 0.0)
+    except Exception:
+        ss = 0.0
+    if ss <= 0.0:
+        return 0.0
+    if int(idx) <= 0:
+        return 0.0
+    if int(workers) <= 1:
+        return ss
+    return float(idx) * ss
+
+
 def _scope_data_paths(root: Path, cfg: Any, scope: PortfolioScope) -> ScopeDataPaths:
     partition = bool(getattr(cfg.multi_asset, 'partition_data_paths', True)) and bool(getattr(cfg.multi_asset, 'enabled', False))
     db_tpl = str(getattr(cfg.multi_asset, 'data_db_template', 'data/market_{scope_tag}.sqlite3'))
@@ -221,6 +242,7 @@ def prepare_scope(
     scope: PortfolioScope,
     data_paths: ScopeDataPaths,
     lookback_candles: int,
+    stagger_delay_sec: float = 0.0,
 ) -> list[SubprocessOutcome]:
     """Prepare data for a single scope.
 
@@ -228,6 +250,9 @@ def prepare_scope(
 
     NOTE: The legacy pipeline writes to the signals DB; do not run observer here.
     """
+
+    if float(stagger_delay_sec or 0.0) > 0:
+        time.sleep(float(stagger_delay_sec))
 
     env = scoped_env(scope.asset, scope.interval_sec, scope.timezone, data_paths=data_paths, execution_enabled=None)
 
@@ -287,8 +312,12 @@ def candidate_scope(
     runtime_paths: ScopeRuntimePaths | None,
     topk: int,
     lookback_candles: int,
+    stagger_delay_sec: float = 0.0,
 ) -> tuple[SubprocessOutcome, CandidateDecision]:
     """Run observer once for a scope (execution disabled) and return candidate decision."""
+
+    if float(stagger_delay_sec or 0.0) > 0:
+        time.sleep(float(stagger_delay_sec))
 
     env = scoped_env(
         scope.asset,
@@ -427,9 +456,30 @@ def run_portfolio_cycle(
         'drain_mode_reason': drain_reason,
     }
 
-    # Determine parallelism.
-    workers = int(max_parallel_assets) if max_parallel_assets is not None else int(getattr(cfg.multi_asset, 'max_parallel_assets', 1) or 1)
-    workers = max(1, min(int(workers), len(scopes) if scopes else 1))
+    # Determine parallelism + optional staggering.
+    multi = getattr(cfg, 'multi_asset', None)
+    multi_enabled = bool(getattr(multi, 'enabled', False))
+    partition_data_paths = bool(getattr(multi, 'partition_data_paths', True))
+    try:
+        stagger_sec = float(getattr(multi, 'stagger_sec', 0.0) or 0.0)
+    except Exception:
+        stagger_sec = 0.0
+    if stagger_sec < 0.0:
+        stagger_sec = 0.0
+
+    if not multi_enabled:
+        # Safety: multi-asset is not enabled -> never fan-out parallel prepares.
+        workers = 1
+    else:
+        workers = int(max_parallel_assets) if max_parallel_assets is not None else int(getattr(multi, 'max_parallel_assets', 1) or 1)
+        workers = max(1, min(int(workers), len(scopes) if scopes else 1))
+
+    # Prepare phase writes to market DB + dataset files.
+    # Keep it single-worker unless per-scope data paths are partitioned.
+    workers_prepare = workers
+    if multi_enabled and workers_prepare > 1 and not partition_data_paths:
+        workers_prepare = 1
+        errors.append('prepare_parallel_disabled:partition_data_paths_false')
 
     # Pre-resolve per-scope data paths.
     data_paths_by_tag: dict[str, ScopeDataPaths] = {}
@@ -451,21 +501,23 @@ def run_portfolio_cycle(
             )
 
 
-    # --- Prepare phase (parallel-safe) ---
+    # --- Prepare phase (market DB + dataset files) ---
     if scopes:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {
-                pool.submit(
+        with ThreadPoolExecutor(max_workers=workers_prepare) as pool:
+            futs: dict[Any, PortfolioScope] = {}
+            for idx, s in enumerate(scopes):
+                if s.scope_tag not in data_paths_by_tag:
+                    continue
+                fut = pool.submit(
                     prepare_scope,
                     repo_root=root,
                     config_path=cfg_path,
                     scope=s,
                     data_paths=data_paths_by_tag[s.scope_tag],
                     lookback_candles=lookback_candles,
-                ): s
-                for s in scopes
-                if s.scope_tag in data_paths_by_tag
-            }
+                    stagger_delay_sec=compute_stagger_delay(idx, stagger_sec=stagger_sec, workers=workers_prepare),
+                )
+                futs[fut] = s
             for fut in as_completed(futs):
                 s = futs[fut]
                 try:
@@ -488,14 +540,9 @@ def run_portfolio_cycle(
     # When multi-asset is enabled we partition runtime sqlite DBs per scope_tag
     # (signals/state) so candidate observation can run in parallel without
     # SQLite locking.
-    candidate_parallel = (
-        bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False))
-        and bool(getattr(getattr(cfg, 'multi_asset', None), 'partition_data_paths', True))
-        and len(scopes) > 1
-        and workers > 1
-    )
+    candidate_parallel = (multi_enabled and partition_data_paths and len(scopes) > 1 and workers > 1)
 
-    def _run_candidate(s: PortfolioScope) -> tuple[SubprocessOutcome, CandidateDecision, str | None]:
+    def _run_candidate(s: PortfolioScope, idx: int) -> tuple[SubprocessOutcome, CandidateDecision, str | None]:
         try:
             outcome, cand = candidate_scope(
                 repo_root=root,
@@ -505,6 +552,9 @@ def run_portfolio_cycle(
                 runtime_paths=runtime_paths_by_tag[s.scope_tag],
                 topk=topk,
                 lookback_candles=lookback_candles,
+                stagger_delay_sec=compute_stagger_delay(
+                    idx, stagger_sec=stagger_sec, workers=(workers if candidate_parallel else 1)
+                ),
             )
             err: str | None = None
             if outcome.returncode != 0:
@@ -543,13 +593,13 @@ def run_portfolio_cycle(
 
     if candidate_parallel:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(_run_candidate, s): s for s in scopes}
+            futs = {pool.submit(_run_candidate, s, idx): s for idx, s in enumerate(scopes)}
             for fut in as_completed(futs):
                 s = futs[fut]
                 results_by_tag[s.scope_tag] = fut.result()
     else:
-        for s in scopes:
-            results_by_tag[s.scope_tag] = _run_candidate(s)
+        for idx, s in enumerate(scopes):
+            results_by_tag[s.scope_tag] = _run_candidate(s, idx)
 
     for s in scopes:
         outcome, cand, err = results_by_tag[s.scope_tag]

@@ -169,6 +169,10 @@ class MultiAssetSettings(BaseModel):
     enabled: bool = False
     max_parallel_assets: int = 4
 
+    # Optional staggering (seconds) between scopes when running parallel phases.
+    # Useful to avoid bursty broker/API requests and reduce simultaneous file I/O.
+    stagger_sec: float = Field(0.0, ge=0.0)
+
     # Portfolio selection limits
     portfolio_topk_total: int = 6
     portfolio_hard_max_positions: int = 6

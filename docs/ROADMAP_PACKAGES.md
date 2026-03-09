@@ -65,9 +65,11 @@ Criar/solidificar a camada de execução (contrato + implementação), com track
 Escalar do “multi-asset observe” para um runtime multi-asset de verdade com orquestração e proteção por portfólio.
 
 ### Entregas (escopo)
-- `run_multi.py`/runner com **stagger inteligente** (evitar picos simultâneos)
+- `natbin.runtime_app portfolio observe` / `natbin.portfolio.runner` com **stagger** (evitar picos simultâneos)
 - Portfolio quota global (hard limit) + quotas por asset
 - Bases separadas por asset e higiene de cache/artefatos
+
+> Status (implementado): suporte a `multi_asset.stagger_sec` + paralelismo protegido por `partition_data_paths`.
 
 ### DoD
 - Execução/observe multi-asset estável por horas sem colisão de DB/arquivos
