@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from natbin.domain.gate_meta import GATE_VERSION, META_FEATURES, compute_scores, train_base_cal_iso_meta
 from natbin.envutil import env_bool, env_float, env_int
-from .runtime.gates.cpreg import maybe_apply_cp_alpha_env
+from natbin.runtime.gates.cpreg import maybe_apply_cp_alpha_env
 from natbin.runtime_migrations import ensure_executed_state_db as _ensure_executed_state_db
 from natbin.runtime_migrations import ensure_signals_v2 as _ensure_signals_v2
 from natbin.runtime_repos import RuntimeTradeLedger, SignalsRepository, preserve_existing_trade
@@ -125,8 +125,8 @@ def load_cfg() -> tuple[dict[str, Any], dict[str, Any]]:
     """
     # Prefer modern resolved config (Package M+).
     try:
-        from .config.loader import load_resolved_config
-        from .config.paths import resolve_config_path, resolve_repo_root
+        from natbin.config.loader import load_resolved_config
+        from natbin.config.paths import resolve_config_path, resolve_repo_root
 
         repo_root = resolve_repo_root(repo_root=None, config_path=None)
         cfg_path = resolve_config_path(repo_root=repo_root, config_path=None)
