@@ -83,7 +83,24 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 
 def _build_features_one_session(g: pd.DataFrame) -> pd.DataFrame:
+    # Capture the group key *before* copying. Pandas attaches `.name` to the
+    # group object, but `DataFrame.copy()` drops that attribute.
+    group_sid = getattr(g, "name", None)
     g = g.copy()
+
+    # Pandas is deprecating/adjusting whether grouping columns are included in
+    # groupby.apply() ("include_groups"). Some environments may run with a
+    # default that excludes the grouping column from `g`, which would drop
+    # `session_id` from the result and break downstream column selection.
+    #
+    # Make the pipeline robust by re-inserting `session_id` from the group key.
+    if "session_id" not in g.columns:
+        sid = group_sid
+        try:
+            sid = int(sid) if sid is not None else -1
+        except Exception:
+            pass
+        g["session_id"] = sid
 
     g["f_ret1"] = np.log(g["close"] / g["close"].shift(1))
     g["f_ret3"] = np.log(g["close"] / g["close"].shift(3))
@@ -165,7 +182,15 @@ def _full_build_dataset(db_path: str, asset: str, interval_sec: int, out_csv: st
     y[~gap_next_ok] = np.nan
     df["y_open_close"] = y
 
-    df = df.groupby("session_id", group_keys=False).apply(_build_features_one_session)
+    # Pandas is changing the default behavior for whether grouping columns are
+    # included in the object passed to `groupby.apply`. Prefer the explicit
+    # `include_groups=False` behavior when supported (and re-insert session_id
+    # inside `_build_features_one_session`). Fall back for older pandas.
+    gb = df.groupby("session_id", group_keys=False)
+    try:
+        df = gb.apply(_build_features_one_session, include_groups=False)
+    except TypeError:
+        df = gb.apply(_build_features_one_session)
 
     feature_cols = [c for c in df.columns if c.startswith("f_")]
     feature_cols = _cleanup_features(df, feature_cols)
@@ -439,7 +464,11 @@ def build_dataset(db_path: str, asset: str, interval_sec: int, out_csv: str) -> 
     y[~gap_next_ok] = np.nan
     df["y_open_close"] = y
 
-    df = df.groupby("session_id", group_keys=False).apply(_build_features_one_session)
+    gb = df.groupby("session_id", group_keys=False)
+    try:
+        df = gb.apply(_build_features_one_session, include_groups=False)
+    except TypeError:
+        df = gb.apply(_build_features_one_session)
     feature_cols = [c for c in df.columns if c.startswith("f_")]
     feature_cols = _cleanup_features(df, feature_cols)
 
