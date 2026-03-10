@@ -46,3 +46,11 @@ python scripts/ci/smoke_runtime_app.py
 ## Observação
 
 Este closeout não muda o roadmap de features (Fase 1+). Ele garante um baseline limpo, testável e consistente.
+
+
+### 4) Organização final de subpastas
+- Módulos canônicos movidos para `domain/`, `adapters/` e `usecases/`.
+- Os módulos na raiz viraram *shims* compatíveis (`import *` + `main()` quando aplicável).
+
+### 5) Lock definitivo do scheduler
+- `natbin.ops.lockfile` agora é coberto por testes (`tests/test_lockfile.py`) para aquisição/liberação e remoção de lock stale.

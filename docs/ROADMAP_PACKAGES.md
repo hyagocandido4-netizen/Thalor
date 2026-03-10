@@ -175,7 +175,7 @@ Dashboard local para inspeção rápida de status/decisões/execuções, sem dep
 
 ---
 
-## Package W — Phase 0 Closeout (código morto + patches + testes determinísticos)
+## Package W — Phase 0 Closeout (código morto + patches + testes determinísticos + organização final)
 
 ### Objetivo
 Fechar a Fase 0 com um baseline limpo e determinístico: remover duplicações/código morto,
@@ -194,3 +194,12 @@ mais críticos (ex.: “sem 1-candle lag” no dataset).
 - `python -m natbin.leak_check` passa sem warnings relevantes
 - `python scripts/ci/smoke_execution_layer.py` e `python scripts/ci/smoke_runtime_app.py` passam
 - CI do GitHub Actions fica **verde**
+
+
+### Package W — fechamento integral
+- `src/natbin/domain/` agora é o caminho canônico para dataset/gate/decision.
+- `src/natbin/adapters/` agora é o caminho canônico para integração de broker/client.
+- `src/natbin/usecases/` agora é o caminho canônico para collect/dataset/observe/refresh.
+- Módulos raiz permanecem como *compatibility shims* para não quebrar scripts/imports legados.
+- `scripts/patches/` foi removido do branch principal.
+- `pytest.ini` fixa `pythonpath=src` para testes determinísticos.
