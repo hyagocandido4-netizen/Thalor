@@ -2,29 +2,43 @@ name: integrity
 
 on:
   push:
+    branches: ["main"]
   pull_request:
 
 jobs:
-  leak-check:
+  ci-windows:
     runs-on: windows-latest
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Install CI dependencies
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-ci.txt
-
-      - name: Smoke - execution layer
-        run: |
-          python scripts/ci/smoke_execution_layer.py
+          pip install -e .
 
       - name: Leak check
-        run: |
-          python -m natbin.leak_check --config config/base.yaml
+        run: python -m natbin.leak_check
+
+      - name: Smoke - execution layer
+        run: python scripts/ci/smoke_execution_layer.py
+
+      - name: Smoke - runtime app (plan/status)
+        run: python scripts/ci/smoke_runtime_app.py
+
+      - name: Unit tests
+        run: pytest -q
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image (paper/CI mode)
+        run: docker build -t thalor:ci .
+      - name: Validate docker-compose
+        run: docker compose -f docker-compose.yml config

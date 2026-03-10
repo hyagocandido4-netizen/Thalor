@@ -9,7 +9,7 @@ out of the observer/scheduler code.
 Package B goal:
 - stop scattering schema definitions across multiple files
 - give CI/smoke tests one place to validate durable runtime tables
-- prepare future migrations/repositories without changing bot behaviour
+- prepare upcoming migrations/repositories without changing bot behaviour
 """
 
 from dataclasses import dataclass

@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from .gate_meta import GATE_VERSION, META_FEATURES, compute_scores, train_base_cal_iso_meta
 from .envutil import env_bool, env_float, env_int
+from .runtime.gates.cpreg import maybe_apply_cp_alpha_env
 from .runtime_migrations import ensure_executed_state_db as _ensure_executed_state_db
 from .runtime_migrations import ensure_signals_v2 as _ensure_signals_v2
 from .runtime_repos import RuntimeTradeLedger, SignalsRepository, preserve_existing_trade
@@ -931,52 +932,15 @@ def main() -> None:
     df_day = df.loc[dt_all.dt.strftime("%Y-%m-%d") == day].copy()
     if len(df_day) == 0:
         raise ValueError("Sem dados no dia atual no dataset.")
-
     # --- P8b: CPREG (alpha schedule + slot-aware) ---
-
-    # Ajusta CP_ALPHA dinamicamente ANTES do compute_scores (só quando gate_mode == 'cp')
-
-    if os.getenv('CPREG_ENABLE', '0').strip() == '1' and gate_mode == 'cp':
-
-        # Usa o horário do último candle (last_dt) na timezone local para ser determinístico
-
-        _sec = (last_dt.hour * 3600) + (last_dt.minute * 60) + last_dt.second
-
-        _frac = _sec / 86400.0
-
-        _slot = executed_today_count(asset, interval_sec, day) + 1
-
-        _a0 = env_float('CPREG_ALPHA_START', '0.06')
-
-        _a1 = env_float('CPREG_ALPHA_END', '0.09')
-
-        _w  = env_float('CPREG_WARMUP_FRAC', '0.50')
-
-        _e  = env_float('CPREG_RAMP_END_FRAC', '0.90')
-
-        _m2 = env_float('CPREG_SLOT2_MULT', '0.85')
-
-        if _frac <= _w:
-
-            _a = _a0
-
-        elif _frac >= _e:
-
-            _a = _a1
-
-        else:
-
-            _u = (_frac - _w) / max(1e-9, (_e - _w))
-
-            _a = _a0 + (_a1 - _a0) * _u
-
-        if _slot >= 2:
-
-            _a = _a * _m2
-
-        _a = max(0.001, min(0.50, _a))
-
-        os.environ['CP_ALPHA'] = '%.4f' % (_a,)
+    # Centralized CPREG helper: if enabled, dynamically updates CP_ALPHA (env)
+    # based on last_dt (local time) + executed slot for the day.
+    if gate_mode == "cp":
+        executed_today = executed_today_count(asset, interval_sec, day)
+        cp_alpha_applied = maybe_apply_cp_alpha_env(last_dt, executed_today=executed_today)
+        if cp_alpha_applied is not None:
+            _d["cp_alpha"] = cp_alpha_applied
+            _d["cpreg_slot"] = int(executed_today) + 1
 
     # --- /P8b ---
 

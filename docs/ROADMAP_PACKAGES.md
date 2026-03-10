@@ -10,10 +10,15 @@ Este documento existe para evitar que a gente “perca o fio” entre patches/ho
 
 ---
 
-## Status atual
+## Status atual (2026-03-09)
 
-- **Package Q**: _done (funcional) / closing (hotfix final pendente, se aplicável)_
-- **Próximo**: **Package R**
+- **Package Q**: done
+- **Package R**: done
+- **Package S**: done
+- **Package T**: done
+- **Package U**: done (inclui hotfix2)
+- **Package V**: done
+- **Próximo**: **Package W** (Phase 0 Closeout)
 
 ---
 
@@ -109,6 +114,8 @@ Deixar o projeto pronto para rodar “como produto” com confiança.
 - Docker + docker-compose
 - Documentação + diagramas
 
+> Status (implementado): CI com `pytest` + smoke runtime, Dockerfile/docker-compose (paper), e JSONL de eventos de execução (`runs/logs/execution_events.jsonl`).
+
 ### DoD
 - CI verde
 - `docker compose up` sobe runtime (paper) sem intervenção
@@ -134,3 +141,56 @@ Construir UI local (Python) para monitoramento e controle do runtime.
 - Atualize o **Status atual** ao concluir um pacote.
 - Crie hotfixes numerados dentro do pacote, mas sempre finalize o pacote com DoD batido.
 
+
+
+---
+
+## Package T — Operational Hardening (throttle + hygiene)
+
+### Objetivo
+Endurecer o runtime para uso contínuo: backoff/throttle em erros, higiene de logs/artefatos e limites operacionais para evitar colapsos.
+
+### Status
+✅ Done
+
+---
+
+## Package U — Production CI + Docker + Logging
+
+### Objetivo
+Consolidar CI em produção (incluindo Docker) e padronizar logging/JSONL para observabilidade e auditoria.
+
+### Status
+✅ Done (inclui hotfix1 e hotfix2)
+
+---
+
+## Package V — Local Dashboard (Streamlit)
+
+### Objetivo
+Dashboard local para inspeção rápida de status/decisões/execuções, sem depender de infra externa.
+
+### Status
+✅ Done
+
+---
+
+## Package W — Phase 0 Closeout (código morto + patches + testes determinísticos)
+
+### Objetivo
+Fechar a Fase 0 com um baseline limpo e determinístico: remover duplicações/código morto,
+arquivar/remover scripts de patches históricos e adicionar testes que garantam os contratos
+mais críticos (ex.: “sem 1-candle lag” no dataset).
+
+### Entregas (escopo)
+- `dataset2.py`: remover duplicação de `build_dataset`, mantendo `build_dataset` (incremental P11) + `_full_build_dataset` (full rebuild).
+- Teste determinístico garantindo que o dataset **inclui** a última vela (label NaN) e que o incremental atualiza corretamente.
+- Centralização de CPREG em `natbin.runtime.gates.cpreg` (menos código “patchy” espalhado).
+- Remoção de `scripts/patches/` do branch `main` (histórico permanece no git).
+- `leak_check` sem warnings ruidosos por termos “future …”.
+
+### Definition of Done (DoD)
+- `pytest -q` passa
+- `python -m natbin.leak_check` passa sem warnings relevantes
+- `python scripts/ci/smoke_execution_layer.py` e `python scripts/ci/smoke_runtime_app.py` passam
+- CI do GitHub Actions fica **verde**

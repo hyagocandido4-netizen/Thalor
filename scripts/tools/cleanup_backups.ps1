@@ -1,6 +1,6 @@
 # scripts/tools/cleanup_backups.ps1
 #
-# Remove arquivos de backup criados automaticamente por scripts/patches
+# Remove arquivos de backup criados automaticamente por scripts legados (patch history)
 # Ex.: *.bak_YYYYMMDD_HHMMSS
 #
 # Uso:

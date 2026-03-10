@@ -145,7 +145,7 @@ def _cleanup_features(df: pd.DataFrame, feature_cols: list[str]) -> list[str]:
     return keep
 
 
-def build_dataset(db_path: str, asset: str, interval_sec: int, out_csv: str) -> DatasetBuildResult:
+def _full_build_dataset(db_path: str, asset: str, interval_sec: int, out_csv: str) -> DatasetBuildResult:
     step = int(interval_sec)
 
     df = _load_candles(db_path, asset, step)
@@ -310,7 +310,7 @@ def _p11_load_candles_from(db_path: str, asset: str, interval_sec: int, ts_from:
 
 
 # guarda a versão FULL original
-_p11_full_build_dataset = build_dataset
+_p11_full_build_dataset = _full_build_dataset
 
 
 def build_dataset(db_path: str, asset: str, interval_sec: int, out_csv: str) -> DatasetBuildResult:

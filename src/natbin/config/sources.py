@@ -6,7 +6,7 @@ We support two YAML layouts:
 
 * Legacy: repo root ``config.yaml`` with keys like ``data.asset`` and
   ``best.threshold``.
-* Modern: ``config/base.yaml`` style (future packages), matching the model
+* Modern: ``config/base.yaml`` style (upcoming packages), matching the model
   shape directly.
 
 We also support *compat* env vars for existing deployments:

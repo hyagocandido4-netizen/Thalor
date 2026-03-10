@@ -1,0 +1,48 @@
+services:
+  # Always available: no broker dependency; runs quick smoke checks in a loop.
+  thalor-paper:
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "0"
+    environment:
+      THALOR__EXECUTION__ENABLED: "1"
+      THALOR__EXECUTION__MODE: "paper"
+    volumes:
+      - ./runs:/app/runs
+    command: >
+      sh -lc "while true; do
+        python scripts/ci/smoke_execution_layer.py &&
+        python scripts/ci/smoke_runtime_app.py &&
+        sleep 60;
+      done"
+    restart: unless-stopped
+
+  # Optional: requires IQ credentials and installs requirements.txt (includes iqoptionapi).
+  # Enable with: docker compose --profile iq up --build thalor-runtime
+  thalor-runtime:
+    profiles: ["iq"]
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "1"
+    env_file:
+      - .env
+    environment:
+      THALOR__EXECUTION__ENABLED: "1"
+      THALOR__EXECUTION__MODE: "paper"
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+    command: >
+      sh -lc "while true; do
+        python -m natbin.runtime_app portfolio observe
+          --repo-root .
+          --config config/multi_asset.yaml
+          --once
+          --topk 3
+          --lookback-candles 2000
+          --json;
+        sleep 60;
+      done"
+    restart: unless-stopped

@@ -33,10 +33,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Legacy patch/migration scripts under scripts/patches are historical
-          # artifacts and are not part of the operational runtime.
-          $files = Get-ChildItem -Recurse -Filter *.ps1 -Path scripts |
-            Where-Object { $_.FullName -notlike '*\scripts\patches\*' }
+          $files = Get-ChildItem -Recurse -Filter *.ps1 -Path scripts
+
+
 
           $all = @()
           foreach ($f in $files) {

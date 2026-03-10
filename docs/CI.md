@@ -18,8 +18,8 @@ Checks principais:
 - **Runtime contracts smoke** (`scripts/tools/runtime_contract_smoke.py`)
 - **Runtime repositories smoke** (`scripts/tools/runtime_repos_smoke.py`)
 
-> Importante: scripts antigos em `scripts/patches/` podem conter trechos não‑PS1 válidos.
-> O CI deve focar nos scripts **operacionais** (ex.: `scripts/scheduler/`).
+> Nota: os scripts de patches/migrações históricos foram removidos do branch `main` (permanecem no histórico do git).
+> O CI foca apenas nos scripts **operacionais** (ex.: `scripts/scheduler/`, `scripts/ci/`, `scripts/tools/`).
 
 ### `.github/workflows/integrity.yml`
 
