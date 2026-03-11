@@ -46,3 +46,26 @@ services:
         sleep 60;
       done"
     restart: unless-stopped
+
+
+  # Optional: local operational dashboard (read-only).
+  # Enable with: docker compose --profile dashboard up --build thalor-dashboard
+  thalor-dashboard:
+    profiles: ["dashboard"]
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "0"
+    environment:
+      THALOR__EXECUTION__MODE: "paper"
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+    ports:
+      - "8501:8501"
+    command: >
+      sh -lc "streamlit run src/natbin/dashboard/app.py
+        --server.address 0.0.0.0
+        --server.port 8501
+        -- --repo-root . --config config/multi_asset.yaml"
+    restart: unless-stopped

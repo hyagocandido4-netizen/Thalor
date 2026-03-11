@@ -30,9 +30,13 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -U pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# credenciais (NUNCA commitar)
+# ambiente local / toggles
 Copy-Item .env.example .env
-# edite .env com IQ_EMAIL / IQ_PASSWORD
+
+# fluxo preferido de credenciais (Package M6)
+Copy-Item .\config\broker_secrets.yaml.example .\config\broker_secrets.yaml
+# ajuste THALOR_SECRETS_FILE no .env para apontar para config/broker_secrets.yaml
+# ou use THALOR_BROKER_EMAIL_FILE / THALOR_BROKER_PASSWORD_FILE
 ```
 
 > Dica: por padrão o bot usa `IQ_BALANCE_MODE=PRACTICE`.
@@ -54,6 +58,71 @@ Compatibilidade e precedência:
 - overrides modernos `THALOR__*` têm precedência sobre `IQ_*` e sobre o YAML
 - CLIs Python com `--repo-root` resolvem `config/base.yaml`, `config.yaml` e `.env` relativos à raiz informada
 
+## Compartilhar um ZIP limpo (Package M1)
+
+Para gerar um pacote seguro de compartilhamento, sem `.env`, `.git`, `.venv`,
+`data/`, `runs/` e caches locais:
+
+```powershell
+python -m natbin.release_hygiene --repo-root . --out exports/thalor_clean.zip --json
+```
+
+Alternativas equivalentes:
+
+```powershell
+python scripts/tools/release_bundle.py --repo-root . --out exports/thalor_clean.zip --json
+pwsh -ExecutionPolicy Bypass -File .\scripts\tools\export_repo_sanitized.ps1 -Out exports\thalor_clean.zip -Json
+```
+
+Dry-run / auditoria sem gerar ZIP:
+
+```powershell
+python -m natbin.release_hygiene --repo-root . --dry-run --json
+```
+
+Docs: `docs/RELEASE_HYGIENE.md`
+
+## Intelligence Layer (Package M5)
+
+O runtime agora suporta um pack de inteligência por scope, usado para
+enriquecer os candidatos antes da alocação no portfolio:
+
+```powershell
+python -m natbin.intelligence_pack --repo-root . --asset EURUSD-OTC --interval-sec 300 --json
+```
+
+Artefatos por scope:
+
+- `runs/intelligence/<scope_tag>/pack.json`
+- `runs/intelligence/<scope_tag>/latest_eval.json`
+- `runs/intelligence/<scope_tag>/drift_state.json`
+- `runs/intelligence/<scope_tag>/retrain_trigger.json` (quando houver trigger)
+
+O dashboard local mostra um painel **Intelligence (M5)** com esses artefatos.
+
+Docs: `docs/INTELLIGENCE_M5.md`
+
+## Security hardening (Package M6)
+
+O runtime agora tem uma trilha explícita para secrets/redaction/auditoria:
+
+```powershell
+python -m natbin.runtime_app security --repo-root . --json
+```
+
+Fluxo recomendado para live controlado:
+
+- mantenha credenciais fora do YAML canônico
+- use `config/broker_secrets.yaml` ou `secrets/broker.yaml` ignorado pelo git
+- aponte `THALOR_SECRETS_FILE` para esse arquivo
+- em live, prefira `security.live_require_external_credentials: true`
+
+O dashboard local agora mostra um painel **Security (M6)** e os dumps de config
+efetiva / artefatos de control plane passam a ser redigidos antes de serem
+compartilhados.
+
+Docs: `docs/SECURITY_HARDENING_M6.md`
+
 ## Comandos principais
 
 ### 1) Control plane canônico (Package M)
@@ -66,6 +135,9 @@ python -m natbin.runtime_app plan --repo-root . --json
 python -m natbin.runtime_app quota --repo-root . --json
 python -m natbin.runtime_app precheck --repo-root . --json
 python -m natbin.runtime_app health --repo-root . --json
+python -m natbin.runtime_app security --repo-root . --json
+python -m natbin.runtime_app incidents status --repo-root . --json
+python -m natbin.runtime_app incidents drill --repo-root . --scenario broker_down --json
 ```
 
 Rodar **um ciclo**:

@@ -14,6 +14,8 @@ Checks principais:
 - **PowerShell syntax** (parse dos scripts operacionais)
 - **Hidden unicode / bidi guard**
 - **Repo selfcheck** (`scripts/tools/selfcheck_repo.py`)
+- **Release hygiene smoke** (`scripts/tools/release_hygiene_smoke.py`)
+- **Security hardening smoke** (`scripts/tools/security_hardening_smoke.py`)
 - **Regression smoke** (`scripts/tools/regression_smoke.py`)
 - **Runtime contracts smoke** (`scripts/tools/runtime_contract_smoke.py`)
 - **Runtime repositories smoke** (`scripts/tools/runtime_repos_smoke.py`)
@@ -24,6 +26,7 @@ Checks principais:
 ### `.github/workflows/integrity.yml`
 
 - roda `scripts/tools/leak_check.py` (garantir que não vazamos segredos/artefatos no repo)
+- roda `python -m natbin.release_hygiene --repo-root . --dry-run --json` (garantir que o bundle limpo continua exportável)
 
 ## Rodando localmente
 
@@ -36,6 +39,12 @@ Checks principais:
 
 # unicode guard
 .\.venv\Scripts\python.exe scripts/tools/check_hidden_unicode.py
+
+
+# release hygiene
+.\.venv\Scripts\python.exe scripts/tools/release_hygiene_smoke.py
+.\.venv\Scripts\python.exe scripts/tools/security_hardening_smoke.py
+.\.venv\Scripts\python.exe -m natbin.release_hygiene --repo-root . --dry-run --json
 
 # regression smoke
 .\.venv\Scripts\python.exe scripts/tools/regression_smoke.py
@@ -55,6 +64,7 @@ Checks principais:
   - scripts PS com sintaxe inválida
   - caracteres invisíveis/bidi maliciosos
   - `.env`/`runs/`/`data/` não ignorados
+  - bundle limpo não exportável
   - invariantes críticos de schema/persistência
 
 

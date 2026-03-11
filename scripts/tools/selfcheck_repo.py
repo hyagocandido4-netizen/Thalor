@@ -9,6 +9,7 @@ It verifies:
   - gate_meta API surface exists
   - observe_signal_topk_perday can be imported
   - observe_loop_auto.ps1 helper functions exist
+  - release_hygiene export surface exists
   - Git ignore rules for secrets & heavy artifacts are in place
 
 Exit code 0 on success, non-zero on failure.
@@ -228,6 +229,27 @@ def main() -> None:
         _fail(f"config v2 API broken: {e}")
     _ok("config v2 API ok")
 
+    # 1j) release hygiene surface
+    try:
+        from natbin.release_hygiene import build_release_report  # noqa: F401
+        from natbin.ops.release_hygiene import create_release_bundle, should_include_path  # noqa: F401
+    except Exception as e:  # pragma: no cover
+        _fail(f"release hygiene API broken: {e}")
+    _ok("release hygiene API ok")
+
+    # 1k) M7 productization surface
+    try:
+        from natbin.alerting.telegram import (  # noqa: F401
+            alerts_status_payload,
+            dispatch_telegram_alert,
+            flush_pending_alerts,
+            resolve_telegram_credentials,
+        )
+        from natbin.release_readiness import build_release_readiness_payload  # noqa: F401
+    except Exception as e:  # pragma: no cover
+        _fail(f"M7 productization API broken: {e}")
+    _ok("M7 productization API ok")
+
     # 2) observe import
     try:
         from natbin import observe_signal_topk_perday  # noqa: F401
@@ -260,6 +282,15 @@ def main() -> None:
         _fail("observe_loop_auto.ps1 is not thin enough (contains runtime logic)")
     _ok("observe_loop_auto.ps1 thin wrapper ok")
 
+    # export_repo_sanitized.ps1 should delegate to the canonical Python bundle script
+    export_ps1 = root / "scripts" / "tools" / "export_repo_sanitized.ps1"
+    if not export_ps1.exists():
+        _fail("scripts/tools/export_repo_sanitized.ps1 not found")
+    export_txt = export_ps1.read_text(encoding="utf-8", errors="replace")
+    if "release_bundle.py" not in export_txt:
+        _fail("export_repo_sanitized.ps1 does not delegate to release_bundle.py")
+    _ok("export_repo_sanitized.ps1 wrapper ok")
+
     # .env.example should exist (settings.py references it and CI docs expect it)
     if not (root / ".env.example").exists():
         _fail(".env.example is missing (create it or restore from template)")
@@ -273,7 +304,11 @@ def main() -> None:
         # For ignored directories, use a trailing slash so `git check-ignore`
         # works even when the directory is absent in a clean CI checkout.
         _git_check_ignored("runs/", True, root)
+        _git_check_ignored("runs_smoke/", True, root)
         _git_check_ignored("data/", True, root)
+        _git_check_ignored("exports/", True, root)
+        _git_check_ignored("backups/", True, root)
+        _git_check_ignored("configs/variants/", True, root)
         _ok("gitignore hygiene ok")
 
 

@@ -168,7 +168,7 @@ def run() -> None:
     # --- Control plane (health / precheck) ---
     st.subheader("Control plane")
 
-    col_a, col_b = st.columns(2)
+    col_a, col_b, col_c, col_d = st.columns(4)
 
     with col_a:
         st.markdown("**Health**")
@@ -189,6 +189,42 @@ def run() -> None:
             st.json(pre, expanded=False)
         except Exception as e:
             st.warning(f"precheck_payload falhou: {e}")
+
+    with col_c:
+        st.markdown("**Security (M6)**")
+        sec_path = repo / 'runs' / 'control'
+        try:
+            from natbin.control.commands import security_payload
+
+            sec = security_payload(repo_root=str(repo), config_path=str(cfg))
+            summary = {
+                'severity': sec.get('severity') if isinstance(sec, dict) else None,
+                'blocked': sec.get('blocked') if isinstance(sec, dict) else None,
+                'credential_source': sec.get('credential_source') if isinstance(sec, dict) else None,
+                'deployment_profile': sec.get('deployment_profile') if isinstance(sec, dict) else None,
+            }
+            st.json(summary, expanded=False)
+            with st.expander('raw security payload'):
+                st.json(sec, expanded=False)
+        except Exception as e:
+            st.warning(f"security_payload falhou: {e}")
+
+    with col_d:
+        st.markdown("**Release (M7)**")
+        try:
+            from natbin.control.commands import release_payload
+
+            rel = release_payload(repo_root=str(repo), config_path=str(cfg))
+            summary = {
+                'severity': rel.get('severity') if isinstance(rel, dict) else None,
+                'ready_for_live': rel.get('ready_for_live') if isinstance(rel, dict) else None,
+                'execution_live': rel.get('execution_live') if isinstance(rel, dict) else None,
+            }
+            st.json(summary, expanded=False)
+            with st.expander('raw release payload'):
+                st.json(rel, expanded=False)
+        except Exception as e:
+            st.warning(f"release_payload falhou: {e}")
 
     # --- Portfolio status / last cycle ---
     st.subheader("Portfolio (multi-asset)")
@@ -258,16 +294,103 @@ def run() -> None:
         # Allocation summary
         if latest_alloc:
             st.markdown("**Última alocação**")
-            st.json(
-                {
-                    "allocation_id": latest_alloc.get("allocation_id"),
-                    "at_utc": latest_alloc.get("at_utc"),
-                    "max_select": latest_alloc.get("max_select"),
-                    "selected": latest_alloc.get("selected"),
-                    "suppressed": latest_alloc.get("suppressed"),
-                },
-                expanded=False,
-            )
+            summary = {
+                "allocation_id": latest_alloc.get("allocation_id"),
+                "at_utc": latest_alloc.get("at_utc"),
+                "max_select": latest_alloc.get("max_select"),
+                "selected_count": len(latest_alloc.get("selected") or []),
+                "suppressed_count": len(latest_alloc.get("suppressed") or []),
+                "portfolio_quota": latest_alloc.get("portfolio_quota"),
+                "risk_summary": latest_alloc.get("risk_summary"),
+                "selected": latest_alloc.get("selected"),
+                "suppressed": latest_alloc.get("suppressed"),
+            }
+            st.json(summary, expanded=False)
+
+    # --- Operations / Alerts (M7) ---
+    st.subheader("Operations / Alerts (M7)")
+
+    ops_a, ops_b, ops_c = st.columns(3)
+
+    with ops_a:
+        st.markdown("**Ops gates**")
+        try:
+            from natbin.control.ops import gate_status
+
+            gates = gate_status(repo_root=str(repo), config_path=str(cfg))
+            st.json(gates, expanded=False)
+        except Exception as e:
+            st.warning(f"gate_status falhou: {e}")
+
+    with ops_b:
+        st.markdown("**Alerts (M7)**")
+        try:
+            from natbin.control.commands import alerts_payload
+
+            alert_state = alerts_payload(repo_root=str(repo), config_path=str(cfg), limit=20)
+            tg = (alert_state or {}).get('telegram') or {}
+            summary = {
+                'enabled': tg.get('enabled'),
+                'send_enabled': tg.get('send_enabled'),
+                'credentials_present': tg.get('credentials_present'),
+                'recent_counts': tg.get('recent_counts'),
+            }
+            st.json(summary, expanded=False)
+            recent_alerts = list(tg.get('recent') or [])[-5:]
+            if recent_alerts:
+                with st.expander('recent alerts'):
+                    st.json(recent_alerts, expanded=False)
+        except Exception as e:
+            st.warning(f"alerts_payload falhou: {e}")
+
+    with ops_c:
+        st.markdown("**Runbook quick-check**")
+        quick = {
+            'docs/OPERATIONS.md': (repo / 'docs' / 'OPERATIONS.md').exists(),
+            'docs/DOCKER.md': (repo / 'docs' / 'DOCKER.md').exists(),
+            'docs/ALERTING_M7.md': (repo / 'docs' / 'ALERTING_M7.md').exists(),
+            'docker-compose.prod.yml': (repo / 'docker-compose.prod.yml').exists(),
+        }
+        st.json(quick, expanded=False)
+
+    # --- Incident Ops (M7.1) ---
+    st.subheader("Incident Ops (M7.1)")
+
+    inc_a, inc_b = st.columns(2)
+
+    with inc_a:
+        st.markdown("**Incident status**")
+        try:
+            from natbin.control.commands import incidents_payload
+
+            incident_state = incidents_payload(repo_root=str(repo), config_path=str(cfg), limit=20, window_hours=24)
+            summary = {
+                'severity': incident_state.get('severity') if isinstance(incident_state, dict) else None,
+                'open_issues': len(list((incident_state.get('open_issues') or []) if isinstance(incident_state, dict) else [])),
+                'recent_incidents': ((incident_state.get('incidents') or {}).get('total') if isinstance(incident_state, dict) else None),
+                'release': (incident_state.get('release') or {}).get('severity') if isinstance(incident_state, dict) else None,
+            }
+            st.json(summary, expanded=False)
+            recent_issues = list((incident_state.get('open_issues') or []) if isinstance(incident_state, dict) else [])[:5]
+            if recent_issues:
+                with st.expander('open issues'):
+                    st.json(recent_issues, expanded=False)
+        except Exception as e:
+            st.warning(f"incidents_payload falhou: {e}")
+
+    with inc_b:
+        st.markdown("**Recommended actions**")
+        try:
+            from natbin.control.commands import incidents_payload
+
+            incident_state = incidents_payload(repo_root=str(repo), config_path=str(cfg), limit=20, window_hours=24)
+            actions = list((incident_state.get('recommended_actions') or []) if isinstance(incident_state, dict) else [])[:5]
+            if actions:
+                st.json(actions, expanded=False)
+            else:
+                st.info('Sem ações recomendadas no momento.')
+        except Exception as e:
+            st.warning(f"incident recommended actions falhou: {e}")
 
     # --- Per-scope: decision + signals ---
     st.subheader("Signals / Decisions por scope")
@@ -290,7 +413,7 @@ def run() -> None:
         signals_db = rp.get("signals_db_path")
         state_db = rp.get("state_db_path")
 
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("**Decision (latest)**")
             dec_path = repo / "runs" / "decisions" / f"decision_latest_{chosen_tag}.json"
@@ -319,6 +442,46 @@ def run() -> None:
                     st.json(dec)
 
         with c2:
+            st.markdown("**Intelligence (M5)**")
+            intel_dir = repo / "runs" / "intelligence" / str(chosen_tag)
+            eval_path = intel_dir / "latest_eval.json"
+            pack_path = intel_dir / "pack.json"
+            retrain_path = intel_dir / "retrain_trigger.json"
+            intel_eval = _read_json(eval_path)
+            intel_pack = _read_json(pack_path)
+            retrain = _read_json(retrain_path)
+            if intel_eval is None:
+                st.info(f"Não encontrei {eval_path}")
+            else:
+                summary = {
+                    "pack_available": intel_eval.get("pack_available") if isinstance(intel_eval, dict) else None,
+                    "base_rank": intel_eval.get("base_rank") if isinstance(intel_eval, dict) else None,
+                    "learned_gate_prob": intel_eval.get("learned_gate_prob") if isinstance(intel_eval, dict) else None,
+                    "intelligence_score": intel_eval.get("intelligence_score") if isinstance(intel_eval, dict) else None,
+                    "allow_trade": intel_eval.get("allow_trade") if isinstance(intel_eval, dict) else None,
+                    "block_reason": intel_eval.get("block_reason") if isinstance(intel_eval, dict) else None,
+                    "slot": intel_eval.get("slot") if isinstance(intel_eval, dict) else None,
+                    "coverage": intel_eval.get("coverage") if isinstance(intel_eval, dict) else None,
+                    "drift": intel_eval.get("drift") if isinstance(intel_eval, dict) else None,
+                    "anti_overfit": intel_eval.get("anti_overfit") if isinstance(intel_eval, dict) else None,
+                }
+                st.json(summary, expanded=False)
+                with st.expander("raw intelligence eval"):
+                    st.json(intel_eval)
+            if intel_pack is not None:
+                st.caption("pack.json carregado")
+                pack_summary = {
+                    "generated_at_utc": intel_pack.get("generated_at_utc"),
+                    "training_rows": ((intel_pack.get("metadata") or {}).get("training_rows")),
+                    "learned_gate_available": bool(intel_pack.get("learned_gate")),
+                    "anti_overfit": intel_pack.get("anti_overfit"),
+                }
+                st.json(pack_summary, expanded=False)
+            if retrain is not None:
+                st.warning("Retrain trigger ativo")
+                st.json(retrain, expanded=False)
+
+        with c3:
             st.markdown("**Signals (recent)**")
             if not signals_db:
                 st.info("signals_db_path não disponível.")

@@ -150,21 +150,25 @@ class ExecutionRepository:
             # Tests expect this file to exist after add_event.
             try:
                 from ..ops.structured_log import append_jsonl
+                from ..security.redaction import collect_sensitive_values, sanitize_payload
 
                 log_path = self.path.parent / 'logs' / 'execution_events.jsonl'
-                append_jsonl(
-                    log_path,
-                    {
-                        'event_id': str(event_id),
-                        'intent_id': str(intent_id or ''),
-                        'event_type': str(event_type),
-                        'created_at_utc': str(created_at_utc or utc_now_iso()),
-                        'broker_name': str(broker_name or ''),
-                        'account_mode': str(account_mode or ''),
-                        'external_order_id': str(external_order_id or ''),
-                        'payload': payload or {},
-                    },
+                event_payload = {
+                    'event_id': str(event_id),
+                    'intent_id': str(intent_id or ''),
+                    'event_type': str(event_type),
+                    'created_at_utc': str(created_at_utc or utc_now_iso()),
+                    'broker_name': str(broker_name or ''),
+                    'account_mode': str(account_mode or ''),
+                    'external_order_id': str(external_order_id or ''),
+                    'payload': payload or {},
+                }
+                event_payload = sanitize_payload(
+                    event_payload,
+                    sensitive_values=collect_sensitive_values(event_payload),
+                    redact_email=True,
                 )
+                append_jsonl(log_path, event_payload)
             except Exception:
                 pass
         finally:

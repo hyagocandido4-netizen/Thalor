@@ -8,6 +8,7 @@ from typing import Any
 
 from ..config.effective_dump import write_effective_config_latest, write_effective_config_snapshot
 from ..config.loader import load_resolved_config
+from ..security.redaction import collect_sensitive_values, sanitize_payload
 from ..config.paths import resolve_config_path, resolve_repo_root
 from ..runtime.health import build_health_payload
 from ..runtime.scope import (
@@ -149,19 +150,48 @@ def build_context(
         scoped_paths=scoped_paths,
         control_paths=control_paths,
     )
+    effective_payload = {
+        'repo_root': str(root),
+        'config_path': str(cfg_path),
+        'scope': asdict(scope),
+        'source_trace': ctx.source_trace,
+        'resolved_config': ctx.resolved_config,
+    }
+    redact_email = bool(getattr(getattr(rcfg, 'security', None), 'redact_email', True))
+    redact_control_artifacts = bool(getattr(getattr(rcfg, 'security', None), 'redact_control_artifacts', True))
+    if redact_control_artifacts:
+        effective_payload = sanitize_payload(
+            effective_payload,
+            sensitive_values=collect_sensitive_values(effective_payload, redact_email=redact_email),
+            redact_email=redact_email,
+        )
     write_control_artifact(
         repo_root=root,
         asset=config.asset,
         interval_sec=config.interval_sec,
         name='effective_config',
-        payload={
-            'repo_root': str(root),
-            'config_path': str(cfg_path),
-            'scope': asdict(scope),
-            'source_trace': ctx.source_trace,
-            'resolved_config': ctx.resolved_config,
-        },
+        payload=effective_payload,
     )
+
+    try:
+        from ..security.audit import audit_security_posture
+
+        if bool(getattr(getattr(rcfg, 'security', None), 'audit_on_context_build', True)):
+            security_payload = audit_security_posture(
+                repo_root=root,
+                config_path=cfg_path,
+                resolved_config=rcfg,
+                source_trace=ctx.source_trace,
+            )
+            write_control_artifact(
+                repo_root=root,
+                asset=config.asset,
+                interval_sec=config.interval_sec,
+                name='security',
+                payload=security_payload,
+            )
+    except Exception:
+        pass
     return ctx
 
 

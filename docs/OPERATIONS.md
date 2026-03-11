@@ -162,6 +162,17 @@ observability:
   structured_logs_path: runs/logs/runtime_structured.jsonl
 ```
 
+## Compartilhar o projeto sem vazar artefatos locais
+
+Quando precisar mandar o repo para outra máquina/pessoa, gere um ZIP limpo:
+
+```powershell
+python -m natbin.release_hygiene --repo-root . --out exports/thalor_clean.zip --json
+```
+
+Isso exclui `.env`, `.git`, `.venv`, `data/`, `runs/`, caches e metadados
+locais de empacotamento. Use `--dry-run` para auditar antes de gerar o ZIP.
+
 ## Problemas comuns
 
 ### “Sem sinais” / sempre HOLD
@@ -193,3 +204,44 @@ mas se ocorrer, priorize:
 - `RUNTIME_RETENTION_DAYS` controla prune de artefatos (CSV/summary/SQLite rows).
 - O prune deve ser **idempotente** e seguro.
 
+
+
+## Alerting / Telegram (M7)
+
+### Status
+
+```bash
+python -m natbin.runtime_app alerts status --repo-root . --config config/multi_asset.yaml --json
+```
+
+### Teste operacional
+
+```bash
+python -m natbin.runtime_app alerts test --repo-root . --config config/multi_asset.yaml --json
+```
+
+### Checklist final de release
+
+```bash
+python -m natbin.runtime_app release --repo-root . --config config/multi_asset.yaml --json
+python -m natbin.runtime_app alerts release --repo-root . --config config/multi_asset.yaml --json
+```
+
+### Reenvio de fila pendente
+
+```bash
+python -m natbin.runtime_app alerts flush --repo-root . --config config/multi_asset.yaml --limit 20 --json
+```
+
+
+## Incident ops (M7.1)
+
+```powershell
+python -m natbin.runtime_app incidents status --repo-root . --config config/multi_asset.yaml --json
+python -m natbin.runtime_app incidents report --repo-root . --config config/multi_asset.yaml --json
+python -m natbin.runtime_app incidents alert --repo-root . --config config/multi_asset.yaml --json
+python -m natbin.runtime_app incidents drill --repo-root . --config config/multi_asset.yaml --scenario broker_down --json
+```
+
+Use `incidents status` como primeira triagem antes de mexer em kill-switch,
+drain mode ou restart do runtime.

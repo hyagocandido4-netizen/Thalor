@@ -1,0 +1,188 @@
+version: "2.0"
+
+runtime:
+  profile: live_controlled_practice
+  quota_aware_sleep: true
+  legacy_runtime_cleanup_enable: true
+  stale_artifact_after_sec: 900
+  startup_invalidate_stale_artifacts: true
+  startup_lifecycle_artifacts: true
+  lock_refresh_enable: true
+
+broker:
+  provider: iqoption
+  balance_mode: PRACTICE
+  api_throttle_min_interval_s: 0.20
+  api_throttle_jitter_s: 0.05
+
+data:
+  db_path: data/market_otc.sqlite3
+  dataset_path: data/dataset_phase2.csv
+  lookback_candles: 2000
+  max_batch: 1000
+
+decision:
+  gate_mode: cp
+  meta_model: hgb
+  thresh_on: ev
+  threshold: 0.02
+  tune_dir: runs/tune_mw_topk_20260223_222559
+  bounds:
+    vol_lo: 0.001960
+    vol_hi: 0.006510
+    bb_lo: 0.008000
+    bb_hi: 0.039000
+    atr_lo: 0.000800
+    atr_hi: 0.003100
+  pacing_enable: true
+  fail_closed: true
+
+quota:
+  target_trades_per_day: 1.0
+  hard_max_trades_per_day: 1
+  pacing_morning_cap: 1
+  pacing_afternoon_cap: 1
+  pacing_morning_until_hhmm: "08:00"
+  pacing_afternoon_until_hhmm: "16:00"
+
+autos:
+  enabled: true
+  summary_fail_closed: true
+  legacy_summary_fallback: false
+  min_days_used: 3
+  min_trades_eval: 10
+  volume_enabled: true
+  isoblend_enabled: true
+  hourthr_enabled: true
+
+observability:
+  status_enable: true
+  metrics_enable: false
+  metrics_bind: 127.0.0.1:9108
+  structured_logs_enable: true
+  structured_logs_path: runs/logs/runtime_structured.jsonl
+  loop_log_enable: true
+  loop_log_dir: runs/logs
+  loop_log_retention_days: 14
+  incidents_enable: true
+  decision_snapshots_enable: true
+
+failsafe:
+  global_fail_closed: true
+  market_context_fail_closed: true
+  summary_fail_closed: true
+  kill_switch_file: runs/KILL_SWITCH
+  kill_switch_env_var: THALOR_KILL_SWITCH
+  drain_mode_file: runs/DRAIN_MODE
+  drain_mode_env_var: THALOR_DRAIN_MODE
+  circuit_breaker_enable: true
+  breaker_failures_to_open: 3
+  breaker_cooldown_minutes: 15
+  breaker_half_open_trials: 1
+
+multi_asset:
+  enabled: false
+  max_parallel_assets: 1
+  portfolio_topk_total: 1
+  portfolio_hard_max_positions: 1
+  portfolio_hard_max_trades_per_day: 1
+  portfolio_hard_max_pending_unknown_total: 1
+  portfolio_hard_max_positions_per_asset: 1
+  portfolio_hard_max_positions_per_cluster: 1
+  correlation_filter_enable: true
+  max_trades_per_cluster_per_cycle: 1
+  partition_data_paths: false
+  data_db_template: data/market_{scope_tag}.sqlite3
+  dataset_path_template: data/datasets/{scope_tag}/dataset.csv
+
+intelligence:
+  enabled: true
+  artifact_dir: runs/intelligence
+  slot_aware_enable: true
+  slot_aware_min_trades: 6
+  slot_aware_prior_weight: 8.0
+  slot_aware_multiplier_min: 0.85
+  slot_aware_multiplier_max: 1.15
+  learned_gating_enable: true
+  learned_gating_min_rows: 50
+  learned_gating_weight: 0.60
+  drift_monitor_enable: true
+  drift_recent_limit: 200
+  drift_warn_psi: 0.15
+  drift_block_psi: 0.30
+  drift_fail_closed: false
+  retrain_warn_streak: 3
+  retrain_block_streak: 1
+  coverage_regulator_enable: true
+  coverage_target_trades_per_day: 1.0
+  coverage_tolerance: 0.50
+  coverage_bias_weight: 0.04
+  anti_overfit_enable: true
+  anti_overfit_fail_closed: false
+  anti_overfit_min_robustness: 0.50
+
+security:
+  enabled: true
+  deployment_profile: live
+  redact_control_artifacts: true
+  redact_structured_logs: true
+  redact_email: true
+  allow_embedded_credentials: false
+  live_require_credentials: true
+  live_require_external_credentials: true
+  secrets_file: null
+  audit_on_context_build: true
+  guard:
+    enabled: true
+    live_only: true
+    min_submit_spacing_sec: 10
+    max_submit_per_minute: 2
+    time_filter_enable: true
+    allowed_start_local: "00:00"
+    allowed_end_local: "23:59"
+    blocked_weekdays_local: []
+    state_path: runs/security/broker_guard_state.json
+
+notifications:
+  enabled: true
+  history_limit: 200
+  telegram:
+    enabled: false
+    send_enabled: false
+    parse_mode: HTML
+    outbox_path: runs/alerts/telegram_outbox.jsonl
+    state_path: runs/alerts/telegram_state.json
+
+execution:
+  enabled: true
+  mode: live
+  provider: iqoption
+  account_mode: PRACTICE
+  fail_closed: true
+  client_order_prefix: thalor
+  stake:
+    amount: 2.0
+    currency: BRL
+  submit:
+    grace_sec: 2
+    max_latency_ms: 1500
+    retry_on_reject: false
+    retry_on_timeout: false
+  reconcile:
+    poll_interval_sec: 5
+    history_lookback_sec: 3600
+    orphan_lookback_sec: 7200
+    not_found_grace_sec: 20
+    settle_grace_sec: 30
+  limits:
+    max_pending_unknown: 1
+    max_open_positions: 1
+
+assets:
+  - asset: EURUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 1
+    weight: 1.0
+    cluster_key: fx

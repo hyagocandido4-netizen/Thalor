@@ -31,7 +31,16 @@ multi_asset:
   # Optional: hard cap of consuming intents per day for the whole portfolio.
   portfolio_hard_max_trades_per_day: 6
 
-  # Risk: cap number of selections per cluster per cycle.
+  # Quota global forte: while there is an unresolved pending submit, block new
+  # selections for the portfolio.
+  portfolio_hard_max_pending_unknown_total: 1
+
+  # Exposure caps across all scopes.
+  portfolio_hard_max_positions_per_asset: 1
+  portfolio_hard_max_positions_per_cluster: 1
+
+  # Correlation filter uses cluster_key as the correlation group.
+  correlation_filter_enable: true
   max_trades_per_cluster_per_cycle: 1
 
   # Strongly recommended for safe parallelism: isolate each scope data DB + dataset file.
@@ -41,6 +50,32 @@ multi_asset:
 
 quota:
   hard_max_trades_per_day: 3
+
+intelligence:
+  enabled: true
+  artifact_dir: runs/intelligence
+  slot_aware_enable: true
+  slot_aware_min_trades: 6
+  slot_aware_prior_weight: 8.0
+  slot_aware_multiplier_min: 0.85
+  slot_aware_multiplier_max: 1.15
+  learned_gating_enable: true
+  learned_gating_min_rows: 50
+  learned_gating_weight: 0.60
+  drift_monitor_enable: true
+  drift_recent_limit: 200
+  drift_warn_psi: 0.15
+  drift_block_psi: 0.30
+  drift_fail_closed: false
+  retrain_warn_streak: 3
+  retrain_block_streak: 1
+  coverage_regulator_enable: true
+  coverage_target_trades_per_day: null
+  coverage_tolerance: 0.50
+  coverage_bias_weight: 0.04
+  anti_overfit_enable: true
+  anti_overfit_fail_closed: false
+  anti_overfit_min_robustness: 0.50
 
 execution:
   enabled: true

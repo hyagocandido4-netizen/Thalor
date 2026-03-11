@@ -85,6 +85,13 @@ def load_thalor_config(
             )
 
     cfg = _Settings(config_path=path)
+    secret_trace: list[str] = []
+    try:
+        from ..security.secrets import apply_external_secret_overrides
+
+        cfg, secret_trace = apply_external_secret_overrides(cfg, repo_root=root)
+    except Exception:
+        secret_trace = []
     if profile is not None:
         cfg.runtime.profile = str(profile)
     if cli_overrides:
@@ -92,6 +99,10 @@ def load_thalor_config(
         updates = {k: v for k, v in dict(cli_overrides).items() if k in allowed}
         if updates:
             cfg.runtime_overrides = cfg.runtime_overrides.model_copy(update=updates)
+    try:
+        object.__setattr__(cfg, '_secret_source_trace', list(secret_trace))
+    except Exception:
+        pass
     return cfg
 
 
@@ -133,6 +144,10 @@ def load_resolved_config(
                     break
 
     trace = build_source_trace(config_path=Path(cfg.config_path), env_path=env_file)
+    extra_trace = list(getattr(cfg, '_secret_source_trace', []) or [])
+    for item in extra_trace:
+        if item not in trace:
+            trace.append(item)
     return ResolvedConfig(
         version=str(cfg.version),
         profile=str(cfg.runtime.profile),
@@ -148,7 +163,10 @@ def load_resolved_config(
         failsafe=cfg.failsafe,
         runtime=cfg.runtime,
         multi_asset=cfg.multi_asset,
+        intelligence=cfg.intelligence,
         execution=cfg.execution,
+        security=cfg.security,
+        notifications=cfg.notifications,
         runtime_overrides=cfg.runtime_overrides,
         source_trace=trace,
     )

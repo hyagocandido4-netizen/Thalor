@@ -138,6 +138,12 @@ def control_artifact_paths(*, repo_root: str | Path, asset: str, interval_sec: i
         'execution': str(base / 'execution.json'),
         'orders': str(base / 'orders.json'),
         'reconcile': str(base / 'reconcile.json'),
+        'guard': str(base / 'guard.json'),
+        'lifecycle': str(base / 'lifecycle.json'),
+        'security': str(base / 'security.json'),
+        'release': str(base / 'release.json'),
+        'alerts': str(base / 'alerts.json'),
+        'incidents': str(base / 'incidents.json'),
     }
 
 

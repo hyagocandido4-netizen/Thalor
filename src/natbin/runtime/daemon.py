@@ -20,6 +20,7 @@ from ..telemetry.metrics import REGISTRY
 from ..ops.lockfile import acquire_lock as acquire_lockfile
 from ..ops.lockfile import release_lock as release_lockfile
 from ..ops.structured_log import append_jsonl
+from .hardening import refresh_runtime_lock, startup_sanitize_runtime, write_runtime_lifecycle
 from .precheck import run_precheck
 from .quota import OPEN as QUOTA_OPEN, MAX_K_REACHED, PACING_QUOTA_REACHED, build_quota_snapshot
 from .scope import daemon_lock_path, repo_scope
@@ -105,13 +106,24 @@ def classify_report_ok(report: dict[str, Any]) -> bool:
 
 
 
-def acquire_lock(lock_path: Path):
-    return acquire_lockfile(lock_path)
+def acquire_lock(lock_path: Path, *, owner: dict[str, Any] | None = None):
+    return acquire_lockfile(lock_path, owner=owner)
 
 
 
 def release_lock(lock_path: Path) -> None:
     release_lockfile(lock_path)
+
+
+
+def _lock_owner(*, repo_root: Path, scope, mode: str) -> dict[str, Any]:
+    return {
+        'repo_root': str(repo_root),
+        'scope_tag': str(scope.scope_tag),
+        'asset': str(scope.asset),
+        'interval_sec': int(scope.interval_sec),
+        'mode': str(mode),
+    }
 
 
 
@@ -336,62 +348,91 @@ def _run_cycle(*, repo_root: Path, ctx, scope, topk: int, lookback_candles: int,
 
 
 
+
+def _lock_block_payload(*, lock_path: Path, lock_res) -> dict[str, Any]:
+    return {
+        'phase': 'startup',
+        'ok': False,
+        'state': 'blocked',
+        'message': f'lock_exists:{lock_path.name}',
+        'lock_path': str(lock_path),
+        'lock_pid': getattr(lock_res, 'pid', None),
+        'lock_age_sec': getattr(lock_res, 'age_sec', None),
+        'lock_detail': getattr(lock_res, 'detail', None),
+    }
+
+
 def run_once(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: int = 2000, stop_on_failure: bool = True, precheck_market_context: bool = False) -> dict[str, Any]:
     repo_root = Path(repo_root).resolve()
     scope = _scope_from_repo_root(repo_root)
-    ctx = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
-    decision, quota, market_context, control_repo, failsafe = _precheck_payload(
-        repo_root=repo_root,
-        ctx=ctx,
-        scope=scope,
-        topk=topk,
-        sleep_align_offset_sec=3,
-        enforce_market_context=bool(precheck_market_context),
-    )
-    return _run_cycle(
-        repo_root=repo_root,
-        ctx=ctx,
-        scope=scope,
-        topk=topk,
-        lookback_candles=lookback_candles,
-        stop_on_failure=stop_on_failure,
-        decision=decision,
-        quota=quota,
-        market_context=market_context,
-        control_repo=control_repo,
-        failsafe=failsafe,
-        sleep_align_offset_sec=3,
-    )
+    owner = _lock_owner(repo_root=repo_root, scope=scope, mode='once')
+    lock_path = daemon_lock_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=repo_root / 'runs')
+    lock_res = acquire_lock(lock_path, owner=owner)
+    if not bool(getattr(lock_res, 'acquired', False)):
+        return _lock_block_payload(lock_path=lock_path, lock_res=lock_res)
 
+    ctx = None
+    rep: dict[str, Any] | None = None
+    try:
+        ctx = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
+        startup_sanitize_runtime(repo_root=repo_root, ctx=ctx, mode='once', lock_path=lock_path, owner=owner)
+        refresh_runtime_lock(lock_path=lock_path, ctx=ctx, owner=owner)
+        decision, quota, market_context, control_repo, failsafe = _precheck_payload(
+            repo_root=repo_root,
+            ctx=ctx,
+            scope=scope,
+            topk=topk,
+            sleep_align_offset_sec=3,
+            enforce_market_context=bool(precheck_market_context),
+        )
+        refresh_runtime_lock(lock_path=lock_path, ctx=ctx, owner=owner)
+        rep = _run_cycle(
+            repo_root=repo_root,
+            ctx=ctx,
+            scope=scope,
+            topk=topk,
+            lookback_candles=lookback_candles,
+            stop_on_failure=stop_on_failure,
+            decision=decision,
+            quota=quota,
+            market_context=market_context,
+            control_repo=control_repo,
+            failsafe=failsafe,
+            sleep_align_offset_sec=3,
+        )
+        return rep
+    finally:
+        try:
+            if ctx is not None:
+                write_runtime_lifecycle(
+                    repo_root=repo_root,
+                    ctx=ctx,
+                    event='shutdown',
+                    payload={
+                        'mode': 'once',
+                        'lock_path': str(lock_path),
+                        'last_phase': rep.get('phase') if isinstance(rep, dict) else None,
+                        'last_ok': rep.get('ok') if isinstance(rep, dict) else None,
+                    },
+                )
+        except Exception:
+            pass
+        release_lock(lock_path)
 
 
 def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: int = 2000, max_cycles: int | None = None, sleep_align_offset_sec: int = 3, stop_on_failure: bool = True, quota_aware_sleep: bool = False, precheck_market_context: bool = False) -> int:
     repo_root = Path(repo_root).resolve()
     scope = _scope_from_repo_root(repo_root)
+    owner = _lock_owner(repo_root=repo_root, scope=scope, mode='daemon')
     lock_path = daemon_lock_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=repo_root / 'runs')
-    lock_res = acquire_lock(lock_path)
+    lock_res = acquire_lock(lock_path, owner=owner)
     if not bool(getattr(lock_res, 'acquired', False)):
-        print(
-            json.dumps(
-                {
-                    'phase': 'startup',
-                    'ok': False,
-                    'message': f'lock_exists:{lock_path.name}',
-                    'lock_path': str(lock_path),
-                    'lock_pid': getattr(lock_res, 'pid', None),
-                    'lock_age_sec': getattr(lock_res, 'age_sec', None),
-                    'lock_detail': getattr(lock_res, 'detail', None),
-                },
-                ensure_ascii=False,
-            )
-        )
+        print(json.dumps(_lock_block_payload(lock_path=lock_path, lock_res=lock_res), ensure_ascii=False))
         return 3
 
-    # Package P: optional Prometheus-style metrics + health endpoints.
     telemetry_state = TelemetryState()
     telemetry_server: TelemetryServer | None = None
 
-    # Metrics are registered once per process.
     m_cycle_total = REGISTRY.counter(
         'thalor_runtime_cycle_total',
         help='Total number of runtime daemon loop iterations',
@@ -403,34 +444,41 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
         labelnames=('scope_tag', 'phase'),
     )
 
-    # We need config to decide whether to start telemetry. Use the resolved
-    # config for the current scope.
-    try:
-        ctx0 = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
-        obs = dict((ctx0.resolved_config or {}).get('observability') or {})
-        if bool(obs.get('metrics_enable')):
-            bind = str(obs.get('metrics_bind') or '127.0.0.1:9108')
-            telemetry_server = TelemetryServer(bind=bind, state=telemetry_state)
-            telemetry_server.start()
-            telemetry_state.update(ready=True, ready_reason='ok')
-    except Exception:
-        telemetry_server = None
+    ctx_current = None
+    last_rep: dict[str, Any] | None = None
     cycles = 0
+    exit_code = 0
+
     try:
+        try:
+            ctx_current = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
+            startup_sanitize_runtime(repo_root=repo_root, ctx=ctx_current, mode='daemon', lock_path=lock_path, owner=owner)
+            refresh_runtime_lock(lock_path=lock_path, ctx=ctx_current, owner=owner)
+            obs = dict((ctx_current.resolved_config or {}).get('observability') or {})
+            if bool(obs.get('metrics_enable')):
+                bind = str(obs.get('metrics_bind') or '127.0.0.1:9108')
+                telemetry_server = TelemetryServer(bind=bind, state=telemetry_state)
+                telemetry_server.start()
+                telemetry_state.update(ready=True, ready_reason='ok')
+        except Exception:
+            telemetry_server = None
+
         while True:
             t0 = time.perf_counter()
-            ctx = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
+            ctx_current = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
+            refresh_runtime_lock(lock_path=lock_path, ctx=ctx_current, owner=owner)
             decision, quota, market_context, control_repo, failsafe = _precheck_payload(
                 repo_root=repo_root,
-                ctx=ctx,
+                ctx=ctx_current,
                 scope=scope,
                 topk=topk,
                 sleep_align_offset_sec=sleep_align_offset_sec,
                 enforce_market_context=bool(precheck_market_context),
             )
+            refresh_runtime_lock(lock_path=lock_path, ctx=ctx_current, owner=owner)
             rep = _run_cycle(
                 repo_root=repo_root,
-                ctx=ctx,
+                ctx=ctx_current,
                 scope=scope,
                 topk=topk,
                 lookback_candles=lookback_candles,
@@ -442,9 +490,9 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
                 failsafe=failsafe,
                 sleep_align_offset_sec=sleep_align_offset_sec,
             )
+            last_rep = rep
             print(json.dumps(rep, ensure_ascii=False))
 
-            # Telemetry / structured logs
             try:
                 phase = str(rep.get('phase') or 'cycle')
                 ok = bool(rep.get('ok')) if rep.get('ok') is not None else False
@@ -466,7 +514,7 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
                     ready=(phase not in {'startup', 'precheck'}),
                     ready_reason=('ok' if phase != 'precheck' else str(rep.get('sleep_reason') or rep.get('message') or 'precheck_blocked')),
                 )
-                obs_cfg = dict((ctx.resolved_config or {}).get('observability') or {})
+                obs_cfg = dict((ctx_current.resolved_config or {}).get('observability') or {})
                 if bool(obs_cfg.get('structured_logs_enable', True)):
                     log_path = obs_cfg.get('structured_logs_path') or 'runs/logs/runtime_structured.jsonl'
                     if not Path(str(log_path)).is_absolute():
@@ -495,6 +543,11 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
                     sleep_sec=int(rep.get('sleep_sec') or 0),
                     next_wake_utc=str(rep.get('next_wake_utc') or ''),
                 )
+                refresh_runtime_lock(
+                    lock_path=lock_path,
+                    ctx=ctx_current,
+                    owner={**owner, 'sleep_reason': sleep_plan.reason, 'next_wake_utc': sleep_plan.next_wake_utc},
+                )
                 time.sleep(max(0, int(sleep_plan.sleep_sec)))
                 continue
 
@@ -507,16 +560,41 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
             else:
                 sleep_plan = compute_next_candle_sleep(scope.interval_sec, offset_sec=sleep_align_offset_sec)
             print(json.dumps({'phase': 'sleep', 'reason': sleep_plan.reason, 'sleep_sec': sleep_plan.sleep_sec, 'next_wake_utc': sleep_plan.next_wake_utc}, ensure_ascii=False))
+            refresh_runtime_lock(
+                lock_path=lock_path,
+                ctx=ctx_current,
+                owner={**owner, 'sleep_reason': sleep_plan.reason, 'next_wake_utc': sleep_plan.next_wake_utc},
+            )
             time.sleep(max(0, int(sleep_plan.sleep_sec)))
+        exit_code = 0
         return 0
+    except Exception:
+        exit_code = 2
+        raise
     finally:
         try:
             if telemetry_server is not None:
                 telemetry_server.stop()
         except Exception:
             pass
+        try:
+            if ctx_current is not None:
+                write_runtime_lifecycle(
+                    repo_root=repo_root,
+                    ctx=ctx_current,
+                    event='shutdown',
+                    payload={
+                        'mode': 'daemon',
+                        'lock_path': str(lock_path),
+                        'cycles': int(cycles),
+                        'last_phase': last_rep.get('phase') if isinstance(last_rep, dict) else None,
+                        'last_ok': last_rep.get('ok') if isinstance(last_rep, dict) else None,
+                        'exit_code': int(exit_code),
+                    },
+                )
+        except Exception:
+            pass
         release_lock(lock_path)
-
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -561,7 +639,8 @@ def main(argv: list[str] | None = None) -> int:
     if ns.once:
         rep = run_once(repo_root=repo_root, topk=ns.topk, lookback_candles=ns.lookback_candles, stop_on_failure=not ns.no_stop_on_failure, precheck_market_context=bool(ns.precheck_market_context))
         print(json.dumps(rep, ensure_ascii=False, indent=2))
-        return 0 if classify_report_ok(rep) else 2
+        msg = str(rep.get('message') or '')
+        return 0 if classify_report_ok(rep) else (3 if msg.startswith('lock_exists:') else 2)
     return run_daemon(repo_root=repo_root, topk=ns.topk, lookback_candles=ns.lookback_candles, max_cycles=ns.max_cycles, sleep_align_offset_sec=ns.sleep_align_offset_sec, stop_on_failure=not ns.no_stop_on_failure, quota_aware_sleep=bool(ns.quota_aware_sleep), precheck_market_context=bool(ns.precheck_market_context))
 
 

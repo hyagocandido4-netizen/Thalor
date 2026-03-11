@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
@@ -15,6 +16,15 @@ from .models import AssetQuota, PortfolioQuota, PortfolioScope
 def _resolve_day(*, tz_name: str, now_utc: datetime | None = None) -> str:
     _local, day, _sec = compute_quota_day_context(tz_name=str(tz_name), now_utc=now_utc)
     return str(day)
+
+
+def _to_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 def compute_asset_quotas(
@@ -97,6 +107,7 @@ def compute_asset_quotas(
                 max_pending_unknown=int(max_pending),
                 open_positions=int(open_positions),
                 max_open_positions=int(max_open),
+                cluster_key=str(scope.cluster_key or 'default'),
             )
         )
 
@@ -123,25 +134,50 @@ def compute_portfolio_quota(
     pending_total = 0
     open_total = 0
 
+    executed_by_asset: dict[str, int] = defaultdict(int)
+    pending_by_asset: dict[str, int] = defaultdict(int)
+    open_by_asset: dict[str, int] = defaultdict(int)
+
+    executed_by_cluster: dict[str, int] = defaultdict(int)
+    pending_by_cluster: dict[str, int] = defaultdict(int)
+    open_by_cluster: dict[str, int] = defaultdict(int)
+
     for scope in scopes:
+        executed_scope = 0
+        pending_scope = 0
+        open_scope = 0
         try:
-            executed_total += int(exec_repo.count_consuming_intents(asset=scope.asset, interval_sec=scope.interval_sec, day=day))
+            executed_scope = int(exec_repo.count_consuming_intents(asset=scope.asset, interval_sec=scope.interval_sec, day=day))
+            executed_total += executed_scope
         except Exception:
-            pass
+            executed_scope = 0
         try:
-            pending_total += int(exec_repo.count_pending_unknown(asset=scope.asset, interval_sec=scope.interval_sec))
+            pending_scope = int(exec_repo.count_pending_unknown(asset=scope.asset, interval_sec=scope.interval_sec))
+            pending_total += pending_scope
         except Exception:
-            pass
+            pending_scope = 0
         try:
-            open_total += int(exec_repo.count_open_positions(asset=scope.asset, interval_sec=scope.interval_sec))
+            open_scope = int(exec_repo.count_open_positions(asset=scope.asset, interval_sec=scope.interval_sec))
+            open_total += open_scope
         except Exception:
-            pass
+            open_scope = 0
+
+        asset_key = str(scope.asset)
+        cluster_key = str(scope.cluster_key or 'default')
+        executed_by_asset[asset_key] += int(executed_scope)
+        pending_by_asset[asset_key] += int(pending_scope)
+        open_by_asset[asset_key] += int(open_scope)
+
+        executed_by_cluster[cluster_key] += int(executed_scope)
+        pending_by_cluster[cluster_key] += int(pending_scope)
+        open_by_cluster[cluster_key] += int(open_scope)
 
     hard_max_positions = 1
     try:
         hard_max_positions = int(cfg.multi_asset.portfolio_hard_max_positions)
     except Exception:
         hard_max_positions = 1
+    hard_max_positions = max(1, int(hard_max_positions))
 
     hard_max_trades = None
     try:
@@ -151,11 +187,29 @@ def compute_portfolio_quota(
     except Exception:
         hard_max_trades = None
 
+    hard_max_pending_total = _to_optional_int(getattr(cfg.multi_asset, 'portfolio_hard_max_pending_unknown_total', None))
+    if hard_max_pending_total is not None:
+        hard_max_pending_total = max(1, int(hard_max_pending_total))
+
+    hard_max_positions_per_asset = _to_optional_int(getattr(cfg.multi_asset, 'portfolio_hard_max_positions_per_asset', None))
+    if hard_max_positions_per_asset is not None:
+        hard_max_positions_per_asset = max(1, int(hard_max_positions_per_asset))
+
+    hard_max_positions_per_cluster = _to_optional_int(getattr(cfg.multi_asset, 'portfolio_hard_max_positions_per_cluster', None))
+    if hard_max_positions_per_cluster is not None:
+        hard_max_positions_per_cluster = max(1, int(hard_max_positions_per_cluster))
+
+    correlation_filter_enable = bool(getattr(cfg.multi_asset, 'correlation_filter_enable', True))
+
     kind = 'open'
     reason = ''
     budget_left = None
+    pending_budget_left = None
 
-    if open_total >= max(1, int(hard_max_positions)):
+    if hard_max_pending_total is not None and pending_total >= int(hard_max_pending_total):
+        kind = 'portfolio_pending_unknown'
+        reason = f'pending_unknown_total>={hard_max_pending_total}'
+    elif open_total >= int(hard_max_positions):
         kind = 'portfolio_open_positions'
         reason = f'open_positions_total>={hard_max_positions}'
     elif hard_max_trades is not None and executed_total >= int(hard_max_trades):
@@ -164,6 +218,8 @@ def compute_portfolio_quota(
 
     if hard_max_trades is not None:
         budget_left = max(0, int(hard_max_trades) - int(executed_total))
+    if hard_max_pending_total is not None:
+        pending_budget_left = max(0, int(hard_max_pending_total) - int(pending_total))
 
     return PortfolioQuota(
         day=str(day),
@@ -175,4 +231,15 @@ def compute_portfolio_quota(
         pending_unknown_total=int(pending_total),
         open_positions_total=int(open_total),
         hard_max_positions_total=int(hard_max_positions),
+        hard_max_pending_unknown_total=int(hard_max_pending_total) if hard_max_pending_total is not None else None,
+        budget_left_pending_unknown_total=int(pending_budget_left) if pending_budget_left is not None else None,
+        open_positions_by_asset=dict(sorted(open_by_asset.items())),
+        pending_unknown_by_asset=dict(sorted(pending_by_asset.items())),
+        executed_today_by_asset=dict(sorted(executed_by_asset.items())),
+        open_positions_by_cluster=dict(sorted(open_by_cluster.items())),
+        pending_unknown_by_cluster=dict(sorted(pending_by_cluster.items())),
+        executed_today_by_cluster=dict(sorted(executed_by_cluster.items())),
+        hard_max_positions_per_asset=hard_max_positions_per_asset,
+        hard_max_positions_per_cluster=hard_max_positions_per_cluster,
+        correlation_filter_enable=bool(correlation_filter_enable),
     )

@@ -1,10 +1,43 @@
-# Optional local overlay / example for Package M.
+# Optional local overlay / example for Package M6.
 # Keep config/base.yaml as the canonical runtime-control file.
+#
+# Preferred credential flow:
+#   1) copy config/broker_secrets.yaml.example -> config/broker_secrets.yaml
+#   2) keep the real file ignored by git
+#   3) point security.secrets_file to that path
+
+security:
+  deployment_profile: local
+  secrets_file: config/broker_secrets.yaml
+  allow_embedded_credentials: false
+  live_require_external_credentials: true
+  guard:
+    enabled: true
+    live_only: true
+    min_submit_spacing_sec: 10
+    max_submit_per_minute: 4
+    time_filter_enable: false
+    allowed_start_local: "00:00"
+    allowed_end_local: "23:59"
+    blocked_weekdays_local: []
+
+notifications:
+  enabled: true
+  telegram:
+    enabled: false
+    send_enabled: false
 
 broker:
-  email: your_email@example.com
-  password: your_password_here
   balance_mode: PRACTICE
+  api_throttle_min_interval_s: 0.10
+  api_throttle_jitter_s: 0.05
+
+execution:
+  enabled: false
+  mode: disabled
+
+intelligence:
+  enabled: true
 
 assets:
   - asset: EURUSD-OTC

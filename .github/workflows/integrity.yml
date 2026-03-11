@@ -31,6 +31,29 @@ jobs:
       - name: Smoke - runtime app (plan/status)
         run: python scripts/ci/smoke_runtime_app.py
 
+      - name: Release bundle dry-run
+        run: |
+          python scripts/tools/release_hygiene_smoke.py
+          python -m natbin.release_hygiene --repo-root . --dry-run --json
+
+      - name: Runtime hardening smoke
+        run: python scripts/tools/runtime_hardening_smoke.py
+
+      - name: Portfolio risk smoke
+        run: python scripts/tools/portfolio_risk_smoke.py
+
+      - name: Intelligence pack smoke
+        run: python scripts/tools/intelligence_pack_smoke.py
+
+      - name: Security hardening smoke
+        run: python scripts/tools/security_hardening_smoke.py
+
+      - name: Productization smoke
+        run: python scripts/tools/productization_smoke.py
+
+      - name: Incident ops smoke
+        run: python scripts/tools/incident_ops_smoke.py
+
       - name: Unit tests
         run: pytest -q
 
@@ -41,4 +64,6 @@ jobs:
       - name: Build Docker image (paper/CI mode)
         run: docker build -t thalor:ci .
       - name: Validate docker-compose
-        run: docker compose -f docker-compose.yml config
+        run: |
+          docker compose -f docker-compose.yml config
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config

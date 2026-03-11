@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .models import ResolvedConfig
+from ..security.redaction import collect_sensitive_values, sanitize_payload
 
 
 def _scope_tag(asset: str, interval_sec: int) -> str:
@@ -62,7 +63,14 @@ def write_effective_config_latest(
     root = Path(repo_root).resolve()
     path = root / effective_config_latest_path(asset=cfg.asset, interval_sec=cfg.interval_sec, out_dir=out_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg.as_dict(), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload = cfg.as_dict()
+    if bool(getattr(cfg.security, 'redact_control_artifacts', True)):
+        payload = sanitize_payload(
+            payload,
+            sensitive_values=collect_sensitive_values(payload, redact_email=bool(getattr(cfg.security, 'redact_email', True))),
+            redact_email=bool(getattr(cfg.security, 'redact_email', True)),
+        )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     return path
 
 
@@ -85,5 +93,12 @@ def write_effective_config_snapshot(
         out_dir=out_dir,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cfg.as_dict(), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    payload = cfg.as_dict()
+    if bool(getattr(cfg.security, 'redact_control_artifacts', True)):
+        payload = sanitize_payload(
+            payload,
+            sensitive_values=collect_sensitive_values(payload, redact_email=bool(getattr(cfg.security, 'redact_email', True))),
+            redact_email=bool(getattr(cfg.security, 'redact_email', True)),
+        )
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     return path

@@ -4,10 +4,16 @@ runtime:
   profile: default
   quota_aware_sleep: true
   legacy_runtime_cleanup_enable: true
+  stale_artifact_after_sec: 900
+  startup_invalidate_stale_artifacts: true
+  startup_lifecycle_artifacts: true
+  lock_refresh_enable: true
 
 broker:
   provider: iqoption
   balance_mode: PRACTICE
+  api_throttle_min_interval_s: 0.0
+  api_throttle_jitter_s: 0.0
 
 data:
   db_path: data/market_otc.sqlite3
@@ -81,10 +87,72 @@ multi_asset:
   portfolio_topk_total: 3
   portfolio_hard_max_positions: 1
   portfolio_hard_max_trades_per_day: null
+  portfolio_hard_max_pending_unknown_total: 1
+  portfolio_hard_max_positions_per_asset: 1
+  portfolio_hard_max_positions_per_cluster: 1
+  correlation_filter_enable: true
   max_trades_per_cluster_per_cycle: 1
   partition_data_paths: true
   data_db_template: data/market_{scope_tag}.sqlite3
   dataset_path_template: data/datasets/{scope_tag}/dataset.csv
+
+intelligence:
+  enabled: true
+  artifact_dir: runs/intelligence
+  slot_aware_enable: true
+  slot_aware_min_trades: 6
+  slot_aware_prior_weight: 8.0
+  slot_aware_multiplier_min: 0.85
+  slot_aware_multiplier_max: 1.15
+  learned_gating_enable: true
+  learned_gating_min_rows: 50
+  learned_gating_weight: 0.60
+  drift_monitor_enable: true
+  drift_recent_limit: 200
+  drift_warn_psi: 0.15
+  drift_block_psi: 0.30
+  drift_fail_closed: false
+  retrain_warn_streak: 3
+  retrain_block_streak: 1
+  coverage_regulator_enable: true
+  coverage_target_trades_per_day: null
+  coverage_tolerance: 0.50
+  coverage_bias_weight: 0.04
+  anti_overfit_enable: true
+  anti_overfit_fail_closed: false
+  anti_overfit_min_robustness: 0.50
+
+security:
+  enabled: true
+  deployment_profile: local
+  redact_control_artifacts: true
+  redact_structured_logs: true
+  redact_email: true
+  allow_embedded_credentials: false
+  live_require_credentials: true
+  live_require_external_credentials: false
+  secrets_file: null
+  audit_on_context_build: true
+  guard:
+    enabled: true
+    live_only: true
+    min_submit_spacing_sec: 10
+    max_submit_per_minute: 4
+    time_filter_enable: false
+    allowed_start_local: "00:00"
+    allowed_end_local: "23:59"
+    blocked_weekdays_local: []
+    state_path: runs/security/broker_guard_state.json
+
+notifications:
+  enabled: true
+  history_limit: 200
+  telegram:
+    enabled: false
+    send_enabled: false
+    parse_mode: HTML
+    outbox_path: runs/alerts/telegram_outbox.jsonl
+    state_path: runs/alerts/telegram_state.json
 
 execution:
   enabled: false

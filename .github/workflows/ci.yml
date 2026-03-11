@@ -75,6 +75,11 @@ jobs:
         run: |
           python scripts/tools/selfcheck_repo.py
 
+      - name: Release hygiene smoke
+        run: |
+          python scripts/tools/release_hygiene_smoke.py
+          python -m natbin.release_hygiene --repo-root . --dry-run --json
+
       - name: Regression smoke
         run: |
           python scripts/tools/regression_smoke.py
@@ -114,6 +119,27 @@ jobs:
       - name: Runtime daemon smoke
         run: |
           python scripts/tools/runtime_daemon_smoke.py
+          python scripts/tools/runtime_hardening_smoke.py
+
+      - name: Portfolio risk smoke
+        run: |
+          python scripts/tools/portfolio_risk_smoke.py
+
+      - name: Intelligence pack smoke
+        run: |
+          python scripts/tools/intelligence_pack_smoke.py
+
+      - name: Security hardening smoke
+        run: |
+          python scripts/tools/security_hardening_smoke.py
+
+      - name: Productization smoke
+        run: |
+          python scripts/tools/productization_smoke.py
+
+      - name: Incident ops smoke
+        run: |
+          python scripts/tools/incident_ops_smoke.py
 
       - name: Runtime quota smoke
         run: |

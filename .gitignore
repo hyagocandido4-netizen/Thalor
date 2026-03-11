@@ -13,14 +13,17 @@ ENV/
 # Build / packaging
 build/
 dist/
+htmlcov/
 *.egg-info/
+*.whl
 
 # Test / type / lint caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
+.cache/
 .coverage
-htmlcov/
 
 # ================================
 # OS / editors
@@ -29,6 +32,8 @@ htmlcov/
 Thumbs.db
 .vscode/
 .idea/
+*.swp
+*.tmp
 
 # ================================
 # Secrets / local config
@@ -42,31 +47,37 @@ configs/variants/
 config_*.yml
 config_*.yaml
 
+# External secrets / local secret bundles
+secrets/
+config/*secret.yaml
+config/*secret.yml
+config/*secrets.yaml
+config/*secrets.yml
+
 # ================================
 # Runtime artifacts (generated)
 # ================================
 # IMPORTANT: these are output directories and should never be committed.
 data/
 runs/
+runs_*/
 exports/
 backups/
+artifacts/
+temp_*/
+tmp_*/
 
 # Common artifacts
 *.log
-*.csv
-*.parquet
-*.feather
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 *.db
 *.joblib
 *.pkl
 *.pickle
 *.npy
 *.npz
-
-# SQLite sidecars
-*.sqlite3-wal
-*.sqlite3-shm
 
 # Patch/backup suffixes
 *.bak_*

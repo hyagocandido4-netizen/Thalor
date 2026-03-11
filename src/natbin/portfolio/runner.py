@@ -24,6 +24,7 @@ from ..telemetry.metrics import REGISTRY
 from ..ops.lockfile import acquire_lock as acquire_lockfile
 from ..ops.lockfile import release_lock as release_lockfile
 from ..ops.structured_log import append_jsonl
+from ..intelligence.runtime import enrich_candidate as enrich_candidate_intelligence
 
 from . import allocator as _allocator
 from .models import CandidateDecision, PortfolioCycleReport, PortfolioScope
@@ -218,6 +219,7 @@ def _candidate_from_decision(scope: PortfolioScope, decision: dict[str, Any] | N
     except Exception:
         ev = None
 
+    intelligence = dict(decision.get('intelligence') or {}) if isinstance(decision.get('intelligence'), dict) else {}
     return CandidateDecision(
         scope_tag=scope.scope_tag,
         asset=scope.asset,
@@ -232,6 +234,12 @@ def _candidate_from_decision(scope: PortfolioScope, decision: dict[str, Any] | N
         blockers=str(decision.get('blockers') or '') or None,
         decision_path=str(decision_path),
         raw=dict(decision),
+        intelligence_score=(float(decision.get('intelligence_score')) if decision.get('intelligence_score') is not None else None),
+        learned_gate_prob=(float(decision.get('learned_gate_prob')) if decision.get('learned_gate_prob') is not None else None),
+        slot_multiplier=(float(decision.get('slot_multiplier')) if decision.get('slot_multiplier') is not None else None),
+        drift_level=(str(decision.get('drift_level')) if decision.get('drift_level') is not None else None),
+        coverage_bias=(float(decision.get('coverage_bias')) if decision.get('coverage_bias') is not None else None),
+        intelligence=intelligence,
     )
 
 
@@ -313,6 +321,7 @@ def candidate_scope(
     topk: int,
     lookback_candles: int,
     stagger_delay_sec: float = 0.0,
+    cfg: Any | None = None,
 ) -> tuple[SubprocessOutcome, CandidateDecision]:
     """Run observer once for a scope (execution disabled) and return candidate decision."""
 
@@ -353,6 +362,40 @@ def candidate_scope(
     decision_path = scope_decision_latest_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=Path(repo_root) / 'runs')
     decision = _read_json(decision_path)
     cand = _candidate_from_decision(scope, decision, decision_path=decision_path)
+    if cfg is not None:
+        try:
+            cand = enrich_candidate_intelligence(
+                repo_root=repo_root,
+                scope=scope,
+                candidate=cand,
+                runtime_paths=runtime_paths,
+                cfg=cfg,
+            )
+        except Exception as exc:
+            # Never fail the whole candidate phase because of intelligence extras.
+            raw = dict(cand.raw or {})
+            raw['intelligence_error'] = f'{type(exc).__name__}:{exc}'
+            cand = CandidateDecision(
+                scope_tag=cand.scope_tag,
+                asset=cand.asset,
+                interval_sec=cand.interval_sec,
+                day=cand.day,
+                ts=cand.ts,
+                action=cand.action,
+                score=cand.score,
+                conf=cand.conf,
+                ev=cand.ev,
+                reason=cand.reason,
+                blockers=cand.blockers,
+                decision_path=cand.decision_path,
+                raw=raw,
+                intelligence_score=cand.intelligence_score,
+                learned_gate_prob=cand.learned_gate_prob,
+                slot_multiplier=cand.slot_multiplier,
+                drift_level=cand.drift_level,
+                coverage_bias=cand.coverage_bias,
+                intelligence=cand.intelligence,
+            )
     return outcome, cand
 
 
@@ -555,6 +598,7 @@ def run_portfolio_cycle(
                 stagger_delay_sec=compute_stagger_delay(
                     idx, stagger_sec=stagger_sec, workers=(workers if candidate_parallel else 1)
                 ),
+                cfg=cfg,
             )
             err: str | None = None
             if outcome.returncode != 0:

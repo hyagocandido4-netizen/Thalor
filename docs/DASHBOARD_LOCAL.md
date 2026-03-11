@@ -6,6 +6,7 @@ Este pacote adiciona um **dashboard local, read-only**, para acompanhar em tempo
 - Último ciclo multi-asset (portfolio observe)
 - Últimas decisões por `scope_tag`
 - Feed dos eventos de execução (`runs/logs/execution_events.jsonl`) quando existir
+- Painel de inteligência M5 (`pack.json`, `latest_eval.json`, `retrain_trigger.json`) por `scope_tag`
 
 A implementação é feita em **Streamlit** (web local).
 
@@ -48,5 +49,16 @@ Arquivos adicionados:
 
 - `src/natbin/dashboard/__main__.py` → launcher (`python -m natbin.dashboard`)
 - `src/natbin/dashboard/app.py` → app Streamlit
+  - inclui a coluna **Intelligence (M5)** no detalhe do scope
 - `scripts/tools/run_dashboard.ps1` → helper opcional no Windows
 - `tests/test_dashboard_importable.py` → garante que o módulo não quebra CI sem Streamlit
+
+
+## Package M6
+
+O dashboard local agora também mostra um painel **Security (M6)** com:
+
+- resumo da auditoria de postura (`ok` / `blocked` / `severity`)
+- origem atual das credenciais (`credential_source`)
+- checks individuais
+- estado persistido do broker guard

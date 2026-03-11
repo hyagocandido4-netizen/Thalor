@@ -364,3 +364,119 @@ class IQClient:
         raise RuntimeError(
             f"Falha em get_candles após {retries} tentativas. asset={asset} interval={interval_sec} count={count} end={endtime} reason={last_reason}"
         )
+
+
+    # ------------------- execution bridge helpers (Package M2) -------------------
+
+    def submit_binary_option(self, *, asset: str, amount: float, side: str, duration_min: int):
+        side_norm = str(side or '').strip().lower()
+        if side_norm not in {'call', 'put'}:
+            raise ValueError(f'invalid binary option side: {side}')
+        duration = max(1, int(duration_min))
+        return self._call_with_retries(
+            label=f'buy_option:{asset}:{duration}',
+            fn=lambda: self.iq.buy(float(amount), str(asset), side_norm, duration),
+            retries_env='IQ_EXEC_BUY_RETRIES',
+            sleep_env='IQ_EXEC_BUY_SLEEP_S',
+            sleep_max_env='IQ_EXEC_BUY_SLEEP_MAX_S',
+            retries_default=2,
+            sleep_default=1.0,
+        )
+
+    def get_async_order(self, order_id):
+        def _fetch():
+            try:
+                return self.iq.get_async_order(int(order_id))
+            except Exception:
+                return self.iq.get_async_order(order_id)
+
+        return self._call_with_retries(
+            label=f'get_async_order:{order_id}',
+            fn=_fetch,
+            retries_env='IQ_EXEC_ASYNC_RETRIES',
+            sleep_env='IQ_EXEC_ASYNC_SLEEP_S',
+            sleep_max_env='IQ_EXEC_ASYNC_SLEEP_MAX_S',
+            retries_default=1,
+            sleep_default=0.25,
+        )
+
+    def get_betinfo_safe(self, order_id):
+        def _fetch():
+            try:
+                return self.iq.get_betinfo(int(order_id))
+            except Exception:
+                return self.iq.get_betinfo(order_id)
+
+        return self._call_with_retries(
+            label=f'get_betinfo:{order_id}',
+            fn=_fetch,
+            retries_env='IQ_EXEC_BETINFO_RETRIES',
+            sleep_env='IQ_EXEC_BETINFO_SLEEP_S',
+            sleep_max_env='IQ_EXEC_BETINFO_SLEEP_MAX_S',
+            retries_default=2,
+            sleep_default=0.5,
+        )
+
+    def get_recent_closed_options(self, limit: int = 20):
+        lim = max(1, int(limit))
+        return self._call_with_retries(
+            label=f'get_optioninfo_v2:{lim}',
+            fn=lambda: self.iq.get_optioninfo_v2(lim),
+            retries_env='IQ_EXEC_HISTORY_RETRIES',
+            sleep_env='IQ_EXEC_HISTORY_SLEEP_S',
+            sleep_max_env='IQ_EXEC_HISTORY_SLEEP_MAX_S',
+            retries_default=2,
+            sleep_default=0.5,
+        )
+
+    def get_option_open_by_other_pc(self):
+        return self._call_with_retries(
+            label='get_option_open_by_other_pc',
+            fn=lambda: self.iq.get_option_open_by_other_pc(),
+            retries_env='IQ_EXEC_OPEN_OTHER_PC_RETRIES',
+            sleep_env='IQ_EXEC_OPEN_OTHER_PC_SLEEP_S',
+            sleep_max_env='IQ_EXEC_OPEN_OTHER_PC_SLEEP_MAX_S',
+            retries_default=1,
+            sleep_default=0.25,
+        )
+
+    def list_async_orders(self) -> dict[str, Any]:
+        self.ensure_connection()
+        try:
+            data = getattr(self.iq.api, 'order_async', {}) or {}
+        except Exception:
+            data = {}
+        try:
+            return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+        except Exception:
+            return dict(data)
+
+    def list_socket_opened_orders(self) -> dict[str, Any]:
+        self.ensure_connection()
+        try:
+            data = getattr(self.iq.api, 'socket_option_opened', {}) or {}
+        except Exception:
+            data = {}
+        try:
+            return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+        except Exception:
+            return dict(data)
+
+    def list_socket_closed_orders(self) -> dict[str, Any]:
+        self.ensure_connection()
+        try:
+            data = getattr(self.iq.api, 'socket_option_closed', {}) or {}
+        except Exception:
+            data = {}
+        try:
+            return json.loads(json.dumps(data, ensure_ascii=False, default=str))
+        except Exception:
+            return dict(data)
+
+    def asset_name_from_opcode(self, opcode: Any) -> str | None:
+        try:
+            if opcode in (None, ''):
+                return None
+            return self.iq.opcode_to_name(int(opcode))
+        except Exception:
+            return None

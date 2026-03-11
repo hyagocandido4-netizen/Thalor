@@ -35,6 +35,11 @@ class BrokerSettings(BaseModel):
     get_candles_sleep_s: float = 1.0
     get_candles_sleep_max_s: float = 4.0
 
+    # Package M6: formalize IQ API throttling/backoff from config instead of
+    # relying only on ad-hoc env vars.
+    api_throttle_min_interval_s: float = 0.0
+    api_throttle_jitter_s: float = 0.0
+
 
 class AssetSettings(BaseModel):
     asset: str
@@ -164,6 +169,14 @@ class RuntimeSettings(BaseModel):
     legacy_runtime_cleanup_enable: bool = True
     quota_aware_sleep: bool = True
 
+    # Package M3: runtime soak / scheduler hardening.
+    # When null, the runtime derives a conservative freshness window from the
+    # scope interval (currently max(interval*3, 600)).
+    stale_artifact_after_sec: int | None = None
+    startup_invalidate_stale_artifacts: bool = True
+    startup_lifecycle_artifacts: bool = True
+    lock_refresh_enable: bool = True
+
 
 class MultiAssetSettings(BaseModel):
     enabled: bool = False
@@ -177,12 +190,208 @@ class MultiAssetSettings(BaseModel):
     portfolio_topk_total: int = 6
     portfolio_hard_max_positions: int = 6
     portfolio_hard_max_trades_per_day: int | None = None
+    portfolio_hard_max_pending_unknown_total: int | None = 1
+
+    # Exposure caps (cross-asset / cross-interval)
+    portfolio_hard_max_positions_per_asset: int | None = 1
+    portfolio_hard_max_positions_per_cluster: int | None = 1
+
+    # Correlation-aware suppression uses cluster_key as the correlation group.
+    correlation_filter_enable: bool = True
     max_trades_per_cluster_per_cycle: int = 1
 
     # Safe partitioning of per-asset data paths (recommended for parallel runs)
     partition_data_paths: bool = True
     data_db_template: str = "data/market_{scope_tag}.sqlite3"
     dataset_path_template: str = "data/datasets/{scope_tag}/dataset.csv"
+
+
+
+
+class IntelligenceSettings(BaseModel):
+    enabled: bool = True
+    artifact_dir: Path = Path("runs/intelligence")
+
+    # P18 — slot-aware tuning
+    slot_aware_enable: bool = True
+    slot_aware_min_trades: int = 6
+    slot_aware_prior_weight: float = 8.0
+    slot_aware_multiplier_min: float = 0.85
+    slot_aware_multiplier_max: float = 1.15
+
+    # P19 — learned gating / stacking
+    learned_gating_enable: bool = True
+    learned_gating_min_rows: int = 50
+    learned_gating_weight: float = 0.60
+
+    # P20 — drift / regime monitor
+    drift_monitor_enable: bool = True
+    drift_recent_limit: int = 200
+    drift_warn_psi: float = 0.15
+    drift_block_psi: float = 0.30
+    drift_fail_closed: bool = False
+    retrain_warn_streak: int = 3
+    retrain_block_streak: int = 1
+
+    # P21 — coverage regulator 2.0
+    coverage_regulator_enable: bool = True
+    coverage_target_trades_per_day: float | None = None
+    coverage_tolerance: float = 0.50
+    coverage_bias_weight: float = 0.04
+
+    # P22 — anti-overfitting guard
+    anti_overfit_enable: bool = True
+    anti_overfit_fail_closed: bool = False
+    anti_overfit_min_robustness: float = 0.50
+
+    @model_validator(mode="after")
+    def _validate(self) -> "IntelligenceSettings":
+        if int(self.slot_aware_min_trades) < 0:
+            raise ValueError("intelligence.slot_aware_min_trades must be >= 0")
+        if float(self.slot_aware_prior_weight) < 0:
+            raise ValueError("intelligence.slot_aware_prior_weight must be >= 0")
+        if float(self.slot_aware_multiplier_min) <= 0:
+            raise ValueError("intelligence.slot_aware_multiplier_min must be > 0")
+        if float(self.slot_aware_multiplier_max) < float(self.slot_aware_multiplier_min):
+            raise ValueError("intelligence.slot_aware_multiplier_max must be >= intelligence.slot_aware_multiplier_min")
+        if int(self.learned_gating_min_rows) < 10:
+            raise ValueError("intelligence.learned_gating_min_rows must be >= 10")
+        if not (0.0 <= float(self.learned_gating_weight) <= 1.0):
+            raise ValueError("intelligence.learned_gating_weight must be within [0,1]")
+        if int(self.drift_recent_limit) < 20:
+            raise ValueError("intelligence.drift_recent_limit must be >= 20")
+        if float(self.drift_warn_psi) <= 0:
+            raise ValueError("intelligence.drift_warn_psi must be > 0")
+        if float(self.drift_block_psi) < float(self.drift_warn_psi):
+            raise ValueError("intelligence.drift_block_psi must be >= intelligence.drift_warn_psi")
+        if int(self.retrain_warn_streak) < 1:
+            raise ValueError("intelligence.retrain_warn_streak must be >= 1")
+        if int(self.retrain_block_streak) < 1:
+            raise ValueError("intelligence.retrain_block_streak must be >= 1")
+        if self.coverage_target_trades_per_day is not None and float(self.coverage_target_trades_per_day) <= 0:
+            raise ValueError("intelligence.coverage_target_trades_per_day must be > 0 when set")
+        if float(self.coverage_tolerance) < 0:
+            raise ValueError("intelligence.coverage_tolerance must be >= 0")
+        if float(self.coverage_bias_weight) < 0:
+            raise ValueError("intelligence.coverage_bias_weight must be >= 0")
+        if not (0.0 <= float(self.anti_overfit_min_robustness) <= 1.0):
+            raise ValueError("intelligence.anti_overfit_min_robustness must be within [0,1]")
+        return self
+
+class SecurityGuardSettings(BaseModel):
+    enabled: bool = True
+    live_only: bool = True
+    min_submit_spacing_sec: int = 10
+    max_submit_per_minute: int = 4
+    time_filter_enable: bool = False
+    allowed_start_local: str = "00:00"
+    allowed_end_local: str = "23:59"
+    blocked_weekdays_local: list[int] = Field(default_factory=list)
+    state_path: Path = Path("runs/security/broker_guard_state.json")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "SecurityGuardSettings":
+        if int(self.min_submit_spacing_sec) < 0:
+            raise ValueError("security.guard.min_submit_spacing_sec must be >= 0")
+        if int(self.max_submit_per_minute) < 1:
+            raise ValueError("security.guard.max_submit_per_minute must be >= 1")
+        for raw in [self.allowed_start_local, self.allowed_end_local]:
+            parts = str(raw or '').split(':')
+            if len(parts) != 2:
+                raise ValueError("security.guard allowed_start_local/end_local must be HH:MM")
+            hh, mm = int(parts[0]), int(parts[1])
+            if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                raise ValueError("security.guard allowed_start_local/end_local must be HH:MM")
+        cleaned: list[int] = []
+        for item in list(self.blocked_weekdays_local or []):
+            value = int(item)
+            if value < 0 or value > 6:
+                raise ValueError("security.guard.blocked_weekdays_local must be in [0,6]")
+            if value not in cleaned:
+                cleaned.append(value)
+        self.blocked_weekdays_local = cleaned
+        return self
+
+
+class SecuritySettings(BaseModel):
+    enabled: bool = True
+    deployment_profile: Literal["local", "ci", "live"] = "local"
+
+    redact_control_artifacts: bool = True
+    redact_structured_logs: bool = True
+    redact_email: bool = True
+
+    allow_embedded_credentials: bool = False
+    live_require_credentials: bool = True
+    live_require_external_credentials: bool = False
+
+    secrets_file: Path | None = None
+    secrets_file_env_var: str = "THALOR_SECRETS_FILE"
+    broker_email_file_env_var: str = "THALOR_BROKER_EMAIL_FILE"
+    broker_password_file_env_var: str = "THALOR_BROKER_PASSWORD_FILE"
+    audit_on_context_build: bool = True
+
+    guard: SecurityGuardSettings = Field(default_factory=SecurityGuardSettings)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "SecuritySettings":
+        if not str(self.secrets_file_env_var).strip():
+            raise ValueError("security.secrets_file_env_var must be non-empty")
+        if not str(self.broker_email_file_env_var).strip():
+            raise ValueError("security.broker_email_file_env_var must be non-empty")
+        if not str(self.broker_password_file_env_var).strip():
+            raise ValueError("security.broker_password_file_env_var must be non-empty")
+        return self
+
+
+class TelegramAlertingSettings(BaseModel):
+    enabled: bool = False
+    send_enabled: bool = False
+
+    bot_token: SecretStr | None = None
+    chat_id: str | None = None
+
+    bot_token_env_var: str = "THALOR_TELEGRAM_BOT_TOKEN"
+    chat_id_env_var: str = "THALOR_TELEGRAM_CHAT_ID"
+    bot_token_file_env_var: str = "THALOR_TELEGRAM_BOT_TOKEN_FILE"
+    chat_id_file_env_var: str = "THALOR_TELEGRAM_CHAT_ID_FILE"
+
+    timeout_sec: int = 10
+    parse_mode: Literal["HTML", "MarkdownV2", "none"] = "HTML"
+    outbox_path: Path = Path("runs/alerts/telegram_outbox.jsonl")
+    state_path: Path = Path("runs/alerts/telegram_state.json")
+
+    emit_release_summary: bool = True
+    emit_security_alerts: bool = True
+    emit_precheck_blocked: bool = False
+    emit_execution_submit: bool = False
+
+    @model_validator(mode="after")
+    def _validate(self) -> "TelegramAlertingSettings":
+        if int(self.timeout_sec) < 1:
+            raise ValueError("notifications.telegram.timeout_sec must be >= 1")
+        for field_name in [
+            'bot_token_env_var',
+            'chat_id_env_var',
+            'bot_token_file_env_var',
+            'chat_id_file_env_var',
+        ]:
+            if not str(getattr(self, field_name) or '').strip():
+                raise ValueError(f"notifications.telegram.{field_name} must be non-empty")
+        return self
+
+
+class NotificationsSettings(BaseModel):
+    enabled: bool = True
+    outbox_dir: Path = Path("runs/alerts")
+    history_limit: int = 200
+    telegram: TelegramAlertingSettings = Field(default_factory=TelegramAlertingSettings)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "NotificationsSettings":
+        if int(self.history_limit) < 10:
+            raise ValueError("notifications.history_limit must be >= 10")
+        return self
 
 
 class RuntimeOverrides(BaseModel):
@@ -294,7 +503,10 @@ class ThalorConfig(BaseSettings):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     failsafe: FailsafeSettings = Field(default_factory=FailsafeSettings)
     multi_asset: MultiAssetSettings = Field(default_factory=MultiAssetSettings)
+    intelligence: IntelligenceSettings = Field(default_factory=IntelligenceSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
+    notifications: NotificationsSettings = Field(default_factory=NotificationsSettings)
 
     assets: list[AssetSettings] = Field(default_factory=lambda: [AssetSettings(asset="EURUSD-OTC", interval_sec=300)])
     runtime_overrides: RuntimeOverrides = Field(default_factory=RuntimeOverrides)
@@ -331,7 +543,10 @@ class ResolvedConfig(BaseModel):
     failsafe: FailsafeSettings
     runtime: RuntimeSettings
     multi_asset: MultiAssetSettings
+    intelligence: IntelligenceSettings
     execution: ExecutionSettings
+    security: SecuritySettings
+    notifications: NotificationsSettings
 
     runtime_overrides: RuntimeOverrides
     resolved_at_utc: datetime = Field(default_factory=lambda: datetime.now(UTC))

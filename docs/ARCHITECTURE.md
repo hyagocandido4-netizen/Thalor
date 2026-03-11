@@ -92,6 +92,20 @@ Por scope:
 - `runs/control/<scope>/execution.json`
 - `runs/control/<scope>/orders.json`
 - `runs/control/<scope>/reconcile.json`
+- `runs/control/<scope>/guard.json`
+- `runs/control/<scope>/lifecycle.json`
+
+## Package M3 — runtime guard
+
+O runtime mantém agora duas peças adicionais de controle por scope:
+
+- `guard.json`: diagnóstico de frescor dos artefatos `latest`, incluindo lock
+  ativo e ações de invalidação de snapshots stale.
+- `lifecycle.json`: último evento operacional (`startup` / `shutdown`) do
+  runtime, útil para restart recovery e soak tests.
+
+Além disso, o modo `observe --once` usa o mesmo lock do daemon para fechar o
+buraco de overlap entre execução manual, scheduler e debug local.
 
 ## Notas de compatibilidade
 

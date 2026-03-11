@@ -25,4 +25,6 @@ If you decide a variant config is useful long-term:
 Use:
 
 - `scripts/tools/export_repo_sanitized.ps1`
+- `scripts/tools/release_bundle.py`
+- `python -m natbin.release_hygiene --repo-root . --out exports/thalor_clean.zip --json`
 

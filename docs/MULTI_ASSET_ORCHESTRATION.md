@@ -19,7 +19,7 @@ O ciclo faz, por *scope*:
 2. **candidate**
    - `observe_once` (gera decisão/candidato por scope)
 3. **allocate**
-   - `portfolio_allocator` (aplica quotas e escolhe os melhores candidatos)
+   - `portfolio_allocator` (aplica quotas, correlation filter, exposure caps e escolhe os melhores candidatos)
 4. **execute**
    - se `execution.enabled: true`, o ciclo cria intent/ordem/reconcile via camada de execução (Package R)
 
@@ -62,12 +62,43 @@ multi_asset:
   stagger_sec: 0.5
 
   portfolio_topk_total: 2
-  portfolio_hard_max_positions: 1
+  portfolio_hard_max_positions: 2
+  portfolio_hard_max_pending_unknown_total: 1
+  portfolio_hard_max_positions_per_asset: 1
+  portfolio_hard_max_positions_per_cluster: 1
+  correlation_filter_enable: true
+  max_trades_per_cluster_per_cycle: 1
 
   partition_data_paths: true
   data_db_template: data/market_{scope_tag}.sqlite3
   dataset_path_template: data/datasets/{scope_tag}/dataset.csv
 ```
+
+
+
+## Risk engine do portfólio (Package M4)
+
+O M4 adiciona uma camada de risco agregada por portfólio, acima das quotas
+por *scope*:
+
+- **quota global forte**: `portfolio_hard_max_pending_unknown_total` pode
+  bloquear novas seleções enquanto houver submits ainda ambíguos;
+- **exposure cap por asset**: `portfolio_hard_max_positions_per_asset` evita
+  duplicar exposição no mesmo ativo em múltiplos timeframes;
+- **exposure / correlation cap por cluster**:
+  `portfolio_hard_max_positions_per_cluster` usa `cluster_key` como grupo de
+  correlação e impede empilhar posições altamente correlacionadas;
+- **cluster cap por ciclo**: `max_trades_per_cluster_per_cycle` continua
+  limitando quantas novas seleções podem sair no mesmo ciclo.
+
+Os artefatos do allocator agora incluem:
+
+- `portfolio_quota` com breakdown por `asset` e `cluster`
+- `risk_summary` com exposições abertas/pending e seleções do ciclo
+- motivos explícitos de supressão como:
+  - `asset_exposure_cap:<asset>`
+  - `correlation_cluster_cap:<cluster>`
+  - `portfolio_capacity_reached`
 
 ## Observações
 

@@ -188,7 +188,20 @@ def adapter_from_context(ctx, *, repo_root: str | Path):
             payout=float(fake.get('payout') or 0.80),
             heartbeat_ok=bool(fake.get('heartbeat_ok', True)),
         )
-    return IQOptionAdapter(account_mode=account_mode)
+
+    broker_cfg_raw = ctx.resolved_config.get('broker') if isinstance(ctx.resolved_config, dict) else getattr(ctx.resolved_config, 'broker', None)
+    if hasattr(broker_cfg_raw, 'model_dump'):
+        broker_cfg_raw = broker_cfg_raw.model_dump(mode='python')
+    broker_cfg = dict(broker_cfg_raw or {})
+    reconcile_cfg = dict(cfg.get('reconcile') or {})
+    return IQOptionAdapter(
+        repo_root=repo_root,
+        account_mode=account_mode,
+        execution_mode=str(cfg.get('mode') or 'disabled'),
+        broker_config=broker_cfg,
+        settle_grace_sec=int(reconcile_cfg.get('settle_grace_sec') or 30),
+        history_limit=max(10, int(reconcile_cfg.get('history_lookback_sec') or 3600) // max(60, int(ctx.config.interval_sec))),
+    )
 
 
 def _latest_trade_row(*, repo_root: str | Path, ctx) -> dict[str, Any] | None:
@@ -362,6 +375,12 @@ def submit_intent(*, repo_root: str | Path, ctx, repo: ExecutionRepository, adap
         external_order_id=updated.external_order_id,
         payload={'attempt': attempt.as_dict(), 'intent_state': updated.intent_state, 'broker_status': broker_status},
     )
+    try:
+        from ..security.broker_guard import note_submit_attempt
+
+        note_submit_attempt(repo_root=repo_root, ctx=ctx, transport_status=transport_status)
+    except Exception:
+        pass
     return updated, attempt
 
 
@@ -431,6 +450,7 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
     submitted = None
     latest_intent = None
     blocked_reason = None
+    security_guard = None
     if latest is not None and str(latest.get('action') or '').upper() in {'CALL', 'PUT'}:
         planned = intent_from_signal_row(row=latest, ctx=ctx)
         latest_intent, created = repo.ensure_intent(planned)
@@ -513,13 +533,26 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                             payload={'reason': blocked_reason},
                         )
                     else:
-                        # Gate 3: broker health / fail-closed
-                        if not health.ready and bool(_execution_cfg(ctx).get('fail_closed', True)):
-                            blocked_reason = str(health.reason or 'broker_unready')
+                        try:
+                            from ..security.broker_guard import evaluate_submit_guard
+
+                            security_guard = evaluate_submit_guard(repo_root=repo_root, ctx=ctx)
+                        except Exception as exc:
+                            security_guard = {'allowed': False, 'reason': f'security_guard_error:{type(exc).__name__}'}
+                        if isinstance(security_guard, dict):
+                            sg_allowed = bool(security_guard.get('allowed'))
+                            sg_reason = str(security_guard.get('reason') or 'security_guard_blocked')
+                            sg_payload = dict(security_guard)
+                        else:
+                            sg_allowed = bool(getattr(security_guard, 'allowed', False))
+                            sg_reason = str(getattr(security_guard, 'reason', None) or 'security_guard_blocked')
+                            sg_payload = security_guard.as_dict() if hasattr(security_guard, 'as_dict') else {'reason': sg_reason}
+                        if not sg_allowed:
+                            blocked_reason = sg_reason
                             latest_intent = repo.save_intent(
                                 replace(
                                     latest_intent,
-                                    last_error_code='broker_unready',
+                                    last_error_code='security_guard',
                                     last_error_message=blocked_reason,
                                     updated_at_utc=utc_now_iso(),
                                 )
@@ -531,10 +564,31 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                                 intent_id=latest_intent.intent_id,
                                 broker_name=latest_intent.broker_name,
                                 account_mode=latest_intent.account_mode,
-                                payload={'reason': blocked_reason, 'health': health.as_dict()},
+                                payload={'reason': blocked_reason, 'security_guard': sg_payload},
                             )
                         else:
-                            latest_intent, submitted = submit_intent(repo_root=repo_root, ctx=ctx, repo=repo, adapter=adapter, intent=latest_intent)
+                            # Gate 3: broker health / fail-closed
+                            if not health.ready and bool(_execution_cfg(ctx).get('fail_closed', True)):
+                                blocked_reason = str(health.reason or 'broker_unready')
+                                latest_intent = repo.save_intent(
+                                    replace(
+                                        latest_intent,
+                                        last_error_code='broker_unready',
+                                        last_error_message=blocked_reason,
+                                        updated_at_utc=utc_now_iso(),
+                                    )
+                                )
+                                repo.add_event(
+                                    event_id=hashlib.sha1(f'{latest_intent.intent_id}|intent_blocked|{blocked_reason}'.encode('utf-8')).hexdigest()[:32],
+                                    event_type=EVENT_INTENT_BLOCKED,
+                                    created_at_utc=utc_now_iso(),
+                                    intent_id=latest_intent.intent_id,
+                                    broker_name=latest_intent.broker_name,
+                                    account_mode=latest_intent.account_mode,
+                                    payload={'reason': blocked_reason, 'health': health.as_dict(), 'security_guard': sg_payload},
+                                )
+                            else:
+                                latest_intent, submitted = submit_intent(repo_root=repo_root, ctx=ctx, repo=repo, adapter=adapter, intent=latest_intent)
 
     post_result = None
     post_detail: dict[str, Any] = {}
@@ -561,6 +615,7 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
         'latest_intent': latest_intent.as_dict() if latest_intent is not None else None,
         'submit_attempt': submitted.as_dict() if submitted is not None else None,
         'blocked_reason': blocked_reason,
+        'security_guard': security_guard.as_dict() if hasattr(security_guard, 'as_dict') else security_guard,
         'pre_reconcile': {'summary': pre_result.as_dict() if pre_result is not None else None, 'detail': pre_detail},
         'post_reconcile': {'summary': post_result.as_dict() if post_result is not None else None, 'detail': post_detail},
         'execution_summary': summary,

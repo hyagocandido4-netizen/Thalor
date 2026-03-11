@@ -1,0 +1,50 @@
+services:
+  thalor-runtime-live:
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "1"
+    env_file:
+      - .env
+    environment:
+      THALOR__EXECUTION__ENABLED: "1"
+      THALOR__EXECUTION__MODE: "live"
+      THALOR__SECURITY__DEPLOYMENT_PROFILE: "live"
+      THALOR__SECURITY__LIVE_REQUIRE_EXTERNAL_CREDENTIALS: "1"
+      THALOR__NOTIFICATIONS__TELEGRAM__ENABLED: "1"
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    command: >
+      sh -lc "while true; do
+        python -m natbin.runtime_app portfolio observe
+          --repo-root .
+          --config config/multi_asset.yaml
+          --once
+          --topk 3
+          --lookback-candles 2000
+          --json &&
+        python -m natbin.runtime_app alerts release --repo-root . --config config/multi_asset.yaml --json;
+        sleep 60;
+      done"
+    restart: unless-stopped
+
+  thalor-dashboard:
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "0"
+    environment:
+      THALOR__EXECUTION__MODE: "paper"
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+    ports:
+      - "8501:8501"
+    command: >
+      sh -lc "streamlit run src/natbin/dashboard/app.py
+        --server.address 0.0.0.0
+        --server.port 8501
+        -- --repo-root . --config config/multi_asset.yaml"
+    restart: unless-stopped

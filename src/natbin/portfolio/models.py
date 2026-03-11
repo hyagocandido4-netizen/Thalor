@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -40,19 +40,31 @@ class CandidateDecision:
     blockers: str | None
     decision_path: str | None
     raw: dict[str, Any]
+    intelligence_score: float | None = None
+    learned_gate_prob: float | None = None
+    slot_multiplier: float | None = None
+    drift_level: str | None = None
+    coverage_bias: float | None = None
+    intelligence: dict[str, Any] = field(default_factory=dict)
 
     def rank_value(self, *, weight: float = 1.0, prefer_ev: bool = True) -> float:
         """Rank value used by the portfolio allocator.
 
         Priority:
-        1) ev (expected value) when present and prefer_ev=True
-        2) score
-        3) conf
+        1) intelligence_score (when available)
+        2) ev (expected value) when present and prefer_ev=True
+        3) score
+        4) conf
 
         The returned value is multiplied by the provided weight.
         """
         base = 0.0
-        if prefer_ev and self.ev is not None:
+        if self.intelligence_score is not None:
+            try:
+                base = float(self.intelligence_score)
+            except Exception:
+                base = 0.0
+        elif prefer_ev and self.ev is not None:
             try:
                 base = float(self.ev)
             except Exception:
@@ -97,6 +109,8 @@ class AssetQuota:
     open_positions: int
     max_open_positions: int
 
+    cluster_key: str = 'default'
+
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -117,6 +131,21 @@ class PortfolioQuota:
     open_positions_total: int
     hard_max_positions_total: int
 
+    hard_max_pending_unknown_total: int | None = None
+    budget_left_pending_unknown_total: int | None = None
+
+    open_positions_by_asset: dict[str, int] = field(default_factory=dict)
+    pending_unknown_by_asset: dict[str, int] = field(default_factory=dict)
+    executed_today_by_asset: dict[str, int] = field(default_factory=dict)
+
+    open_positions_by_cluster: dict[str, int] = field(default_factory=dict)
+    pending_unknown_by_cluster: dict[str, int] = field(default_factory=dict)
+    executed_today_by_cluster: dict[str, int] = field(default_factory=dict)
+
+    hard_max_positions_per_asset: int | None = None
+    hard_max_positions_per_cluster: int | None = None
+    correlation_filter_enable: bool = True
+
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -131,11 +160,19 @@ class AllocationItem:
     score: float | None
     conf: float | None
     ev: float | None
-
     rank_value: float
     selected: bool
     reason: str
+
+    intelligence_score: float | None = None
+    learned_gate_prob: float | None = None
+    slot_multiplier: float | None = None
+    drift_level: str | None = None
+    coverage_bias: float | None = None
     rank: int | None = None
+    cluster_key: str | None = None
+    risk_context: dict[str, Any] | None = None
+    intelligence: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -152,6 +189,7 @@ class PortfolioAllocation:
 
     portfolio_quota: PortfolioQuota
     asset_quotas: list[AssetQuota]
+    risk_summary: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -160,6 +198,7 @@ class PortfolioAllocation:
             'suppressed': [i.as_dict() for i in self.suppressed],
             'portfolio_quota': self.portfolio_quota.as_dict(),
             'asset_quotas': [q.as_dict() for q in self.asset_quotas],
+            'risk_summary': dict(self.risk_summary or {}),
         }
 
 

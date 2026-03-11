@@ -1,4 +1,4 @@
-# Docker (Package U)
+# Docker (Package U + M6 notes)
 
 Este repositório agora vem com `Dockerfile` e `docker-compose.yml` para facilitar:
 
@@ -22,25 +22,61 @@ Logs / artefatos ficam em `./runs` (montado como volume).
 
 ## 2) Runtime com IQ (opcional)
 
-1. Crie `.env` a partir de `.env.example` e preencha as credenciais:
+Com M6, o caminho preferido é usar **external secret file** montado read-only no container, em vez de deixar `IQ_EMAIL` / `IQ_PASSWORD` direto no `.env`.
 
-   - `IQ_EMAIL`
-   - `IQ_PASSWORD`
+### Opção recomendada
 
-   (opcional) ajuste throttling: `IQ_*_RPS`, `IQ_*_BURST`.
+1. Copie `config/broker_secrets.yaml.example` para um arquivo real ignorado pelo git, por exemplo:
 
-2. Suba o serviço com o profile `iq`:
+   - `secrets/broker.yaml`
 
-```bash
-docker compose --profile iq up --build thalor-runtime
+2. Monte esse diretório no container e aponte `THALOR_SECRETS_FILE` para ele.
+
+Exemplo de extensão do serviço runtime:
+
+```yaml
+services:
+  thalor-runtime:
+    environment:
+      THALOR_SECRETS_FILE: /app/secrets/broker.yaml
+      THALOR__SECURITY__DEPLOYMENT_PROFILE: live
+      THALOR__SECURITY__LIVE_REQUIRE_EXTERNAL_CREDENTIALS: "1"
+    volumes:
+      - ./secrets:/app/secrets:ro
+      - ./runs:/app/runs
+      - ./data:/app/data
 ```
 
-- O build usa `INSTALL_IQ=1` (instala `requirements.txt`, que inclui `iqoptionapi`).
-- O serviço roda `portfolio observe` com `--once` dentro de um loop `sleep 60`.
+### Compatibilidade
+
+Ainda é possível usar `.env` com `IQ_EMAIL` / `IQ_PASSWORD` para testes locais, mas isso deve ficar restrito a laboratório / paper quando possível.
 
 ## Observações
 
 - Se você não quiser executar trades de verdade, mantenha:
   - `THALOR__EXECUTION__MODE=paper`
   - `THALOR__EXECUTION__ENABLED=1`
-- Em produção, você pode trocar para `live` **somente depois** de validar guardrails/failsafes.
+- Em produção, só troque para `live` depois de validar guardrails, `runtime_app security`, `health` e o policy set da conta.
+
+
+## 3) Dashboard local (M7)
+
+```bash
+docker compose --profile dashboard up --build thalor-dashboard
+```
+
+O serviço publica o Streamlit em `localhost:8501`.
+
+## 4) Runtime live + dashboard (M7)
+
+Use o compose de produção:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build
+```
+
+Pré-requisitos recomendados:
+
+- `THALOR_SECRETS_FILE` apontando para um bundle externo
+- `THALOR__EXECUTION__MODE=live` somente após `runtime_app release` limpo
+- `notifications.telegram.*` configurado se quiser alertas reais

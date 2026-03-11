@@ -12,3 +12,5 @@ pyarrow>=15
 
 rich>=13.7
 tqdm>=4.66
+
+streamlit>=1.33,<2

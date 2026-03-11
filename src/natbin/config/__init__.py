@@ -21,6 +21,7 @@ from .models import (  # noqa: F401
     DecisionSettings,
     FailsafeSettings,
     MultiAssetSettings,
+    NotificationsSettings,
     ObservabilitySettings,
     QuotaSettings,
     ResolvedConfig,

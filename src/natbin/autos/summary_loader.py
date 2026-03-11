@@ -28,9 +28,10 @@ def collect_checked_summaries(
     asset: str,
     interval_sec: int,
     runs_dir: Path,
+    expected_timezone: str | None = None,
 ) -> SummaryScanResult:
     out: list[tuple[str, dict]] = []
-    expected_tz = repo_timezone_name()
+    expected_tz = str(expected_timezone or repo_timezone_name())
     requested_days: list[str] = []
     used_days: list[str] = []
     missing_days: list[str] = []

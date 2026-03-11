@@ -2,18 +2,47 @@
 .github
 
 .venv
+venv
 __pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.hypothesis
+.cache
 *.pyc
 
 .env
+.env.*
+!.env.example
+
 runs
+runs_*
 data
+exports
+backups
+artifacts
+temp_*
+tmp_*
+configs/variants
+secrets
+config/*secret.yaml
+config/*secret.yml
+config/*secrets.yaml
+config/*secrets.yml
 
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.joblib
 *.pkl
+*.pickle
 *.log
 *.jsonl
+*.swp
+*.tmp
 
 dist
 build
 *.egg-info
+htmlcov

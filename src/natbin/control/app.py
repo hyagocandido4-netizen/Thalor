@@ -9,6 +9,14 @@ from typing import Any
 from .commands import (
     asset_candidate_payload,
     asset_prepare_payload,
+    alerts_flush_payload,
+    alerts_payload,
+    alerts_release_payload,
+    alerts_test_payload,
+    incidents_alert_payload,
+    incidents_drill_payload,
+    incidents_payload,
+    incidents_report_payload,
     health_payload,
     observe_payload,
     orders_payload,
@@ -19,6 +27,8 @@ from .commands import (
     precheck_payload,
     quota_payload,
     reconcile_payload,
+    release_payload,
+    security_payload,
     status_payload,
 )
 from .models import ObserveRequest
@@ -106,6 +116,66 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_common(sp_health)
     sp_health.add_argument('--json', action='store_true')
     sp_health.add_argument('--topk', type=int, default=3)
+
+    sp_security = sub.add_parser('security', help='Emit security / secret posture payload')
+    _add_common(sp_security)
+    sp_security.add_argument('--json', action='store_true')
+
+    sp_release = sub.add_parser('release', help='Emit M7 release readiness / production checklist payload')
+    _add_common(sp_release)
+    sp_release.add_argument('--json', action='store_true')
+
+    sp_incidents = sub.add_parser('incidents', help='Incident status / report / alert / drill (M7.1)')
+    _add_common(sp_incidents)
+    incidents_sub = sp_incidents.add_subparsers(dest='incidents_cmd', required=True)
+
+    sp_i_status = incidents_sub.add_parser('status', help='Show current incident posture / recent incident feed')
+    _add_common(sp_i_status)
+    sp_i_status.add_argument('--json', action='store_true')
+    sp_i_status.add_argument('--limit', type=int, default=20)
+    sp_i_status.add_argument('--window-hours', type=int, default=24)
+
+    sp_i_report = incidents_sub.add_parser('report', help='Build an incident report artifact for the current scope')
+    _add_common(sp_i_report)
+    sp_i_report.add_argument('--json', action='store_true')
+    sp_i_report.add_argument('--limit', type=int, default=20)
+    sp_i_report.add_argument('--window-hours', type=int, default=24)
+
+    sp_i_alert = incidents_sub.add_parser('alert', help='Queue/send a Telegram summary for current incidents')
+    _add_common(sp_i_alert)
+    sp_i_alert.add_argument('--json', action='store_true')
+    sp_i_alert.add_argument('--limit', type=int, default=20)
+    sp_i_alert.add_argument('--window-hours', type=int, default=24)
+    sp_i_alert.add_argument('--force-send', action='store_true')
+
+    sp_i_drill = incidents_sub.add_parser('drill', help='Emit a no-side-effect incident drill checklist')
+    _add_common(sp_i_drill)
+    sp_i_drill.add_argument('--json', action='store_true')
+    sp_i_drill.add_argument('--scenario', default='broker_down', choices=['broker_down', 'db_lock', 'market_context_stale', 'alert_queue'])
+
+    sp_alerts = sub.add_parser('alerts', help='Telegram / alerting operations (M7)')
+    _add_common(sp_alerts)
+    alerts_sub = sp_alerts.add_subparsers(dest='alerts_cmd', required=True)
+
+    sp_alerts_status = alerts_sub.add_parser('status', help='Show alerting status / recent outbox')
+    _add_common(sp_alerts_status)
+    sp_alerts_status.add_argument('--json', action='store_true')
+    sp_alerts_status.add_argument('--limit', type=int, default=20)
+
+    sp_alerts_test = alerts_sub.add_parser('test', help='Emit a test Telegram alert (queued or sent)')
+    _add_common(sp_alerts_test)
+    sp_alerts_test.add_argument('--json', action='store_true')
+    sp_alerts_test.add_argument('--force-send', action='store_true')
+
+    sp_alerts_release = alerts_sub.add_parser('release', help='Emit a release-readiness Telegram alert (queued or sent)')
+    _add_common(sp_alerts_release)
+    sp_alerts_release.add_argument('--json', action='store_true')
+    sp_alerts_release.add_argument('--force-send', action='store_true')
+
+    sp_alerts_flush = alerts_sub.add_parser('flush', help='Retry queued/failed Telegram alerts')
+    _add_common(sp_alerts_flush)
+    sp_alerts_flush.add_argument('--json', action='store_true')
+    sp_alerts_flush.add_argument('--limit', type=int, default=20)
 
     sp_orders = sub.add_parser('orders', help='Inspect Package N execution intents')
     _add_common(sp_orders)
@@ -197,7 +267,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    known = {'status', 'plan', 'quota', 'precheck', 'health', 'observe', 'orders', 'reconcile', 'portfolio', 'asset', 'ops'}
+    known = {'status', 'plan', 'quota', 'precheck', 'health', 'security', 'release', 'incidents', 'alerts', 'observe', 'orders', 'reconcile', 'portfolio', 'asset', 'ops'}
     raw = list(sys.argv[1:] if argv is None else argv)
     if not raw:
         raw = ['status']
@@ -260,6 +330,76 @@ def main(argv: list[str] | None = None) -> int:
         payload = health_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), topk=ns.topk)
         _print(payload, as_json=bool(ns.json))
         return 0
+
+    if ns.command == 'security':
+        payload = security_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+        _print(payload, as_json=bool(ns.json))
+        return 0
+
+    if ns.command == 'release':
+        payload = release_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command == 'incidents':
+        cmd = getattr(ns, 'incidents_cmd', None)
+        if cmd == 'status':
+            payload = incidents_payload(
+                repo_root=_common_repo_root(ns),
+                config_path=_common_config(ns),
+                limit=int(getattr(ns, 'limit', 20) or 20),
+                window_hours=int(getattr(ns, 'window_hours', 24) or 24),
+            )
+            _print(payload, as_json=bool(ns.json))
+            return 0 if bool(payload.get('ok', True)) else 2
+        if cmd == 'report':
+            payload = incidents_report_payload(
+                repo_root=_common_repo_root(ns),
+                config_path=_common_config(ns),
+                limit=int(getattr(ns, 'limit', 20) or 20),
+                window_hours=int(getattr(ns, 'window_hours', 24) or 24),
+            )
+            _print(payload, as_json=bool(ns.json))
+            return 0 if bool(payload.get('ok', True)) else 2
+        if cmd == 'alert':
+            payload = incidents_alert_payload(
+                repo_root=_common_repo_root(ns),
+                config_path=_common_config(ns),
+                limit=int(getattr(ns, 'limit', 20) or 20),
+                window_hours=int(getattr(ns, 'window_hours', 24) or 24),
+                force_send=bool(getattr(ns, 'force_send', False)),
+            )
+            _print(payload, as_json=bool(ns.json))
+            return 0
+        if cmd == 'drill':
+            payload = incidents_drill_payload(
+                repo_root=_common_repo_root(ns),
+                config_path=_common_config(ns),
+                scenario=str(getattr(ns, 'scenario', 'broker_down') or 'broker_down'),
+            )
+            _print(payload, as_json=bool(ns.json))
+            return 0
+        raise SystemExit(f'unknown incidents cmd: {cmd!r}')
+
+    if ns.command == 'alerts':
+        cmd = getattr(ns, 'alerts_cmd', None)
+        if cmd == 'status':
+            payload = alerts_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), limit=int(getattr(ns, 'limit', 20) or 20))
+            _print(payload, as_json=bool(ns.json))
+            return 0
+        if cmd == 'test':
+            payload = alerts_test_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), force_send=bool(getattr(ns, 'force_send', False)))
+            _print(payload, as_json=bool(ns.json))
+            return 0
+        if cmd == 'release':
+            payload = alerts_release_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), force_send=bool(getattr(ns, 'force_send', False)))
+            _print(payload, as_json=bool(ns.json))
+            return 0
+        if cmd == 'flush':
+            payload = alerts_flush_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), limit=int(getattr(ns, 'limit', 20) or 20))
+            _print(payload, as_json=bool(ns.json))
+            return 0 if bool((payload.get('flush') or payload).get('ok', True)) else 2
+        raise SystemExit(f'unknown alerts cmd: {cmd!r}')
 
     if ns.command == 'orders':
         payload = orders_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), limit=ns.limit)
