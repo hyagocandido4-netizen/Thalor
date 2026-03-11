@@ -17,7 +17,13 @@ from pathlib import Path
 
 
 def _run(cmd: list[str], *, cwd: Path) -> dict:
-    out = subprocess.check_output(cmd, cwd=str(cwd), text=True, stderr=subprocess.STDOUT)
+    try:
+        out = subprocess.check_output(cmd, cwd=str(cwd), text=True, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:  # pragma: no cover
+        output = getattr(e, 'output', '') or ''
+        raise RuntimeError(
+            f"Command failed. cmd={cmd} rc={e.returncode}\n--- output ---\n{output}"
+        ) from e
     try:
         return json.loads(out)
     except Exception as e:  # pragma: no cover
