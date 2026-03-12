@@ -340,19 +340,30 @@ def main() -> None:
 # --- envutil import check (auto) ---
 
 def _check_envutil_imports(repo_root: Path) -> None:
-    import re
+    import ast
 
-    env_call_re = re.compile(r"\b(env_(?:float|int|bool|str))\s*\(")
-    rel_line = re.compile(r"^\s*from\s+\.envutil\s+import\s+(.+?)\s*$", re.M)
-    abs_line = re.compile(r"^\s*from\s+natbin\.envutil\s+import\s+(.+?)\s*$", re.M)
+    ENV_NAMES = {"env_float", "env_int", "env_bool", "env_str"}
+    CANONICAL_MODULES = {"natbin.envutil", "natbin.config.env", "envutil", "config.env"}
 
-    def parse_list(s: str) -> set[str]:
-        s = s.split("#", 1)[0].strip().strip("() ")
-        parts = [p.strip() for p in s.split(",") if p.strip()]
-        out = set()
-        for p in parts:
-            out.add(p.split()[0])
-        return out
+    def imported_env_names(tree: ast.AST) -> set[str]:
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module in CANONICAL_MODULES or module.endswith(".envutil") or module.endswith(".config.env"):
+                    for alias in node.names:
+                        if alias.name in ENV_NAMES:
+                            imported.add(alias.asname or alias.name)
+        return imported
+
+    def used_env_names(tree: ast.AST) -> set[str]:
+        used: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in ENV_NAMES:
+                    used.add(func.id)
+        return used
 
     src = repo_root / "src" / "natbin"
     if not src.exists():
@@ -364,19 +375,15 @@ def _check_envutil_imports(repo_root: Path) -> None:
             continue
         try:
             t = py.read_text(encoding="utf-8")
+            tree = ast.parse(t)
         except Exception:
             continue
 
-        used = set(env_call_re.findall(t))
+        used = used_env_names(tree)
         if not used:
             continue
 
-        imported: set[str] = set()
-        for m in rel_line.finditer(t):
-            imported |= parse_list(m.group(1))
-        for m in abs_line.finditer(t):
-            imported |= parse_list(m.group(1))
-
+        imported = imported_env_names(tree)
         missing = used - imported
         if missing:
             offenders.append((py, ", ".join(sorted(used)), ", ".join(sorted(imported)), ", ".join(sorted(missing))))
