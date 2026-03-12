@@ -8,9 +8,63 @@ import random
 from contextlib import contextmanager
 from pathlib import Path
 
-from iqoptionapi.stable_api import IQ_Option
+from ..config.env import env_bool, env_float, env_int
 
-from natbin.envutil import env_bool, env_float, env_int
+
+class IQDependencyUnavailable(RuntimeError):
+    """Raised when the optional iqoptionapi package is not available."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = str(reason or "iqoption_dependency_missing")
+
+
+_IQ_OPTION_CLASS = None
+_IQ_OPTION_IMPORT_ERROR: Exception | None = None
+
+
+def iqoption_dependency_status() -> dict[str, Any]:
+    """Return the availability of the optional iqoptionapi dependency.
+
+    The environment toggle ``THALOR_FORCE_IQOPTIONAPI_MISSING=1`` is used by
+    deterministic tests/smokes so CI can exercise the fallback path even when
+    the package is installed.
+    """
+    global _IQ_OPTION_CLASS, _IQ_OPTION_IMPORT_ERROR
+
+    if env_bool("THALOR_FORCE_IQOPTIONAPI_MISSING", False):
+        return {
+            "available": False,
+            "reason": "env:THALOR_FORCE_IQOPTIONAPI_MISSING",
+        }
+
+    if _IQ_OPTION_CLASS is not None:
+        return {"available": True, "reason": None}
+
+    if _IQ_OPTION_IMPORT_ERROR is not None:
+        return {
+            "available": False,
+            "reason": f"{type(_IQ_OPTION_IMPORT_ERROR).__name__}: {_IQ_OPTION_IMPORT_ERROR}",
+        }
+
+    try:
+        from iqoptionapi.stable_api import IQ_Option as _ImportedIQOption
+    except Exception as exc:  # pragma: no cover - depends on local environment
+        _IQ_OPTION_IMPORT_ERROR = exc
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    _IQ_OPTION_CLASS = _ImportedIQOption
+    return {"available": True, "reason": None}
+
+
+def require_iqoption_class():
+    status = iqoption_dependency_status()
+    if not bool(status.get("available")):
+        raise IQDependencyUnavailable(str(status.get("reason") or "iqoption_dependency_missing"))
+    return _IQ_OPTION_CLASS
+
+
+from ..config.env import env_bool, env_float, env_int
 
 
 @dataclass
@@ -132,7 +186,12 @@ def _throttle_schedule(*, min_interval_s: float, jitter_s: float, state_file: st
 class IQClient:
     def __init__(self, cfg: IQConfig):
         self.cfg = cfg
+        IQ_Option = require_iqoption_class()
         self.iq = IQ_Option(cfg.email, cfg.password)
+
+    @staticmethod
+    def dependency_status() -> dict[str, Any]:
+        return iqoption_dependency_status()
 
     def _maybe_throttle(self, label: str) -> None:
         """Best-effort throttling (cross-process) for API calls.
@@ -150,6 +209,7 @@ class IQClient:
         _throttle_schedule(min_interval_s=mi, jitter_s=js, state_file=state_file, label=label)
 
     def _new_api(self) -> None:
+        IQ_Option = require_iqoption_class()
         self.iq = IQ_Option(self.cfg.email, self.cfg.password)
 
     @staticmethod

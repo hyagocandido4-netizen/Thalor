@@ -134,6 +134,24 @@ def build_release_readiness_payload(
     else:
         checks.append(_check('runtime_lock_refresh', 'warn', 'Runtime lock refresh desabilitado'))
 
+    from ..ops.production_doctor import build_production_doctor_payload
+
+    doctor = build_production_doctor_payload(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        probe_broker=False,
+        strict_runtime_artifacts=False,
+        enforce_live_broker_prereqs=False,
+        write_artifact=True,
+    )
+    doctor_sev = str(doctor.get('severity') or 'ok')
+    if doctor_sev == 'error':
+        checks.append(_check('production_doctor', 'error', 'Production doctor encontrou blockers', blockers=doctor.get('blockers') or []))
+    elif doctor_sev == 'warn':
+        checks.append(_check('production_doctor', 'warn', 'Production doctor com avisos', warnings=doctor.get('warnings') or []))
+    else:
+        checks.append(_check('production_doctor', 'ok', 'Production doctor sem blockers', warnings=doctor.get('warnings') or []))
+
     execution = dict(ctx.resolved_config.get('execution') or {})
     live_mode = bool(execution.get('enabled')) and str(execution.get('mode') or 'disabled') == 'live' and str(execution.get('provider') or 'fake') == 'iqoption'
     if live_mode:
@@ -237,6 +255,13 @@ def build_release_readiness_payload(
             'blocked': security.get('blocked'),
             'severity': security.get('severity'),
             'credential_source': security.get('credential_source'),
+        },
+        'doctor': {
+            'severity': doctor.get('severity'),
+            'ready_for_cycle': doctor.get('ready_for_cycle'),
+            'ready_for_live': doctor.get('ready_for_live'),
+            'warnings': doctor.get('warnings'),
+            'blockers': doctor.get('blockers'),
         },
         'release_hygiene': release_report.as_dict() if release_report is not None else None,
     }

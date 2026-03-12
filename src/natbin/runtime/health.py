@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..runtime_perf import write_text_if_changed
+from ..runtime.perf import write_text_if_changed
 from .scope import build_scope, loop_status_path as scoped_loop_status_path
 
 try:

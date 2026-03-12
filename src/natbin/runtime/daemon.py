@@ -14,7 +14,7 @@ from ..state.control_repo import RuntimeControlRepository, write_control_artifac
 from .cycle import OK, build_auto_cycle_plan, report_from_plan, run_plan
 from .failsafe import CircuitBreakerPolicy, RuntimeFailsafe
 from .health import build_health_payload, build_status_payload, write_health_payload, write_status_payload
-from ..runtime_perf import load_json_cached
+from ..runtime.perf import load_json_cached
 from ..telemetry import TelemetryServer, TelemetryState
 from ..telemetry.metrics import REGISTRY
 from ..ops.lockfile import acquire_lock as acquire_lockfile
@@ -349,7 +349,7 @@ def _run_cycle(*, repo_root: Path, ctx, scope, topk: int, lookback_candles: int,
 
 
 
-def _lock_block_payload(*, lock_path: Path, lock_res) -> dict[str, Any]:
+def _lock_block_payload(*, lock_path: Path, lock_res, lock_mode: str) -> dict[str, Any]:
     return {
         'phase': 'startup',
         'ok': False,
@@ -359,6 +359,7 @@ def _lock_block_payload(*, lock_path: Path, lock_res) -> dict[str, Any]:
         'lock_pid': getattr(lock_res, 'pid', None),
         'lock_age_sec': getattr(lock_res, 'age_sec', None),
         'lock_detail': getattr(lock_res, 'detail', None),
+        'lock_mode': str(lock_mode),
     }
 
 
@@ -369,7 +370,7 @@ def run_once(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: in
     lock_path = daemon_lock_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=repo_root / 'runs')
     lock_res = acquire_lock(lock_path, owner=owner)
     if not bool(getattr(lock_res, 'acquired', False)):
-        return _lock_block_payload(lock_path=lock_path, lock_res=lock_res)
+        return _lock_block_payload(lock_path=lock_path, lock_res=lock_res, lock_mode='once')
 
     ctx = None
     rep: dict[str, Any] | None = None
@@ -427,7 +428,7 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
     lock_path = daemon_lock_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=repo_root / 'runs')
     lock_res = acquire_lock(lock_path, owner=owner)
     if not bool(getattr(lock_res, 'acquired', False)):
-        print(json.dumps(_lock_block_payload(lock_path=lock_path, lock_res=lock_res), ensure_ascii=False))
+        print(json.dumps(_lock_block_payload(lock_path=lock_path, lock_res=lock_res, lock_mode='daemon'), ensure_ascii=False))
         return 3
 
     telemetry_state = TelemetryState()

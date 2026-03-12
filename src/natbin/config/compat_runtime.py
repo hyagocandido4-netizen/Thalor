@@ -77,29 +77,42 @@ def _fallback_yaml_like() -> dict[str, Any]:
     return cfg
 
 
-def _resolve_from_new_loader(asset: str | None = None, interval_sec: int | None = None, profile: str | None = None, cli_overrides: Mapping[str, Any] | None = None) -> Any | None:
+def _resolve_from_new_loader(
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    profile: str | None = None,
+    cli_overrides: Mapping[str, Any] | None = None,
+) -> Any | None:
+    """Resolve config via the modern loader.
+
+    We only fall back to the legacy env-shaped dict when the modern loader is
+    genuinely unavailable (for example, during a partial bootstrap). Schema
+    validation or runtime resolution errors must propagate so the caller fails
+    closed instead of silently discarding modern blocks such as
+    ``security``, ``notifications`` and ``intelligence``.
+    """
     try:
         from natbin.config.loader import load_resolved_config  # type: ignore
     except Exception:
         return None
+
+    kwargs: dict[str, Any] = {}
+    if asset is not None:
+        kwargs['asset'] = asset
+    if interval_sec is not None:
+        kwargs['interval_sec'] = int(interval_sec)
+    if profile is not None:
+        kwargs['profile'] = profile
+    if cli_overrides:
+        kwargs['cli_overrides'] = dict(cli_overrides)
+
     try:
-        kwargs: dict[str, Any] = {}
-        if asset is not None:
-            kwargs['asset'] = asset
-        if interval_sec is not None:
-            kwargs['interval_sec'] = int(interval_sec)
-        if profile is not None:
-            kwargs['profile'] = profile
-        if cli_overrides:
-            kwargs['cli_overrides'] = dict(cli_overrides)
         return load_resolved_config(**kwargs)
-    except TypeError:
-        try:
-            return load_resolved_config(asset=asset, interval_sec=interval_sec)
-        except Exception:
-            return None
-    except Exception:
-        return None
+    except TypeError as exc:
+        message = str(exc)
+        if 'unexpected keyword argument' not in message and 'positional argument' not in message:
+            raise
+        return load_resolved_config(asset=asset, interval_sec=interval_sec)
 
 
 def runtime_scope_from_resolved(resolved: Any) -> RuntimeScopeCompat:

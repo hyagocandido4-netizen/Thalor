@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from natbin.config2 import load_config
+from ..config.legacy import load_config
 from natbin.domain.dataset2 import build_dataset
 
 

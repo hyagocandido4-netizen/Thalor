@@ -44,7 +44,7 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from natbin.envutil import env_float, env_int
+from ..config.env import env_float, env_int
 
 
 

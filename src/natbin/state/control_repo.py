@@ -8,7 +8,7 @@ from typing import Any
 
 from ..runtime.failsafe import CircuitBreakerSnapshot
 from ..runtime.scope import build_scope
-from ..runtime_perf import load_json_cached, write_text_if_changed
+from ..runtime.perf import load_json_cached, write_text_if_changed
 
 
 CONTROL_DIR_REL = Path('runs') / 'control'
@@ -142,6 +142,8 @@ def control_artifact_paths(*, repo_root: str | Path, asset: str, interval_sec: i
         'lifecycle': str(base / 'lifecycle.json'),
         'security': str(base / 'security.json'),
         'release': str(base / 'release.json'),
+        'doctor': str(base / 'doctor.json'),
+        'retention': str(base / 'retention.json'),
         'alerts': str(base / 'alerts.json'),
         'incidents': str(base / 'incidents.json'),
     }

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from ..runtime_perf import apply_runtime_sqlite_pragmas
+from ..runtime.perf import apply_runtime_sqlite_pragmas
 
 
 @dataclass(frozen=True)

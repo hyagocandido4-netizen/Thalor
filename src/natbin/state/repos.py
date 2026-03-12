@@ -14,7 +14,7 @@ from typing import Any, Iterable
 import sqlite3
 
 from .migrations import ensure_executed_state_db, ensure_signals_v2
-from ..runtime_perf import apply_runtime_sqlite_pragmas
+from ..runtime.perf import apply_runtime_sqlite_pragmas
 
 TRADE_ACTIONS = {"CALL", "PUT"}
 

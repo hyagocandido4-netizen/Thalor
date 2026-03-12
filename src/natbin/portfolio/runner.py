@@ -15,8 +15,8 @@ from ..runtime.scope import decision_latest_path as scope_decision_latest_path
 from ..runtime.scope import market_context_path as scope_market_context_path
 from ..runtime.failsafe import CircuitBreakerPolicy, RuntimeFailsafe
 from ..runtime.precheck import run_precheck
-from ..runtime_perf import write_text_if_changed
-from ..runtime_perf import load_json_cached
+from ..runtime.perf import write_text_if_changed
+from ..runtime.perf import load_json_cached
 from ..state.control_repo import RuntimeControlRepository
 from ..state.portfolio_repo import PortfolioRepository
 from ..telemetry import TelemetryServer, TelemetryState

@@ -189,10 +189,20 @@ class IQOptionAdapter:
         password = self._extract_secret(self.broker_config.get('password')) or (os.getenv('IQ_PASSWORD') or '').strip() or None
         return email, password
 
+    def _dependency_status(self) -> dict[str, Any]:
+        try:
+            from ..adapters.iq_client import iqoption_dependency_status
+            return iqoption_dependency_status()
+        except Exception as exc:
+            return {'available': False, 'reason': f'{type(exc).__name__}: {exc}'}
+
     def _import_client_classes(self):
-        from ..iq_client import IQClient  # lazy import (requires iqoptionapi only in live runtime)
+        from ..adapters.iq_client import IQClient, IQDependencyUnavailable, iqoption_dependency_status  # lazy import
         from ..adapters.iq_client import IQConfig
 
+        status = iqoption_dependency_status()
+        if not bool(status.get('available', True)):
+            raise IQDependencyUnavailable(str(status.get('reason') or 'iqoption_dependency_missing'))
         return IQClient, IQConfig
 
     def _make_client(self) -> IQExecutionClient:
@@ -361,6 +371,20 @@ class IQOptionAdapter:
         if s in {'equal', 'refund', 'draw'}:
             return 'refund'
         return s
+
+    @staticmethod
+    def _normalize_health_reason(exc: Exception) -> str:
+        raw = f'{type(exc).__name__}: {exc}'
+        low = raw.lower()
+        if 'invalid_credentials' in low or 'wrong credentials' in low:
+            return 'iqoption_invalid_credentials'
+        if 'missing_credentials' in low:
+            return 'iqoption_missing_credentials'
+        if 'timeout' in low:
+            return 'iqoption_connect_timeout'
+        if 'dependency_missing' in low or 'no module named' in low:
+            return 'iqoption_dependency_missing'
+        return f'iqoption_connect_failed:{type(exc).__name__}'
 
     @classmethod
     def _ts_to_iso(cls, value: Any) -> str | None:
@@ -697,6 +721,16 @@ class IQOptionAdapter:
                 checked_at_utc=utc_now_iso(),
             )
         if self._backend is None:
+            dep = self._dependency_status()
+            if not bool(dep.get('available', True)):
+                return BrokerSessionStatus(
+                    broker_name=self.broker_name(),
+                    account_mode=self.account_mode,
+                    ready=False,
+                    healthy=False,
+                    reason='iqoption_dependency_missing',
+                    checked_at_utc=utc_now_iso(),
+                )
             email, password = self._credentials()
             if not email or not password:
                 return BrokerSessionStatus(
@@ -724,7 +758,7 @@ class IQOptionAdapter:
                 account_mode=self.account_mode,
                 ready=False,
                 healthy=False,
-                reason=f'iqoption_connect_failed:{type(exc).__name__}',
+                reason=self._normalize_health_reason(exc),
                 checked_at_utc=utc_now_iso(),
             )
 

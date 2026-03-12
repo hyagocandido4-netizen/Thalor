@@ -7,7 +7,7 @@ from typing import Any, Iterable, Sequence
 from ..runtime.execution_contracts import CONSUMES_QUOTA_STATES, PENDING_INTENT_STATES
 from ..runtime.execution_models import BrokerOrderSnapshot, OrderIntent, OrderSubmitAttempt
 from ..runtime.execution_policy import json_dumps, utc_now_iso
-from ..runtime_perf import apply_runtime_sqlite_pragmas
+from ..runtime.perf import apply_runtime_sqlite_pragmas
 from .execution_migrations import ensure_execution_db
 
 

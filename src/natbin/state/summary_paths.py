@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..config.paths import resolve_config_path, resolve_repo_root
-from ..runtime_perf import load_json_cached
+from ..runtime.perf import load_json_cached
 
 import yaml
 from zoneinfo import ZoneInfo

@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..summary_paths import repo_asset, repo_interval_sec, repo_now, repo_timezone_name
+from ..state.summary_paths import repo_asset, repo_interval_sec, repo_now, repo_timezone_name
 
 
 @dataclass(frozen=True)

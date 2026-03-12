@@ -13,6 +13,7 @@ from .commands import (
     alerts_payload,
     alerts_release_payload,
     alerts_test_payload,
+    doctor_payload,
     incidents_alert_payload,
     incidents_drill_payload,
     incidents_payload,
@@ -28,6 +29,7 @@ from .commands import (
     quota_payload,
     reconcile_payload,
     release_payload,
+    retention_payload,
     security_payload,
     status_payload,
 )
@@ -120,6 +122,22 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_security = sub.add_parser('security', help='Emit security / secret posture payload')
     _add_common(sp_security)
     sp_security.add_argument('--json', action='store_true')
+
+    sp_doctor = sub.add_parser('doctor', help='Emit H9 production doctor / live-readiness payload')
+    _add_common(sp_doctor)
+    sp_doctor.add_argument('--json', action='store_true')
+    sp_doctor.add_argument('--probe-broker', action='store_true')
+    sp_doctor.add_argument('--relaxed', action='store_true')
+    sp_doctor.add_argument('--market-context-max-age-sec', type=int, default=None)
+    sp_doctor.add_argument('--min-dataset-rows', type=int, default=100)
+
+    sp_retention = sub.add_parser('retention', help='Preview/apply runtime artifact retention (H9)')
+    _add_common(sp_retention)
+    sp_retention.add_argument('--json', action='store_true')
+    sp_retention.add_argument('--apply', action='store_true')
+    sp_retention.add_argument('--days', type=int, default=None)
+    sp_retention.add_argument('--keep-effective-config-snapshots', type=int, default=20)
+    sp_retention.add_argument('--list-limit', type=int, default=50)
 
     sp_release = sub.add_parser('release', help='Emit M7 release readiness / production checklist payload')
     _add_common(sp_release)
@@ -267,7 +285,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    known = {'status', 'plan', 'quota', 'precheck', 'health', 'security', 'release', 'incidents', 'alerts', 'observe', 'orders', 'reconcile', 'portfolio', 'asset', 'ops'}
+    known = {'status', 'plan', 'quota', 'precheck', 'health', 'security', 'doctor', 'retention', 'release', 'incidents', 'alerts', 'observe', 'orders', 'reconcile', 'portfolio', 'asset', 'ops'}
     raw = list(sys.argv[1:] if argv is None else argv)
     if not raw:
         raw = ['status']
@@ -335,6 +353,30 @@ def main(argv: list[str] | None = None) -> int:
         payload = security_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
         _print(payload, as_json=bool(ns.json))
         return 0
+
+    if ns.command == 'doctor':
+        payload = doctor_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            probe_broker=bool(getattr(ns, 'probe_broker', False)),
+            relaxed=bool(getattr(ns, 'relaxed', False)),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            min_dataset_rows=int(getattr(ns, 'min_dataset_rows', 100) or 100),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command == 'retention':
+        payload = retention_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            apply=bool(getattr(ns, 'apply', False)),
+            days=getattr(ns, 'days', None),
+            keep_effective_config_snapshots=int(getattr(ns, 'keep_effective_config_snapshots', 20) or 20),
+            list_limit=int(getattr(ns, 'list_limit', 50) or 50),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
 
     if ns.command == 'release':
         payload = release_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))

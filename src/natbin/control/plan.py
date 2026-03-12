@@ -90,6 +90,7 @@ def derive_scoped_paths(config: RuntimeAppConfig, *, repo_root: str | Path | Non
     runs_dir = root / 'runs'
     scope = build_scope(config.asset, int(config.interval_sec))
     local_day = _local_day(config.timezone)
+    control_paths = control_artifact_paths(repo_root=root, asset=config.asset, interval_sec=config.interval_sec)
     return {
         'effective_env': str(effective_env_path(asset=config.asset, interval_sec=config.interval_sec, out_dir=runs_dir)),
         'market_context': str(market_context_path(asset=config.asset, interval_sec=config.interval_sec, out_dir=runs_dir)),
@@ -104,6 +105,8 @@ def derive_scoped_paths(config: RuntimeAppConfig, *, repo_root: str | Path | Non
         'health_legacy': str(health_snapshot_path(asset=config.asset, interval_sec=config.interval_sec, out_dir=runs_dir)),
         'live_signals_csv': str(live_signals_csv_path(day=local_day, asset=config.asset, interval_sec=config.interval_sec, out_dir=runs_dir)),
         'effective_config': str((runs_dir / 'config' / f'effective_config_latest_{scope.scope_tag}.json').resolve()),
+        'effective_config_snapshot_dir': str((runs_dir / 'config').resolve()),
+        'effective_config_control': str(Path(control_paths['effective_config']).resolve()),
     }
 
 
@@ -119,11 +122,14 @@ def build_context(
     cfg_path = resolve_config_path(repo_root=root, config_path=config_path)
     rcfg = load_resolved_config(config_path=cfg_path, repo_root=root, asset=asset, interval_sec=interval_sec)
 
-    write_effective_config_latest(rcfg, repo_root=root)
+    generated_at_utc = datetime.now(UTC).isoformat(timespec='seconds')
+    cycle_id = datetime.now(UTC).strftime('%H%M%S')
+    latest_path = write_effective_config_latest(rcfg, repo_root=root)
+    snapshot_path: Path | None = None
     if dump_snapshot is None:
         dump_snapshot = os.getenv('EFFECTIVE_CONFIG_SNAPSHOT', '1').strip() not in {'0', 'false', 'False'}
     if dump_snapshot:
-        write_effective_config_snapshot(rcfg, repo_root=root, day=_local_day(str(rcfg.timezone)))
+        snapshot_path = write_effective_config_snapshot(rcfg, repo_root=root, day=_local_day(str(rcfg.timezone)), cycle_id=cycle_id)
 
     config = RuntimeAppConfig(
         asset=str(rcfg.asset),
@@ -141,6 +147,10 @@ def build_context(
     )
     scoped_paths = derive_scoped_paths(config, repo_root=root)
     control_paths = control_artifact_paths(repo_root=root, asset=config.asset, interval_sec=config.interval_sec)
+    scoped_paths['effective_config'] = str(latest_path)
+    scoped_paths['effective_config_control'] = str(Path(control_paths['effective_config']).resolve())
+    if snapshot_path is not None:
+        scoped_paths['effective_config_snapshot'] = str(snapshot_path)
     ctx = RuntimeContext(
         repo_root=str(root),
         config=config,
@@ -156,6 +166,10 @@ def build_context(
         'scope': asdict(scope),
         'source_trace': ctx.source_trace,
         'resolved_config': ctx.resolved_config,
+        'generated_at_utc': generated_at_utc,
+        'cycle_id': cycle_id,
+        'latest_path': str(latest_path),
+        'snapshot_path': str(snapshot_path) if snapshot_path is not None else None,
     }
     redact_email = bool(getattr(getattr(rcfg, 'security', None), 'redact_email', True))
     redact_control_artifacts = bool(getattr(getattr(rcfg, 'security', None), 'redact_control_artifacts', True))

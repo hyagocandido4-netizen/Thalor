@@ -1,38 +1,3 @@
-param(
-  [switch]$NoRun
-)
-
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-
-function Write-Utf8NoBomFile {
-  param([string]$Path, [string]$Content)
-  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
-}
-
-function Require-Path {
-  param([string]$Path, [string]$Msg)
-  if (-not (Test-Path $Path)) { throw $Msg }
-}
-
-$root = (Get-Location).Path
-$py = Join-Path $root ".venv\Scripts\python.exe"
-
-Require-Path $py "Nao encontrei $py. Rode primeiro o init.ps1."
-Require-Path "src\natbin\make_dataset.py" "Nao encontrei make_dataset.py (rode phase2_bootstrap.ps1)."
-Require-Path "src\natbin\dataset2.py" "Nao encontrei dataset2.py (rode phase2_bootstrap.ps1)."
-
-Write-Host "== Phase 2.1 FIX (rewrite train_walkforward.py) ==" -ForegroundColor Cyan
-
-# (A) Mostra erro detalhado do compileall atual (não para aqui; é só diagnóstico)
-Write-Host "`nDiagnostico: compileall (detalhado)..." -ForegroundColor Cyan
-& $py -m compileall .\src\natbin
-Write-Host "(Se acima apontou erro de sintaxe, vamos sobrescrever o arquivo.)" -ForegroundColor DarkGray
-
-# (B) Reescreve train_walkforward.py com versão estável e correta
-$trainPath = "src\natbin\train_walkforward.py"
-Write-Utf8NoBomFile $trainPath @'
 from __future__ import annotations
 
 import json
@@ -42,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from .dsio import read_dataset_csv
 
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
@@ -49,7 +15,7 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from natbin.config2 import load_config
+from ..config.legacy import load_config
 
 
 @dataclass
@@ -91,7 +57,8 @@ def main():
     runs_dir = Path(cfg.phase2.runs_dir)
     runs_dir.mkdir(parents=True, exist_ok=True)
 
-    df = pd.read_csv(dataset_path).sort_values("ts").reset_index(drop=True)
+    df = read_dataset_csv(dataset_path, label_col="y_open_close")
+    df = df[df["y_open_close"].notna()].copy()
 
     feature_cols = [c for c in df.columns if c.startswith("f_")]
     X = df[feature_cols].astype("float64").values
@@ -201,27 +168,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-'@
-
-Write-Host "train_walkforward.py reescrito (versao estável)." -ForegroundColor Green
-
-# (C) Compileall novamente
-Write-Host "`ncompileall (novo)..." -ForegroundColor Cyan
-& $py -m compileall .\src\natbin | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "compileall ainda falhou (me mande o output acima)" }
-
-if (-not $NoRun) {
-  Write-Host "`nRodando: make_dataset..." -ForegroundColor Cyan
-  & $py -m natbin.make_dataset
-  if ($LASTEXITCODE -ne 0) { throw "make_dataset falhou" }
-
-  Write-Host "`nRodando: train_walkforward..." -ForegroundColor Cyan
-  & $py -m natbin.train_walkforward
-  if ($LASTEXITCODE -ne 0) { throw "train_walkforward falhou" }
-
-  Write-Host "`nPhase 2.1 FIX concluido." -ForegroundColor Green
-} else {
-  Write-Host "`nFix aplicado. Para rodar:" -ForegroundColor Yellow
-  Write-Host "  .\.venv\Scripts\python.exe -m natbin.make_dataset"
-  Write-Host "  .\.venv\Scripts\python.exe -m natbin.train_walkforward"
-}

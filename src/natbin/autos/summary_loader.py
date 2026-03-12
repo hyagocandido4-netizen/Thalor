@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ..summary_paths import load_daily_summary_checked, repo_timezone_name
+from ..state.summary_paths import load_daily_summary_checked, repo_timezone_name
 
 
 @dataclass(frozen=True)

@@ -96,5 +96,7 @@ def test_build_release_readiness_payload_marks_repo_ready(tmp_path: Path) -> Non
     names = {item['name'] for item in payload['checks']}
     assert 'security_posture' in names
     assert 'telegram_alerting' in names
+    assert 'production_doctor' in names
+    assert payload['doctor']['severity'] == 'ok'
     release_artifact = tmp_path / 'runs' / 'control' / 'EURUSD-OTC_300s' / 'release.json'
     assert release_artifact.exists()

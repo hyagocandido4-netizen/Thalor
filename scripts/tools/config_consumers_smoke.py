@@ -14,6 +14,8 @@ if str(SRC) not in sys.path:
 def main() -> int:
     cfg2 = importlib.import_module("natbin.config2")
     settings = importlib.import_module("natbin.settings")
+    cfg_legacy = importlib.import_module("natbin.config.legacy")
+    cfg_settings = importlib.import_module("natbin.config.settings")
 
     cfg = cfg2.load_cfg()
     sc = cfg2.scope()
@@ -31,7 +33,13 @@ def main() -> int:
     assert env["ASSET"] == cfg["asset"], "env export asset mismatch"
     assert int(env["INTERVAL_SEC"]) == int(cfg["interval_sec"]), "env export interval mismatch"
 
-    print("[smoke][OK] config2/settings bridge ok")
+    legacy_cfg = cfg_legacy.load_cfg()
+    assert legacy_cfg["asset"] == cfg["asset"], "legacy config asset mismatch"
+    assert int(legacy_cfg["interval_sec"]) == int(cfg["interval_sec"]), "legacy config interval mismatch"
+    assert cfg_settings.ASSET == cfg["asset"], "config.settings asset mismatch"
+    assert int(cfg_settings.INTERVAL_SEC) == int(cfg["interval_sec"]), "config.settings interval mismatch"
+
+    print("[smoke][OK] config2/settings/legacy bridges ok")
     return 0
 
 

@@ -10,7 +10,7 @@ from ..runtime.failsafe import CircuitBreakerPolicy, RuntimeFailsafe
 from ..runtime.health import build_health_payload
 from ..runtime.precheck import run_precheck
 from ..runtime.quota import OPEN as QUOTA_OPEN, build_quota_snapshot
-from ..runtime_perf import load_json_cached
+from ..runtime.perf import load_json_cached
 from ..state.control_repo import RuntimeControlRepository, read_control_artifact, write_control_artifact
 from .models import ObserveRequest
 from .plan import build_context, build_runtime_app_info, build_runtime_plan, to_json_dict
@@ -132,6 +132,8 @@ def status_payload(
         'lifecycle': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='lifecycle'),
         'security': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='security'),
         'release': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='release'),
+        'doctor': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='doctor'),
+        'retention': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='retention'),
         'alerts': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='alerts'),
         'incidents': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='incidents'),
     }
@@ -220,6 +222,48 @@ def release_payload(
     from ..ops.release_readiness import build_release_readiness_payload
 
     return build_release_readiness_payload(repo_root=repo_root, config_path=config_path)
+
+def doctor_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    probe_broker: bool = False,
+    relaxed: bool = False,
+    market_context_max_age_sec: int | None = None,
+    min_dataset_rows: int = 100,
+) -> dict[str, Any]:
+    from ..ops.production_doctor import build_production_doctor_payload
+
+    return build_production_doctor_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        probe_broker=probe_broker,
+        strict_runtime_artifacts=not relaxed,
+        market_context_max_age_sec=market_context_max_age_sec,
+        min_dataset_rows=min_dataset_rows,
+    )
+
+
+
+def retention_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    apply: bool = False,
+    days: int | None = None,
+    keep_effective_config_snapshots: int = 20,
+    list_limit: int = 50,
+) -> dict[str, Any]:
+    from ..ops.artifact_retention import build_retention_payload
+
+    return build_retention_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        apply=apply,
+        days=days,
+        keep_effective_config_snapshots=keep_effective_config_snapshots,
+        list_limit=list_limit,
+    )
 
 
 def alerts_payload(
