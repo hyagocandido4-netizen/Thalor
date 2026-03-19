@@ -45,6 +45,8 @@ class CandidateDecision:
     slot_multiplier: float | None = None
     drift_level: str | None = None
     coverage_bias: float | None = None
+    stack_decision: str | None = None
+    regime_level: str | None = None
     intelligence: dict[str, Any] = field(default_factory=dict)
 
     def rank_value(self, *, weight: float = 1.0, prefer_ev: bool = True) -> float:
@@ -169,6 +171,8 @@ class AllocationItem:
     slot_multiplier: float | None = None
     drift_level: str | None = None
     coverage_bias: float | None = None
+    stack_decision: str | None = None
+    regime_level: str | None = None
     rank: int | None = None
     cluster_key: str | None = None
     risk_context: dict[str, Any] | None = None

@@ -208,6 +208,45 @@ class MultiAssetSettings(BaseModel):
 
 
 
+class IntelligenceScopePolicy(BaseModel):
+    name: str = "scope_policy"
+    scope_tag: str | None = None
+    asset: str | None = None
+    interval_sec: int | None = None
+
+    learned_weight: float | None = None
+    promote_above: float | None = None
+    suppress_below: float | None = None
+    abstain_band: float | None = None
+    min_reliability: float | None = None
+    neutralize_low_reliability: bool | None = None
+    stack_max_bonus: float | None = None
+    stack_max_penalty: float | None = None
+    learned_fail_closed: bool | None = None
+    drift_fail_closed: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "IntelligenceScopePolicy":
+        if self.interval_sec is not None and int(self.interval_sec) <= 0:
+            raise ValueError("intelligence.scope_policies[].interval_sec must be > 0")
+        for name in ('learned_weight', 'promote_above', 'suppress_below', 'min_reliability'):
+            value = getattr(self, name)
+            if value is not None and not (0.0 <= float(value) <= 1.0):
+                raise ValueError(f"intelligence.scope_policies[].{name} must be within [0,1]")
+        if self.abstain_band is not None and not (0.0 <= float(self.abstain_band) <= 0.50):
+            raise ValueError("intelligence.scope_policies[].abstain_band must be within [0,0.50]")
+        for name in ('stack_max_bonus', 'stack_max_penalty'):
+            value = getattr(self, name)
+            if value is not None and float(value) < 0:
+                raise ValueError(f"intelligence.scope_policies[].{name} must be >= 0")
+        if (
+            self.promote_above is not None and self.suppress_below is not None
+            and float(self.promote_above) < float(self.suppress_below)
+        ):
+            raise ValueError("intelligence.scope_policies[].promote_above must be >= suppress_below")
+        return self
+
+
 class IntelligenceSettings(BaseModel):
     enabled: bool = True
     artifact_dir: Path = Path("runs/intelligence")
@@ -218,11 +257,24 @@ class IntelligenceSettings(BaseModel):
     slot_aware_prior_weight: float = 8.0
     slot_aware_multiplier_min: float = 0.85
     slot_aware_multiplier_max: float = 1.15
+    slot_aware_score_delta_cap: float = 0.05
+    slot_aware_threshold_delta_cap: float = 0.03
 
     # P19 — learned gating / stacking
     learned_gating_enable: bool = True
     learned_gating_min_rows: int = 50
     learned_gating_weight: float = 0.60
+    learned_stacking_enable: bool = True
+    learned_promote_above: float = 0.62
+    learned_suppress_below: float = 0.42
+    learned_abstain_band: float = 0.03
+    learned_fail_closed: bool = False
+    learned_calibration_enable: bool = True
+    learned_min_reliability: float = 0.50
+    learned_neutralize_low_reliability: bool = True
+    stack_max_bonus: float = 0.05
+    stack_max_penalty: float = 0.05
+    scope_policies: list[IntelligenceScopePolicy] = Field(default_factory=list)
 
     # P20 — drift / regime monitor
     drift_monitor_enable: bool = True
@@ -230,19 +282,27 @@ class IntelligenceSettings(BaseModel):
     drift_warn_psi: float = 0.15
     drift_block_psi: float = 0.30
     drift_fail_closed: bool = False
+    regime_warn_shift: float = 0.10
+    regime_block_shift: float = 0.20
     retrain_warn_streak: int = 3
     retrain_block_streak: int = 1
+    retrain_cooldown_hours: int = 12
 
     # P21 — coverage regulator 2.0
     coverage_regulator_enable: bool = True
     coverage_target_trades_per_day: float | None = None
     coverage_tolerance: float = 0.50
     coverage_bias_weight: float = 0.04
+    coverage_curve_power: float = 1.20
+    coverage_max_bonus: float = 0.05
+    coverage_max_penalty: float = 0.05
 
     # P22 — anti-overfitting guard
     anti_overfit_enable: bool = True
     anti_overfit_fail_closed: bool = False
     anti_overfit_min_robustness: float = 0.50
+    anti_overfit_min_windows: int = 3
+    anti_overfit_gap_penalty_weight: float = 0.10
 
     @model_validator(mode="after")
     def _validate(self) -> "IntelligenceSettings":
@@ -254,28 +314,57 @@ class IntelligenceSettings(BaseModel):
             raise ValueError("intelligence.slot_aware_multiplier_min must be > 0")
         if float(self.slot_aware_multiplier_max) < float(self.slot_aware_multiplier_min):
             raise ValueError("intelligence.slot_aware_multiplier_max must be >= intelligence.slot_aware_multiplier_min")
+        for name in ['slot_aware_score_delta_cap', 'slot_aware_threshold_delta_cap']:
+            if float(getattr(self, name)) < 0:
+                raise ValueError(f"intelligence.{name} must be >= 0")
         if int(self.learned_gating_min_rows) < 10:
             raise ValueError("intelligence.learned_gating_min_rows must be >= 10")
         if not (0.0 <= float(self.learned_gating_weight) <= 1.0):
             raise ValueError("intelligence.learned_gating_weight must be within [0,1]")
+        if not (0.0 <= float(self.learned_suppress_below) <= 1.0):
+            raise ValueError("intelligence.learned_suppress_below must be within [0,1]")
+        if not (0.0 <= float(self.learned_promote_above) <= 1.0):
+            raise ValueError("intelligence.learned_promote_above must be within [0,1]")
+        if float(self.learned_promote_above) < float(self.learned_suppress_below):
+            raise ValueError("intelligence.learned_promote_above must be >= intelligence.learned_suppress_below")
+        if not (0.0 <= float(self.learned_abstain_band) <= 0.50):
+            raise ValueError("intelligence.learned_abstain_band must be within [0,0.50]")
+        if not (0.0 <= float(self.learned_min_reliability) <= 1.0):
+            raise ValueError("intelligence.learned_min_reliability must be within [0,1]")
+        if float(self.stack_max_bonus) < 0 or float(self.stack_max_penalty) < 0:
+            raise ValueError("intelligence stack max bonus/penalty must be >= 0")
         if int(self.drift_recent_limit) < 20:
             raise ValueError("intelligence.drift_recent_limit must be >= 20")
         if float(self.drift_warn_psi) <= 0:
             raise ValueError("intelligence.drift_warn_psi must be > 0")
         if float(self.drift_block_psi) < float(self.drift_warn_psi):
             raise ValueError("intelligence.drift_block_psi must be >= intelligence.drift_warn_psi")
+        if float(self.regime_warn_shift) <= 0:
+            raise ValueError("intelligence.regime_warn_shift must be > 0")
+        if float(self.regime_block_shift) < float(self.regime_warn_shift):
+            raise ValueError("intelligence.regime_block_shift must be >= intelligence.regime_warn_shift")
         if int(self.retrain_warn_streak) < 1:
             raise ValueError("intelligence.retrain_warn_streak must be >= 1")
         if int(self.retrain_block_streak) < 1:
             raise ValueError("intelligence.retrain_block_streak must be >= 1")
+        if int(self.retrain_cooldown_hours) < 0:
+            raise ValueError("intelligence.retrain_cooldown_hours must be >= 0")
         if self.coverage_target_trades_per_day is not None and float(self.coverage_target_trades_per_day) <= 0:
             raise ValueError("intelligence.coverage_target_trades_per_day must be > 0 when set")
         if float(self.coverage_tolerance) < 0:
             raise ValueError("intelligence.coverage_tolerance must be >= 0")
         if float(self.coverage_bias_weight) < 0:
             raise ValueError("intelligence.coverage_bias_weight must be >= 0")
+        if float(self.coverage_curve_power) <= 0:
+            raise ValueError("intelligence.coverage_curve_power must be > 0")
+        if float(self.coverage_max_bonus) < 0 or float(self.coverage_max_penalty) < 0:
+            raise ValueError("intelligence coverage max bonus/penalty must be >= 0")
         if not (0.0 <= float(self.anti_overfit_min_robustness) <= 1.0):
             raise ValueError("intelligence.anti_overfit_min_robustness must be within [0,1]")
+        if int(self.anti_overfit_min_windows) < 1:
+            raise ValueError("intelligence.anti_overfit_min_windows must be >= 1")
+        if float(self.anti_overfit_gap_penalty_weight) < 0:
+            raise ValueError("intelligence.anti_overfit_gap_penalty_weight must be >= 0")
         return self
 
 class SecurityGuardSettings(BaseModel):

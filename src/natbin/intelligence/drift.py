@@ -1,11 +1,9 @@
-
 from __future__ import annotations
 
 import json
 import math
 import sqlite3
-from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -84,10 +82,13 @@ def build_drift_baseline(
             'count': int(values.size),
             'mean': float(values.mean()),
             'std': float(values.std()) if values.size > 1 else 0.0,
+            'p25': float(np.quantile(values, 0.25)),
+            'p50': float(np.quantile(values, 0.50)),
+            'p75': float(np.quantile(values, 0.75)),
         }
     return {
         'kind': 'drift_baseline',
-        'schema_version': 'm5-drift-baseline-v1',
+        'schema_version': 'phase1-drift-baseline-v2',
         'fields': payload,
     }
 
@@ -134,12 +135,81 @@ def population_stability_index(expected_probs: Iterable[float], actual_probs: It
     return float(np.sum((act - exp) * np.log(act / exp)))
 
 
+def assess_regime(
+    baseline: dict[str, Any] | None,
+    recent_rows: Iterable[dict[str, Any]],
+    *,
+    warn_shift: float = 0.10,
+    block_shift: float = 0.20,
+) -> dict[str, Any]:
+    rows = [dict(r) for r in recent_rows if isinstance(r, dict)]
+    if not rows:
+        return {
+            'kind': 'regime_report',
+            'level': 'unknown',
+            'severity': 0.0,
+            'direction': 'flat',
+            'fields': {},
+            'reason': 'recent_rows_missing',
+        }
+
+    field_reports: dict[str, Any] = {}
+    worst = 0.0
+    neg_bias = 0
+    pos_bias = 0
+    for field, meta in dict((baseline or {}).get('fields') or {}).items():
+        values = _collect_field_values(rows, field)
+        if values.size == 0:
+            continue
+        mean_recent = float(values.mean())
+        expected_mean = _safe_float(meta.get('mean'), 0.0) or 0.0
+        expected_std = max(1e-6, float(_safe_float(meta.get('std'), 0.0) or 0.0))
+        shift = float(mean_recent - expected_mean)
+        norm_shift = abs(shift) / max(expected_std, 0.05)
+        worst = max(worst, norm_shift)
+        if shift < 0:
+            neg_bias += 1
+        elif shift > 0:
+            pos_bias += 1
+        field_reports[field] = {
+            'mean_recent': mean_recent,
+            'expected_mean': float(expected_mean),
+            'shift': float(shift),
+            'norm_shift': float(norm_shift),
+        }
+
+    level = 'ok'
+    if worst >= float(block_shift):
+        level = 'block'
+    elif worst >= float(warn_shift):
+        level = 'warn'
+    direction = 'flat'
+    if neg_bias > pos_bias:
+        direction = 'deteriorating'
+    elif pos_bias > neg_bias:
+        direction = 'improving'
+
+    return {
+        'kind': 'regime_report',
+        'schema_version': 'phase1-regime-report-v1',
+        'level': level,
+        'severity': float(worst),
+        'direction': direction,
+        'fields': field_reports,
+        'reason': f'regime_{direction}',
+        'warn_shift': float(warn_shift),
+        'block_shift': float(block_shift),
+    }
+
+
 def assess_drift(
     baseline: dict[str, Any] | None,
     recent_rows: Iterable[dict[str, Any]],
     *,
     warn_psi: float = 0.15,
     block_psi: float = 0.30,
+    regime_warn_shift: float = 0.10,
+    regime_block_shift: float = 0.20,
 ) -> dict[str, Any]:
     rows = [dict(r) for r in recent_rows if isinstance(r, dict)]
     fields = {}
@@ -171,18 +241,34 @@ def assess_drift(
     elif 'warn' in levels:
         overall = 'warn'
 
+    regime = assess_regime(
+        baseline,
+        rows,
+        warn_shift=regime_warn_shift,
+        block_shift=regime_block_shift,
+    )
+    if regime.get('level') == 'block':
+        overall = 'block'
+    elif regime.get('level') == 'warn' and overall == 'ok':
+        overall = 'warn'
+
     penalty = 0.0
     if overall == 'warn':
         penalty = 0.05
     elif overall == 'block':
         penalty = 0.20
+    if regime.get('level') == 'warn':
+        penalty = max(penalty, 0.07)
+    elif regime.get('level') == 'block':
+        penalty = max(penalty, 0.22)
 
     return {
         'kind': 'drift_report',
-        'schema_version': 'm5-drift-report-v1',
+        'schema_version': 'phase1-drift-report-v2',
         'level': overall,
         'penalty': float(penalty),
         'fields': fields,
+        'regime': regime,
         'recent_rows': int(len(rows)),
         'warn_psi': float(warn_psi),
         'block_psi': float(block_psi),
@@ -195,10 +281,12 @@ def update_drift_state(
     level: str,
     warn_streak_threshold: int = 3,
     block_streak_threshold: int = 1,
+    cooldown_hours: int = 0,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     path = Path(state_path)
-    now = (now_utc or datetime.now(tz=UTC)).astimezone(UTC).isoformat(timespec='seconds')
+    now_dt = (now_utc or datetime.now(tz=UTC)).astimezone(UTC)
+    now = now_dt.isoformat(timespec='seconds')
     prev: dict[str, Any] = {}
     if path.exists():
         try:
@@ -220,6 +308,15 @@ def update_drift_state(
         warn_streak = 0
         block_streak = 0
 
+    cooldown_until = None
+    if prev.get('cooldown_until_utc'):
+        try:
+            cooldown_until = datetime.fromisoformat(str(prev.get('cooldown_until_utc')))
+            if cooldown_until.tzinfo is None:
+                cooldown_until = cooldown_until.replace(tzinfo=UTC)
+        except Exception:
+            cooldown_until = None
+
     retrain = False
     retrain_reason = None
     if lvl == 'block' and block_streak >= int(block_streak_threshold):
@@ -229,15 +326,26 @@ def update_drift_state(
         retrain = True
         retrain_reason = 'drift_warn_streak'
 
+    cooldown_active = bool(cooldown_until is not None and now_dt < cooldown_until)
+    if retrain and int(cooldown_hours) > 0:
+        if cooldown_active:
+            retrain = False
+            retrain_reason = None
+        else:
+            cooldown_until = now_dt + timedelta(hours=int(cooldown_hours))
+
     state = {
         'kind': 'drift_state',
-        'schema_version': 'm5-drift-state-v1',
+        'schema_version': 'phase1-drift-state-v2',
         'updated_at_utc': now,
         'level': lvl,
         'warn_streak': int(warn_streak),
         'block_streak': int(block_streak),
         'retrain_recommended': bool(retrain),
         'retrain_reason': retrain_reason,
+        'cooldown_hours': int(cooldown_hours),
+        'cooldown_active': bool(cooldown_active),
+        'cooldown_until_utc': cooldown_until.astimezone(UTC).isoformat(timespec='seconds') if cooldown_until is not None else None,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding='utf-8')

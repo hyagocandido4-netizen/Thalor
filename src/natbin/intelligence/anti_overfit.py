@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -60,7 +59,15 @@ def _find_per_window(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _extract_hit(entry: dict[str, Any]) -> float | None:
-    for key in ('topk_hit_weighted', 'topk_hit', 'hit', 'accuracy', 'wr', 'win_rate'):
+    for key in ('topk_hit_weighted', 'topk_hit', 'hit', 'accuracy', 'wr', 'win_rate', 'valid_hit', 'val_hit'):
+        value = _safe_float(entry.get(key))
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _extract_train_hit(entry: dict[str, Any]) -> float | None:
+    for key in ('train_hit', 'train_accuracy', 'train_wr', 'train_win_rate'):
         value = _safe_float(entry.get(key))
         if value is not None:
             return float(value)
@@ -80,18 +87,21 @@ def build_anti_overfit_report(
     *,
     min_robustness: float = 0.50,
     min_trades_window: int = 10,
+    min_windows: int = 3,
+    gap_penalty_weight: float = 0.10,
 ) -> dict[str, Any]:
     raw = dict(payload or {})
     windows = _find_per_window(raw)
     if not windows:
         best = raw.get('best') if isinstance(raw.get('best'), dict) else raw
-        hit = _safe_float(best.get('topk_hit_weighted') or best.get('best_accuracy') or best.get('accuracy'))
+        hit = _safe_float(best.get('topk_hit_weighted') or best.get('best_accuracy') or best.get('accuracy') or best.get('valid_hit'))
         trades = _safe_int(best.get('topk_taken_total') or best.get('best_taken') or best.get('trades'))
         min_hit = _safe_float(best.get('min_window_hit'), hit)
+        train_hit = _safe_float(best.get('train_hit') or best.get('train_accuracy'))
         if hit is None:
             return {
                 'kind': 'anti_overfit',
-                'schema_version': 'm5-anti-overfit-v1',
+                'schema_version': 'phase1-anti-overfit-v2',
                 'available': False,
                 'accepted': True,
                 'robustness_score': None,
@@ -103,24 +113,32 @@ def build_anti_overfit_report(
         std_hit = 0.0
         med_hit = float(hit)
         support = min(1.0, float(trades) / max(1.0, float(min_trades_window) * 5.0))
-        robustness = (0.50 * weighted_mean) + (0.30 * min_hit_f) + (0.10 * med_hit) + (0.10 * support)
+        stability = 1.0
+        gap = max(0.0, float((train_hit or hit)) - float(hit)) if train_hit is not None else 0.0
+        gap_penalty = min(float(gap_penalty_weight), float(gap) * float(gap_penalty_weight))
+        robustness = (0.45 * weighted_mean) + (0.25 * min_hit_f) + (0.15 * med_hit) + (0.10 * support) + (0.05 * stability) - gap_penalty
+        windows_count = 1
     else:
         hits: list[float] = []
+        train_hits: list[float] = []
         weights: list[int] = []
         low_trade_windows = 0
         for entry in windows:
             hit = _extract_hit(entry)
+            train_hit = _extract_train_hit(entry)
             trades = _extract_trades(entry)
             if hit is None:
                 continue
             hits.append(float(hit))
+            if train_hit is not None:
+                train_hits.append(float(train_hit))
             weights.append(max(1, int(trades)))
             if int(trades) < int(min_trades_window):
                 low_trade_windows += 1
         if not hits:
             return {
                 'kind': 'anti_overfit',
-                'schema_version': 'm5-anti-overfit-v1',
+                'schema_version': 'phase1-anti-overfit-v2',
                 'available': False,
                 'accepted': True,
                 'robustness_score': None,
@@ -137,22 +155,31 @@ def build_anti_overfit_report(
         support = min(1.0, total_w / max(1.0, float(min_trades_window) * max(1, len(hits))))
         stability = max(0.0, 1.0 - (std_hit / 0.20))
         low_trade_penalty = min(0.20, float(low_trade_windows) / max(1.0, float(len(hits))) * 0.20)
+        train_mean = float(sum(train_hits) / len(train_hits)) if train_hits else None
+        gap = max(0.0, float(train_mean) - float(weighted_mean)) if train_mean is not None else 0.0
+        gap_penalty = min(float(gap_penalty_weight), float(gap) * float(gap_penalty_weight))
+        windows_count = len(hits)
+        window_support_penalty = 0.10 if int(windows_count) < int(min_windows) else 0.0
         robustness = (
-            (0.45 * weighted_mean)
-            + (0.25 * min_hit_f)
-            + (0.15 * med_hit)
+            (0.40 * weighted_mean)
+            + (0.20 * min_hit_f)
+            + (0.10 * med_hit)
             + (0.15 * support)
             + (0.10 * stability)
             - low_trade_penalty
+            - gap_penalty
+            - window_support_penalty
         )
         robustness = max(0.0, min(1.0, robustness))
 
     accepted = bool(robustness >= float(min_robustness))
     penalty = 0.0 if accepted else 0.10
+    if not accepted:
+        penalty += min(0.05, float(gap_penalty)) if 'gap_penalty' in locals() else 0.0
 
     return {
         'kind': 'anti_overfit',
-        'schema_version': 'm5-anti-overfit-v1',
+        'schema_version': 'phase1-anti-overfit-v2',
         'available': True,
         'accepted': bool(accepted),
         'robustness_score': float(robustness),
@@ -161,7 +188,11 @@ def build_anti_overfit_report(
         'min_window_hit': float(min_hit_f),
         'median_window_hit': float(med_hit),
         'std_window_hit': float(std_hit),
-        'windows_count': int(len(windows)) if windows else 1,
+        'windows_count': int(windows_count),
         'min_trades_window': int(min_trades_window),
         'min_robustness': float(min_robustness),
+        'min_windows': int(min_windows),
+        'generalization_gap': float(gap if 'gap' in locals() else 0.0),
+        'gap_penalty': float(gap_penalty if 'gap_penalty' in locals() else 0.0),
+        'stability_score': float(stability if 'stability' in locals() else 1.0),
     }

@@ -1,8 +1,5 @@
-
 from __future__ import annotations
 
-import math
-from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
@@ -26,6 +23,10 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(float(lo), min(float(hi), float(value)))
+
+
 def _iter_summaries(summaries: Iterable[Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for item in summaries:
@@ -43,6 +44,8 @@ def build_slot_profile(
     prior_weight: float = 8.0,
     multiplier_min: float = 0.85,
     multiplier_max: float = 1.15,
+    score_delta_cap: float = 0.05,
+    threshold_delta_cap: float = 0.03,
 ) -> dict[str, Any]:
     items = _iter_summaries(summaries)
     hours = [f"{i:02d}" for i in range(24)]
@@ -96,14 +99,27 @@ def build_slot_profile(
         ev_mean = (agg[h]['ev_sum'] / trades) if trades > 0 else None
 
         # Empirical Bayes shrinkage toward the global baseline.
-        shrunk_wr = ((wins + (global_wr * float(prior_weight))) / (trades + float(prior_weight))) if (trades + float(prior_weight)) > 0 else global_wr
-        shrunk_ev = ((agg[h]['ev_sum'] + (global_ev * float(prior_weight))) / (trades + float(prior_weight))) if (trades + float(prior_weight)) > 0 else global_ev
-        strength = (trades / (trades + float(prior_weight))) if (trades + float(prior_weight)) > 0 else 0.0
+        denom = trades + float(prior_weight)
+        shrunk_wr = ((wins + (global_wr * float(prior_weight))) / denom) if denom > 0 else global_wr
+        shrunk_ev = ((agg[h]['ev_sum'] + (global_ev * float(prior_weight))) / denom) if denom > 0 else global_ev
+        strength = (trades / denom) if denom > 0 else 0.0
+        confidence = strength if trades >= int(min_trades) else (strength * 0.5)
 
         quality = (0.70 * (shrunk_wr - global_wr)) + (0.30 * (shrunk_ev - global_ev))
         quality_strength = float(quality) * float(strength)
         multiplier = 1.0 + (2.0 * quality_strength)
         multiplier = max(float(multiplier_min), min(float(multiplier_max), float(multiplier)))
+
+        score_delta = _clamp(quality_strength * 0.25, -float(score_delta_cap), float(score_delta_cap))
+        threshold_delta = _clamp(-score_delta * 0.60, -float(threshold_delta_cap), float(threshold_delta_cap))
+        alpha_delta = _clamp(quality_strength * 0.05, -0.02, 0.02)
+
+        state = 'neutral'
+        if trades >= int(min_trades):
+            if score_delta >= 0.01:
+                state = 'promote'
+            elif score_delta <= -0.01:
+                state = 'suppress'
 
         slot_stats[h] = {
             'hour': h,
@@ -116,14 +132,21 @@ def build_slot_profile(
             'shrunk_win_rate': float(shrunk_wr),
             'shrunk_ev_mean': float(shrunk_ev),
             'quality': float(quality_strength),
+            'confidence': float(confidence),
             'multiplier': float(multiplier),
             'eligible': bool(trades >= int(min_trades)),
             'expected_share': (float(trades) / float(total_trades)) if total_trades > 0 else 0.0,
+            'recommendation': {
+                'state': state,
+                'score_delta': float(score_delta),
+                'threshold_delta': float(threshold_delta),
+                'alpha_delta': float(alpha_delta),
+            },
         }
 
     return {
         'kind': 'slot_profile',
-        'schema_version': 'm5-slot-profile-v1',
+        'schema_version': 'phase1-slot-profile-v2',
         'days_used': int(days_used),
         'global': {
             'trades': int(round(total_trades)),
@@ -134,6 +157,8 @@ def build_slot_profile(
             'prior_weight': float(prior_weight),
             'multiplier_min': float(multiplier_min),
             'multiplier_max': float(multiplier_max),
+            'score_delta_cap': float(score_delta_cap),
+            'threshold_delta_cap': float(threshold_delta_cap),
         },
         'hours': slot_stats,
     }
@@ -157,6 +182,12 @@ def slot_stats_for_ts(profile: dict[str, Any] | None, ts: int | None, *, timezon
             'multiplier': 1.0,
             'quality': 0.0,
             'eligible': False,
+            'recommendation': {
+                'state': 'neutral',
+                'score_delta': 0.0,
+                'threshold_delta': 0.0,
+                'alpha_delta': 0.0,
+            },
         }
     hour = slot_key_from_ts(ts, timezone_name=timezone_name)
     hours = profile.get('hours') or {}
@@ -166,5 +197,12 @@ def slot_stats_for_ts(profile: dict[str, Any] | None, ts: int | None, *, timezon
     entry.setdefault('hour', hour)
     entry.setdefault('multiplier', 1.0)
     entry.setdefault('quality', 0.0)
+    entry.setdefault('confidence', 0.0)
     entry.setdefault('eligible', False)
+    entry.setdefault('recommendation', {
+        'state': 'neutral',
+        'score_delta': 0.0,
+        'threshold_delta': 0.0,
+        'alpha_delta': 0.0,
+    })
     return entry

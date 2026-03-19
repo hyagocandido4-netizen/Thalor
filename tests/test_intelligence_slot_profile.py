@@ -51,3 +51,22 @@ def test_coverage_profile_cumulative_share_and_bias():
         bias_weight=0.05,
     )
     assert bias['bias'] > 0.0
+
+
+
+def test_slot_profile_recommendations_and_threshold_delta():
+    profile = build_slot_profile(
+        [_summary(8, 3), _summary(9, 2)],
+        min_trades=4,
+        prior_weight=2.0,
+        score_delta_cap=0.05,
+        threshold_delta_cap=0.03,
+    )
+    h10 = profile['hours']['10']
+    h11 = profile['hours']['11']
+    assert h10['recommendation']['state'] == 'promote'
+    assert h10['recommendation']['score_delta'] > 0.0
+    assert h10['recommendation']['threshold_delta'] < 0.0
+    assert h11['recommendation']['state'] == 'suppress'
+    assert h11['recommendation']['score_delta'] < 0.0
+    assert h11['recommendation']['threshold_delta'] > 0.0

@@ -41,6 +41,17 @@ def _write_config(repo_root: Path) -> Path:
             '  coverage_regulator_enable: true',
             '  drift_monitor_enable: true',
             '  anti_overfit_enable: true',
+            '  learned_stacking_enable: true',
+            '  learned_min_reliability: 0.55',
+            '  stack_max_bonus: 0.04',
+            '  stack_max_penalty: 0.06',
+            '  coverage_curve_power: 1.2',
+            '  anti_overfit_min_windows: 3',
+            '  scope_policies:',
+            '    - name: eurusd_scope',
+            '      scope_tag: EURUSD-OTC_300s',
+            '      learned_weight: 0.72',
+            '      promote_above: 0.60',
             '',
         ]),
         encoding='utf-8',
@@ -144,7 +155,13 @@ def test_fit_intelligence_pack_builds_pack(tmp_path: Path, monkeypatch) -> None:
     assert out == expected
     assert out.exists()
     assert pack['scope_tag'] == SCOPE_TAG
+    assert pack['schema_version'] == 'phase1-intelligence-pack-v3'
     assert pack['metadata']['training_rows'] >= 100
     assert pack['learned_gate'] is not None
+    assert pack['learned_gate']['reliability_score'] >= 0.0
     assert pack['slot_profile']['days_used'] >= 1
+    assert pack['slot_profile']['hours']['10']['recommendation']['state'] in {'promote', 'neutral'}
     assert pack['anti_overfit']['available'] is True
+    assert pack['scope_policy']['name'] == 'eurusd_scope'
+    assert pack['scope_policy']['learned_weight'] == 0.72
+    assert 'phase1' in pack['metadata']

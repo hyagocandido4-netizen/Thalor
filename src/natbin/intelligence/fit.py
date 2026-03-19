@@ -10,12 +10,14 @@ from zoneinfo import ZoneInfo
 
 from ..config.loader import load_thalor_config
 from ..config.paths import resolve_config_path, resolve_repo_root
+from ..portfolio.models import PortfolioScope
 from ..portfolio.paths import resolve_scope_data_paths, resolve_scope_runtime_paths, scope_tag as compute_scope_tag
 from .anti_overfit import build_anti_overfit_report, load_json as load_summary_json
 from .coverage import build_coverage_profile
 from .drift import build_drift_baseline
 from .learned_gate import build_training_rows, fit_learned_gate
 from .paths import pack_path
+from .policy import resolve_scope_policy
 from .slot_profile import build_slot_profile
 
 
@@ -103,11 +105,16 @@ def fit_intelligence_pack(
         prior_weight=float(getattr(int_cfg, 'slot_aware_prior_weight', 8.0)),
         multiplier_min=float(getattr(int_cfg, 'slot_aware_multiplier_min', 0.85)),
         multiplier_max=float(getattr(int_cfg, 'slot_aware_multiplier_max', 1.15)),
+        score_delta_cap=float(getattr(int_cfg, 'slot_aware_score_delta_cap', 0.05)),
+        threshold_delta_cap=float(getattr(int_cfg, 'slot_aware_threshold_delta_cap', 0.03)),
     )
     coverage_profile = build_coverage_profile(
         summaries,
         target_trades_per_day=getattr(int_cfg, 'coverage_target_trades_per_day', None) or getattr(cfg.quota, 'target_trades_per_day', None),
+        curve_power=float(getattr(int_cfg, 'coverage_curve_power', 1.20)),
     )
+
+    scope = PortfolioScope(asset=str(chosen.asset), interval_sec=int(chosen.interval_sec), timezone=str(getattr(chosen, 'timezone', 'UTC')), scope_tag=scope_tag)
 
     training_rows = build_training_rows(
         signals_db_path=signals_path,
@@ -121,6 +128,7 @@ def fit_intelligence_pack(
     learned_gate = None
     if bool(getattr(int_cfg, 'learned_gating_enable', True)):
         learned_gate = fit_learned_gate(training_rows, min_rows=int(getattr(int_cfg, 'learned_gating_min_rows', 50)))
+    scope_policy = resolve_scope_policy(int_cfg, scope)
 
     drift_rows = [
         {
@@ -137,11 +145,13 @@ def fit_intelligence_pack(
     anti_overfit = build_anti_overfit_report(
         anti_payload,
         min_robustness=float(getattr(int_cfg, 'anti_overfit_min_robustness', 0.50)),
+        min_windows=int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
+        gap_penalty_weight=float(getattr(int_cfg, 'anti_overfit_gap_penalty_weight', 0.10)),
     )
 
     pack = {
         'kind': 'intelligence_pack',
-        'schema_version': 'm5-intelligence-pack-v1',
+        'schema_version': 'phase1-intelligence-pack-v3',
         'generated_at_utc': datetime.now(tz=UTC).isoformat(timespec='seconds'),
         'asset': str(chosen.asset),
         'interval_sec': int(chosen.interval_sec),
@@ -152,6 +162,7 @@ def fit_intelligence_pack(
         'slot_profile': slot_profile,
         'coverage_profile': coverage_profile,
         'learned_gate': learned_gate,
+        'scope_policy': scope_policy,
         'drift_baseline': drift_baseline,
         'anti_overfit': anti_overfit,
         'metadata': {
@@ -167,6 +178,21 @@ def fit_intelligence_pack(
                 'drift_monitor_enable': bool(getattr(int_cfg, 'drift_monitor_enable', True)),
                 'coverage_regulator_enable': bool(getattr(int_cfg, 'coverage_regulator_enable', True)),
                 'anti_overfit_enable': bool(getattr(int_cfg, 'anti_overfit_enable', True)),
+                'learned_stacking_enable': bool(getattr(int_cfg, 'learned_stacking_enable', True)),
+            },
+            'phase1': {
+                'slot_aware_score_delta_cap': float(getattr(int_cfg, 'slot_aware_score_delta_cap', 0.05)),
+                'slot_aware_threshold_delta_cap': float(getattr(int_cfg, 'slot_aware_threshold_delta_cap', 0.03)),
+                'learned_promote_above': float(getattr(int_cfg, 'learned_promote_above', 0.62)),
+                'learned_suppress_below': float(getattr(int_cfg, 'learned_suppress_below', 0.42)),
+                'learned_abstain_band': float(getattr(int_cfg, 'learned_abstain_band', 0.03)),
+                'learned_min_reliability': float(getattr(int_cfg, 'learned_min_reliability', 0.50)),
+                'stack_max_bonus': float(getattr(int_cfg, 'stack_max_bonus', 0.05)),
+                'stack_max_penalty': float(getattr(int_cfg, 'stack_max_penalty', 0.05)),
+                'coverage_curve_power': float(getattr(int_cfg, 'coverage_curve_power', 1.20)),
+                'anti_overfit_min_windows': int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
+                'anti_overfit_gap_penalty_weight': float(getattr(int_cfg, 'anti_overfit_gap_penalty_weight', 0.10)),
+                'retrain_cooldown_hours': int(getattr(int_cfg, 'retrain_cooldown_hours', 12)),
             },
         },
     }
