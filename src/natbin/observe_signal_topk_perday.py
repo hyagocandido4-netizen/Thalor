@@ -21,5 +21,14 @@ __all__ = [
     if not (_name.startswith("__") and _name.endswith("__"))
 ]
 
+
+# Legacy regression-smoke/tests import a private helper name. Keep the alias
+# even after the observer decomposition so old operational scripts continue to
+# work unchanged.
+if "_resolve_live_signals_csv_path" not in globals() and "resolve_live_signals_csv_path" in globals():
+    globals()["_resolve_live_signals_csv_path"] = globals()["resolve_live_signals_csv_path"]
+    if "_resolve_live_signals_csv_path" not in __all__:
+        __all__.append("_resolve_live_signals_csv_path")
+
 if __name__ == "__main__":
     globals()["main"]()

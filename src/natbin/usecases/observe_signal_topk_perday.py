@@ -9,3 +9,7 @@ public helper names used by operational scripts and tests.
 """
 
 from .observer import *  # noqa: F401,F403
+from .observer.signal_store import resolve_live_signals_csv_path as _resolve_live_signals_csv_path
+
+__all__ = [name for name in globals() if not (name.startswith("__") and name.endswith("__"))]
+
