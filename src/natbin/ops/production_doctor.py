@@ -9,7 +9,7 @@ from typing import Any
 
 from ..control.plan import build_context
 from ..runtime.failsafe import CircuitBreakerPolicy, RuntimeFailsafe
-from ..runtime.execution import adapter_from_context
+from ..runtime.broker_surface import adapter_from_context
 from ..runtime.perf import load_json_cached
 from ..security.audit import audit_security_posture
 from ..state.control_repo import RuntimeControlRepository, read_control_artifact, write_control_artifact
@@ -145,7 +145,10 @@ def build_production_doctor_payload(
     checks: list[dict[str, Any]] = []
     now_utc = _now_utc()
     exec_cfg = dict(ctx.resolved_config.get('execution') or {})
+    broker_cfg = dict(ctx.resolved_config.get('broker') or {})
     execution_live = bool(exec_cfg.get('enabled')) and str(exec_cfg.get('mode') or 'disabled') == 'live' and str(exec_cfg.get('provider') or 'fake') == 'iqoption'
+    execution_account_mode = str(exec_cfg.get('account_mode') or 'PRACTICE').upper()
+    broker_balance_mode = str(broker_cfg.get('balance_mode') or execution_account_mode or 'PRACTICE').upper()
 
     security = audit_security_posture(
         repo_root=repo,
@@ -247,6 +250,24 @@ def build_production_doctor_payload(
     else:
         checks.append(_check('control_freshness', 'ok', 'Artifacts de loop/health frescos', loop_age_sec=round(loop_age, 3), health_age_sec=round(health_age, 3), freshness_limit_sec=freshness_limit))
 
+    from .intelligence_surface import build_intelligence_surface_payload
+
+    intelligence = build_intelligence_surface_payload(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        write_artifact=True,
+    )
+    intelligence_enabled = bool(intelligence.get('enabled'))
+    intelligence_sev = str(intelligence.get('severity') or 'ok')
+    if not intelligence_enabled:
+        checks.append(_check('intelligence_surface', 'ok', 'Intelligence desabilitada no profile atual.'))
+    elif intelligence_sev == 'error':
+        checks.append(_check('intelligence_surface', 'error', 'Surface de intelligence encontrou blockers.', warnings=intelligence.get('warnings') or []))
+    elif intelligence_sev == 'warn':
+        checks.append(_check('intelligence_surface', 'warn', 'Surface de intelligence com avisos operacionais.', warnings=intelligence.get('warnings') or []))
+    else:
+        checks.append(_check('intelligence_surface', 'ok', 'Surface de intelligence pronta.', summary=intelligence.get('summary') or {}))
+
     if not bool(exec_cfg.get('enabled')):
         checks.append(_check('broker_preflight', 'ok', 'Execução desabilitada; preflight live não requerido', execution_mode=exec_cfg.get('mode'), provider=exec_cfg.get('provider')))
         broker_health = None
@@ -300,16 +321,22 @@ def build_production_doctor_payload(
         actions.append('Verifique THALOR_SECRETS_FILE / arquivos de credenciais e rode runtime_app doctor --probe-broker.')
     if 'failsafe_kill_switch' in blockers:
         actions.append('Desative o kill-switch se a operação live estiver autorizada.')
+    if 'intelligence_surface' in warnings:
+        actions.append('Revise runtime_app intelligence / portfolio status e regenere os artifacts de intelligence se necessário.')
     if 'retention_backlog' in warnings:
         actions.append('Execute runtime_app retention --apply para remover artefatos antigos.')
 
+    ready_for_practice = severity == 'ok' and execution_live and execution_account_mode == 'PRACTICE' and broker_balance_mode == 'PRACTICE' and not kill_active and broker_health is not None and bool(broker_health.get('ready'))
+    ready_for_real = severity == 'ok' and execution_live and execution_account_mode == 'REAL' and broker_balance_mode == 'REAL' and not kill_active and broker_health is not None and bool(broker_health.get('ready'))
     payload = {
         'at_utc': now_utc.isoformat(timespec='seconds'),
         'kind': 'production_doctor',
         'ok': severity != 'error',
         'severity': severity,
         'ready_for_cycle': severity != 'error',
-        'ready_for_live': severity == 'ok' and execution_live and not kill_active and broker_health is not None and bool(broker_health.get('ready')),
+        'ready_for_live': ready_for_practice or ready_for_real,
+        'ready_for_practice': ready_for_practice,
+        'ready_for_real': ready_for_real,
         'probe_broker': bool(probe_broker),
         'strict_runtime_artifacts': bool(strict_runtime_artifacts),
         'enforce_live_broker_prereqs': bool(enforce_live_broker_prereqs),
@@ -324,12 +351,25 @@ def build_production_doctor_payload(
             'enabled': bool(exec_cfg.get('enabled')),
             'mode': str(exec_cfg.get('mode') or 'disabled'),
             'provider': str(exec_cfg.get('provider') or 'fake'),
+            'account_mode': execution_account_mode,
+        },
+        'broker': {
+            'provider': str(broker_cfg.get('provider') or exec_cfg.get('provider') or 'unknown'),
+            'balance_mode': broker_balance_mode,
         },
         'checks': checks,
         'blockers': blockers,
         'warnings': warnings,
         'actions': actions,
         'broker_health': broker_health,
+        'intelligence': {
+            'enabled': intelligence.get('enabled'),
+            'severity': intelligence.get('severity'),
+            'warnings': intelligence.get('warnings'),
+            'summary': intelligence.get('summary'),
+            'allocation': intelligence.get('allocation'),
+            'execution': intelligence.get('execution'),
+        },
         'retention_preview': {
             'candidates_total': int(retention.get('candidates_total') or 0),
             'categories': retention.get('categories') or {},

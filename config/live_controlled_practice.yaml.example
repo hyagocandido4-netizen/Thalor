@@ -106,20 +106,57 @@ intelligence:
   learned_gating_enable: true
   learned_gating_min_rows: 50
   learned_gating_weight: 0.60
+  learned_stacking_enable: true
+  learned_promote_above: 0.62
+  learned_suppress_below: 0.42
+  learned_abstain_band: 0.03
+  learned_fail_closed: false
+  learned_calibration_enable: true
+  learned_min_reliability: 0.50
+  learned_neutralize_low_reliability: true
+  stack_max_bonus: 0.05
+  stack_max_penalty: 0.05
+  portfolio_weight: 1.0
+  allocator_block_regime: true
+  allocator_warn_penalty: 0.04
+  allocator_block_penalty: 0.12
+  allocator_under_target_bonus: 0.03
+  allocator_over_target_penalty: 0.04
+  allocator_retrain_penalty: 0.05
+  allocator_reliability_penalty: 0.03
+  scope_policies: []
   drift_monitor_enable: true
   drift_recent_limit: 200
   drift_warn_psi: 0.15
   drift_block_psi: 0.30
   drift_fail_closed: false
+  regime_warn_shift: 0.10
+  regime_block_shift: 0.20
   retrain_warn_streak: 3
   retrain_block_streak: 1
+  retrain_cooldown_hours: 12
+  retrain_plan_cooldown_hours: 24
+  retrain_watch_reliability_below: 0.55
+  retrain_queue_on_regime_block: true
+  retrain_queue_on_anti_overfit_reject: true
   coverage_regulator_enable: true
   coverage_target_trades_per_day: 1.0
   coverage_tolerance: 0.50
   coverage_bias_weight: 0.04
+  coverage_curve_power: 1.20
+  coverage_max_bonus: 0.05
+  coverage_max_penalty: 0.05
   anti_overfit_enable: true
   anti_overfit_fail_closed: false
   anti_overfit_min_robustness: 0.50
+  anti_overfit_min_windows: 3
+  anti_overfit_gap_penalty_weight: 0.10
+  anti_overfit_tuning_enable: true
+  anti_overfit_tuning_min_robustness_floor: 0.45
+  anti_overfit_tuning_window_flex: 1
+  anti_overfit_tuning_gap_penalty_flex: 0.03
+  anti_overfit_tuning_recent_rows_min: 48
+  anti_overfit_tuning_objective_min_delta: 0.015
 
 security:
   enabled: true
@@ -174,6 +211,7 @@ execution:
     orphan_lookback_sec: 7200
     not_found_grace_sec: 20
     settle_grace_sec: 30
+    scan_without_pending: false
   limits:
     max_pending_unknown: 1
     max_open_positions: 1

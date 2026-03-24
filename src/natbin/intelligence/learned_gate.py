@@ -12,6 +12,7 @@ import pandas as pd
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 
+from ..config.compat_helpers import portable_path_str
 from .slot_profile import slot_stats_for_ts
 
 
@@ -113,6 +114,7 @@ def build_training_rows(
     timezone_name: str,
     slot_profile: dict[str, Any] | None = None,
     limit: int | None = None,
+    include_holds: bool = False,
 ) -> list[dict[str, Any]]:
     sig_path = Path(signals_db_path)
     ds_path = Path(dataset_path)
@@ -124,7 +126,7 @@ def build_training_rows(
     try:
         sql = (
             'SELECT ts, action, proba_up, conf, score, ev, payout, executed_today '
-            'FROM signals_v2 WHERE asset=? AND interval_sec=? AND action IN ("CALL","PUT") ORDER BY ts DESC'
+            'FROM signals_v2 WHERE asset=? AND interval_sec=? ORDER BY ts DESC'
         )
         params: list[Any] = [str(asset), int(interval_sec)]
         if limit is not None:
@@ -162,7 +164,14 @@ def build_training_rows(
         if math.isnan(float(y)):
             continue
         label = 1 if float(y) >= 0.5 else 0
-        action = str(row.get('action') or '').upper()
+        source_action = str(row.get('action') or '').upper()
+        action = source_action
+        inferred_direction = False
+        if action not in {'CALL', 'PUT'}:
+            if not bool(include_holds):
+                continue
+            action = 'CALL' if _safe_float(row.get('proba_up'), 0.5) >= 0.5 else 'PUT'
+            inferred_direction = True
         pred = 1 if action == 'CALL' else 0
         correct = int(pred == label)
         feat = feature_row_from_signal(row, timezone_name=timezone_name, slot_profile=slot_profile)
@@ -170,6 +179,10 @@ def build_training_rows(
             'correct': int(correct),
             'ts': int(ts),
             'action': action,
+            'source_action': source_action,
+            'inferred_direction': bool(inferred_direction),
+            'direction_source': 'inferred_from_proba_up' if inferred_direction else 'signal_action',
+            'source_db_path': portable_path_str(sig_path),
         })
         out.append(feat)
 

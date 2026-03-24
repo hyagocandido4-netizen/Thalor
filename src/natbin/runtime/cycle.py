@@ -30,6 +30,7 @@ class StepCommand:
     argv: list[str]
     timeout_sec: int
     cwd: str
+    env: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,28 +87,62 @@ def classify_outcome_kind(*, returncode: int | None, timed_out: bool = False, in
     return NONZERO_EXIT
 
 
-def _python_module_step(repo_root: Path, name: str, module: str, timeout_env: str, timeout_default: int) -> StepCommand:
+def _python_module_step(
+    repo_root: Path,
+    name: str,
+    module: str,
+    timeout_env: str,
+    timeout_default: int,
+    *,
+    env: dict[str, str] | None = None,
+) -> StepCommand:
     py = repo_python_executable(repo_root)
     timeout_sec = _as_int(os.getenv(timeout_env), timeout_default)
-    return StepCommand(name=name, argv=[py, '-m', module], timeout_sec=timeout_sec, cwd=str(repo_root))
+    return StepCommand(name=name, argv=[py, '-m', module], timeout_sec=timeout_sec, cwd=str(repo_root), env=dict(env) if env else None)
 
 
-def _python_cli_step(repo_root: Path, name: str, module: str, extra_args: Iterable[str], timeout_env: str, timeout_default: int) -> StepCommand:
+def _python_cli_step(
+    repo_root: Path,
+    name: str,
+    module: str,
+    extra_args: Iterable[str],
+    timeout_env: str,
+    timeout_default: int,
+    *,
+    env: dict[str, str] | None = None,
+) -> StepCommand:
     py = repo_python_executable(repo_root)
     timeout_sec = _as_int(os.getenv(timeout_env), timeout_default)
-    return StepCommand(name=name, argv=[py, '-m', module, *extra_args], timeout_sec=timeout_sec, cwd=str(repo_root))
+    return StepCommand(name=name, argv=[py, '-m', module, *extra_args], timeout_sec=timeout_sec, cwd=str(repo_root), env=dict(env) if env else None)
 
 
-def build_auto_cycle_plan(repo_root: Path | str, *, topk: int = 3, lookback_candles: int = 2000) -> list[StepCommand]:
+def build_auto_cycle_plan(
+    repo_root: Path | str,
+    *,
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    topk: int = 3,
+    lookback_candles: int = 2000,
+) -> list[StepCommand]:
+    from ..config.paths import resolve_config_path
+
     repo_root = Path(repo_root).resolve()
+    step_env: dict[str, str] = {}
+    if config_path not in (None, ''):
+        step_env['THALOR_CONFIG_PATH'] = str(resolve_config_path(repo_root=repo_root, config_path=config_path))
+    if asset not in (None, ''):
+        step_env['ASSET'] = str(asset)
+    if interval_sec not in (None, ''):
+        step_env['INTERVAL_SEC'] = str(int(interval_sec))
     plan: list[StepCommand] = [
-        _python_module_step(repo_root, "collect_recent", "natbin.collect_recent", "COLLECT_RECENT_TIMEOUT_SEC", 120),
-        _python_module_step(repo_root, "make_dataset", "natbin.make_dataset", "MAKE_DATASET_TIMEOUT_SEC", 120),
-        _python_module_step(repo_root, "refresh_daily_summary", "natbin.refresh_daily_summary", "REFRESH_DAILY_SUMMARY_TIMEOUT_SEC", 90),
-        _python_module_step(repo_root, "refresh_market_context", "natbin.refresh_market_context", "REFRESH_MARKET_CONTEXT_TIMEOUT_SEC", 60),
-        _python_module_step(repo_root, "auto_volume", "natbin.auto_volume", "AUTO_VOLUME_TIMEOUT_SEC", 60),
-        _python_module_step(repo_root, "auto_isoblend", "natbin.auto_isoblend", "AUTO_ISOBLEND_TIMEOUT_SEC", 60),
-        _python_module_step(repo_root, "auto_hourthr", "natbin.auto_hourthr", "AUTO_HOURTHR_TIMEOUT_SEC", 60),
+        _python_module_step(repo_root, "collect_recent", "natbin.collect_recent", "COLLECT_RECENT_TIMEOUT_SEC", 120, env=step_env),
+        _python_module_step(repo_root, "make_dataset", "natbin.make_dataset", "MAKE_DATASET_TIMEOUT_SEC", 120, env=step_env),
+        _python_module_step(repo_root, "refresh_daily_summary", "natbin.refresh_daily_summary", "REFRESH_DAILY_SUMMARY_TIMEOUT_SEC", 90, env=step_env),
+        _python_module_step(repo_root, "refresh_market_context", "natbin.refresh_market_context", "REFRESH_MARKET_CONTEXT_TIMEOUT_SEC", 60, env=step_env),
+        _python_module_step(repo_root, "auto_volume", "natbin.auto_volume", "AUTO_VOLUME_TIMEOUT_SEC", 60, env=step_env),
+        _python_module_step(repo_root, "auto_isoblend", "natbin.auto_isoblend", "AUTO_ISOBLEND_TIMEOUT_SEC", 60, env=step_env),
+        _python_module_step(repo_root, "auto_hourthr", "natbin.auto_hourthr", "AUTO_HOURTHR_TIMEOUT_SEC", 60, env=step_env),
     ]
 
     extra_args = ['--repo-root', str(repo_root), '--lookback-candles', str(int(lookback_candles))]
@@ -121,6 +156,7 @@ def build_auto_cycle_plan(repo_root: Path | str, *, topk: int = 3, lookback_cand
             extra_args,
             'OBSERVE_LOOP_TIMEOUT_SEC',
             180,
+            env=step_env,
         )
     )
     return plan
@@ -138,12 +174,17 @@ def _tail_text(s: str | None, limit: int = 1200) -> str:
 def run_step(step: StepCommand) -> StepOutcome:
     t0 = time.perf_counter()
     try:
+        env = None
+        if step.env:
+            env = dict(os.environ)
+            env.update({str(k): str(v) for k, v in step.env.items()})
         cp = subprocess.run(
             step.argv,
             cwd=step.cwd,
             capture_output=True,
             text=True,
             timeout=step.timeout_sec,
+            env=env,
         )
         kind = classify_outcome_kind(returncode=cp.returncode)
         return StepOutcome(
@@ -211,6 +252,9 @@ def report_from_plan(repo_root: Path | str, plan: Iterable[StepCommand], outcome
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Plan or run one Thalor auto-loop cycle from Python.")
     p.add_argument("--repo-root", default=".", help="Repo root (default: current directory)")
+    p.add_argument("--config", default=None, help="Optional path to config/base.yaml or another profile YAML")
+    p.add_argument("--asset", default=None, help="Optional asset override for the selected config scope")
+    p.add_argument("--interval-sec", type=int, default=None, help="Optional interval override for the selected config scope")
     p.add_argument("--topk", type=int, default=3, help="TopK override for observe loop")
     p.add_argument("--lookback-candles", type=int, default=2000)
     p.add_argument("--run", action="store_true", help="Execute the planned steps sequentially")
@@ -222,7 +266,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     ns = _build_parser().parse_args(argv)
     repo_root = Path(ns.repo_root).resolve()
-    plan = build_auto_cycle_plan(repo_root, topk=ns.topk, lookback_candles=ns.lookback_candles)
+    plan = build_auto_cycle_plan(
+        repo_root,
+        config_path=ns.config,
+        asset=ns.asset,
+        interval_sec=ns.interval_sec,
+        topk=ns.topk,
+        lookback_candles=ns.lookback_candles,
+    )
 
     if not ns.run:
         rep = report_from_plan(repo_root, plan)

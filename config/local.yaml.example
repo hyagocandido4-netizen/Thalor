@@ -38,6 +38,10 @@ execution:
 
 intelligence:
   enabled: true
+  portfolio_weight: 1.0
+  allocator_block_regime: true
+  retrain_plan_cooldown_hours: 24
+  retrain_watch_reliability_below: 0.55
 
 assets:
   - asset: EURUSD-OTC

@@ -11,7 +11,12 @@ from ..runtime.health import build_health_payload
 from ..runtime.precheck import run_precheck
 from ..runtime.quota import OPEN as QUOTA_OPEN, build_quota_snapshot
 from ..runtime.perf import load_json_cached
-from ..state.control_repo import RuntimeControlRepository, read_control_artifact, write_control_artifact
+from ..state.control_repo import (
+    RuntimeControlRepository,
+    read_control_artifact,
+    read_repo_control_artifact,
+    write_control_artifact,
+)
 from .models import ObserveRequest
 from .plan import build_context, build_runtime_app_info, build_runtime_plan, to_json_dict
 
@@ -120,6 +125,8 @@ def status_payload(
     payload['repo_root'] = ctx.repo_root
     payload['source_trace'] = list(ctx.source_trace)
     current = _evaluate_precheck(ctx=ctx, topk=topk, sleep_align_offset_sec=3, enforce_market_context=False)
+    intelligence_current = intelligence_payload(repo_root=ctx.repo_root, config_path=ctx.config.config_path)
+    practice_current = practice_payload(repo_root=ctx.repo_root, config_path=ctx.config.config_path)
     payload['control'] = {
         'plan': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='plan'),
         'quota': current.get('quota_snapshot'),
@@ -131,11 +138,16 @@ def status_payload(
         'guard': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='guard'),
         'lifecycle': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='lifecycle'),
         'security': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='security'),
+        'intelligence': intelligence_current,
+        'practice': practice_current,
+        'practice_round': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='practice_round'),
+        'retrain': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='retrain'),
         'release': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='release'),
         'doctor': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='doctor'),
         'retention': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='retention'),
         'alerts': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='alerts'),
         'incidents': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='incidents'),
+        'sync': read_repo_control_artifact(repo_root=ctx.repo_root, name='sync'),
     }
     return payload
 
@@ -195,6 +207,59 @@ def precheck_payload(
     )
 
 
+def sync_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    base_ref: str = 'origin/main',
+    write_manifest: bool = False,
+    manifest_json_path: str | Path | None = None,
+    manifest_md_path: str | Path | None = None,
+    freeze_docs: bool = False,
+    strict: bool = False,
+    use_legacy_repo_sync: bool = False,
+) -> dict[str, Any]:
+    legacy_requested = bool(use_legacy_repo_sync) or (
+        not bool(freeze_docs)
+        and not bool(strict)
+        and (
+            bool(write_manifest)
+            or manifest_json_path not in (None, '')
+            or manifest_md_path not in (None, '')
+            or str(base_ref or 'origin/main') not in {'', 'origin/main'}
+        )
+    )
+    if legacy_requested:
+        from ..ops.repo_sync import build_repo_sync_payload
+
+        return build_repo_sync_payload(
+            repo_root=repo_root,
+            base_ref=str(base_ref or 'origin/main'),
+            write_manifest=bool(write_manifest),
+            manifest_json_path=manifest_json_path,
+            manifest_md_path=manifest_md_path,
+        )
+
+    from ..ops.sync_state import build_sync_payload
+
+    payload = build_sync_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        freeze_docs=freeze_docs,
+        strict=strict,
+        write_artifact=True,
+    )
+    payload.setdefault('cli_compat', {})
+    payload['cli_compat'].update(
+        {
+            'lightweight_entrypoint': False,
+            'requested_base_ref': str(base_ref or 'origin/main'),
+            'freeze_requested': bool(freeze_docs or write_manifest),
+        }
+    )
+    return payload
+
+
 def security_payload(
     *,
     repo_root: str | Path = '.',
@@ -214,6 +279,38 @@ def security_payload(
 
 
 
+def intelligence_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    from ..ops.intelligence_surface import build_intelligence_surface_payload
+
+    return build_intelligence_surface_payload(repo_root=repo_root, config_path=config_path, write_artifact=True)
+
+
+def intelligence_refresh_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    rebuild_pack: bool = True,
+    materialize_portfolio: bool = True,
+) -> dict[str, Any]:
+    from ..intelligence.refresh import refresh_config_intelligence
+
+    return refresh_config_intelligence(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        rebuild_pack=rebuild_pack,
+        materialize_portfolio=materialize_portfolio,
+        write_legacy_portfolio=False,
+    )
+
+
 def release_payload(
     *,
     repo_root: str | Path = '.',
@@ -222,6 +319,123 @@ def release_payload(
     from ..ops.release_readiness import build_release_readiness_payload
 
     return build_release_readiness_payload(repo_root=repo_root, config_path=config_path)
+
+
+def practice_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    max_stake_amount: float = 5.0,
+    soak_stale_after_sec: int | None = None,
+) -> dict[str, Any]:
+    from ..ops.practice_readiness import build_practice_readiness_payload
+
+    return build_practice_readiness_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        max_stake_amount=max_stake_amount,
+        soak_stale_after_sec=soak_stale_after_sec,
+    )
+
+
+
+
+
+def practice_bootstrap_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    lookback_candles: int = 2000,
+    soak_cycles: int = 3,
+    force_prepare: bool = False,
+    force_soak: bool = False,
+    skip_soak: bool = False,
+    max_stake_amount: float = 5.0,
+    soak_stale_after_sec: int | None = None,
+) -> dict[str, Any]:
+    from ..ops.practice_bootstrap import build_practice_bootstrap_payload
+
+    return build_practice_bootstrap_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        lookback_candles=lookback_candles,
+        soak_cycles=soak_cycles,
+        force_prepare=force_prepare,
+        force_soak=force_soak,
+        skip_soak=skip_soak,
+        max_stake_amount=max_stake_amount,
+        soak_stale_after_sec=soak_stale_after_sec,
+        write_artifact=True,
+    )
+
+
+
+def retrain_status_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+) -> dict[str, Any]:
+    from ..ops.retrain_ops import build_retrain_status_payload
+
+    return build_retrain_status_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+    )
+
+
+def retrain_run_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    force: bool = False,
+    promote_threshold: float = 0.5,
+) -> dict[str, Any]:
+    from ..ops.retrain_ops import build_retrain_run_payload
+
+    return build_retrain_run_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        force=force,
+        promote_threshold=promote_threshold,
+    )
+
+
+def practice_round_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    soak_cycles: int = 3,
+    force_soak: bool = False,
+    skip_soak: bool = False,
+    max_stake_amount: float = 5.0,
+    soak_stale_after_sec: int | None = None,
+    force_send_alerts: bool = False,
+    incident_limit: int = 20,
+    window_hours: int = 24,
+) -> dict[str, Any]:
+    from ..ops.practice_round import build_practice_round_payload
+
+    return build_practice_round_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        soak_cycles=soak_cycles,
+        force_soak=force_soak,
+        skip_soak=skip_soak,
+        max_stake_amount=max_stake_amount,
+        soak_stale_after_sec=soak_stale_after_sec,
+        force_send_alerts=force_send_alerts,
+        incident_limit=incident_limit,
+        window_hours=window_hours,
+        write_artifact=True,
+    )
 
 def doctor_payload(
     *,
@@ -323,6 +537,8 @@ def alerts_release_payload(
     warning = [item.get('name') for item in checks if str(item.get('status')) == 'warn']
     lines = [
         f"ready_for_live={release.get('ready_for_live')}",
+        f"ready_for_practice={release.get('ready_for_practice')}",
+        f"ready_for_real={release.get('ready_for_real')}",
         f"severity={release.get('severity')}",
         f"execution_live={release.get('execution_live')}",
     ]
@@ -342,8 +558,11 @@ def alerts_release_payload(
     payload = alerts_payload(repo_root=ctx.repo_root, config_path=ctx.config.config_path, limit=20)
     payload['release'] = {
         'ready_for_live': release.get('ready_for_live'),
+        'ready_for_practice': release.get('ready_for_practice'),
+        'ready_for_real': release.get('ready_for_real'),
         'severity': release.get('severity'),
         'execution_live': release.get('execution_live'),
+        'execution_account_mode': release.get('execution_account_mode'),
         'blocking_checks': blocking,
         'warning_checks': warning,
     }
@@ -469,6 +688,8 @@ def health_payload(
     payload['source'] = 'control_plane'
     payload['scope_tag'] = ctx.scope.scope_tag
     payload['security'] = read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='security')
+    payload['intelligence'] = read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='intelligence') or intelligence_payload(repo_root=ctx.repo_root, config_path=ctx.config.config_path)
+    payload['practice'] = read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='practice')
     write_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='health', payload=payload)
     return payload
 
@@ -512,6 +733,7 @@ def observe_payload(
     if request.once:
         payload = run_once(
             repo_root=ctx.repo_root,
+            config_path=ctx.config.config_path,
             topk=request.topk,
             lookback_candles=request.lookback_candles,
             stop_on_failure=request.stop_on_failure,
@@ -522,6 +744,7 @@ def observe_payload(
         return (code, payload)
     exit_code = run_daemon(
         repo_root=ctx.repo_root,
+        config_path=ctx.config.config_path,
         topk=request.topk,
         lookback_candles=request.lookback_candles,
         max_cycles=request.max_cycles,
@@ -576,23 +799,42 @@ def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | 
 
     latest_cycle = None
     latest_alloc = None
+    latest_cycle_source: dict[str, Any] | None = None
+    latest_alloc_source: dict[str, Any] | None = None
     try:
-        from ..portfolio.paths import portfolio_cycle_latest_path, portfolio_allocation_latest_path
+        from ..portfolio.latest import load_portfolio_latest_payload, portfolio_profile_key
 
-        cycle_p = portfolio_cycle_latest_path(root)
-        alloc_p = portfolio_allocation_latest_path(root)
-        if cycle_p.exists():
-            latest_cycle = json.loads(cycle_p.read_text(encoding='utf-8', errors='replace'))
-        if alloc_p.exists():
-            latest_alloc = json.loads(alloc_p.read_text(encoding='utf-8', errors='replace'))
+        runtime_profile = str(getattr(getattr(cfg, 'runtime', None), 'profile', 'default') or 'default')
+        latest_cycle, latest_cycle_source = load_portfolio_latest_payload(
+            root,
+            name='portfolio_cycle_latest.json',
+            config_path=cfg_path,
+            profile=runtime_profile,
+            allow_legacy_fallback=True,
+        )
+        latest_alloc, latest_alloc_source = load_portfolio_latest_payload(
+            root,
+            name='portfolio_allocation_latest.json',
+            config_path=cfg_path,
+            profile=runtime_profile,
+            allow_legacy_fallback=True,
+        )
+        current_profile_key = portfolio_profile_key(root, config_path=cfg_path, profile=runtime_profile)
     except Exception:
-        pass
+        runtime_profile = str(getattr(getattr(cfg, 'runtime', None), 'profile', 'default') or 'default')
+        current_profile_key = None
+
+    from ..ops.intelligence_surface import build_portfolio_intelligence_payload
+
+    portfolio_intelligence = build_portfolio_intelligence_payload(repo_root=root, config_path=cfg_path)
 
     return {
         'phase': 'portfolio_status',
         'ok': True,
         'repo_root': str(root),
         'config_path': str(cfg_path),
+        'runtime_profile': runtime_profile,
+        'profile_key': current_profile_key,
         'multi_asset': {
             'enabled': bool(getattr(cfg.multi_asset, 'enabled', False)),
             'max_parallel_assets': int(getattr(cfg.multi_asset, 'max_parallel_assets', 1) or 1),
@@ -612,6 +854,11 @@ def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | 
         'scopes': scoped_paths,
         'latest_cycle': latest_cycle,
         'latest_allocation': latest_alloc,
+        'latest_sources': {
+            'cycle': latest_cycle_source,
+            'allocation': latest_alloc_source,
+        },
+        'intelligence': portfolio_intelligence,
     }
 
 
@@ -677,11 +924,6 @@ def asset_prepare_payload(*, repo_root: str | Path = '.', config_path: str | Pat
     from ..portfolio.runner import _scope_data_paths  # type: ignore
 
     dp = _scope_data_paths(Path(root), cfg, scope)
-    runtime_paths = resolve_scope_runtime_paths(
-        Path(root),
-        scope_tag=str(scope.scope_tag),
-        partition_enable=bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False)),
-    )
     outcomes = prepare_scope(repo_root=root, config_path=cfg_path, scope=scope, data_paths=dp, lookback_candles=lookback_candles)
     return {
         'phase': 'asset_prepare',
@@ -712,7 +954,30 @@ def asset_candidate_payload(*, repo_root: str | Path = '.', config_path: str | P
         scope_tag=str(scope.scope_tag),
         partition_enable=bool(getattr(getattr(cfg, 'multi_asset', None), 'enabled', False)),
     )
-    outcome, cand = candidate_scope(repo_root=root, config_path=cfg_path, scope=scope, data_paths=dp, runtime_paths=runtime_paths, topk=topk, lookback_candles=lookback_candles)
+    outcome, cand = candidate_scope(
+        repo_root=root,
+        config_path=cfg_path,
+        scope=scope,
+        data_paths=dp,
+        runtime_paths=runtime_paths,
+        topk=topk,
+        lookback_candles=lookback_candles,
+        cfg=cfg,
+    )
+    materialized_portfolio = None
+    try:
+        from ..portfolio.materialize import materialize_portfolio_latest_payloads
+
+        materialized_portfolio = materialize_portfolio_latest_payloads(
+            repo_root=root,
+            config_path=cfg_path,
+            scopes=[scope],
+            candidates=[cand],
+            message='asset_candidate_materialized',
+            write_legacy=False,
+        )
+    except Exception as exc:
+        materialized_portfolio = {'ok': False, 'message': 'materialize_failed', 'error': f'{type(exc).__name__}:{exc}'}
     return {
         'phase': 'asset_candidate',
         'ok': int(outcome.returncode) == 0,
@@ -720,4 +985,5 @@ def asset_candidate_payload(*, repo_root: str | Path = '.', config_path: str | P
         'data_paths': dp.as_dict(),
         'outcome': outcome.as_dict(),
         'candidate': cand.as_dict(),
+        'materialized_portfolio': materialized_portfolio,
     }

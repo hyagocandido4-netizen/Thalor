@@ -9,7 +9,6 @@ import os
 import time
 from typing import Any
 
-from ..config.paths import resolve_config_path
 from ..state.control_repo import RuntimeControlRepository, write_control_artifact
 from .cycle import OK, build_auto_cycle_plan, report_from_plan, run_plan
 from .failsafe import CircuitBreakerPolicy, RuntimeFailsafe
@@ -23,7 +22,7 @@ from ..ops.structured_log import append_jsonl
 from .hardening import refresh_runtime_lock, startup_sanitize_runtime, write_runtime_lifecycle
 from .precheck import run_precheck
 from .quota import OPEN as QUOTA_OPEN, MAX_K_REACHED, PACING_QUOTA_REACHED, build_quota_snapshot
-from .scope import daemon_lock_path, repo_scope
+from .scope import build_scope, daemon_lock_path
 
 
 @dataclass(frozen=True)
@@ -127,16 +126,35 @@ def _lock_owner(*, repo_root: Path, scope, mode: str) -> dict[str, Any]:
 
 
 
-def _scope_from_repo_root(repo_root: Path):
-    config_path = resolve_config_path(repo_root=repo_root)
-    return repo_scope(config_path=str(config_path), repo_root=repo_root)
+def _scope_from_repo_root(
+    repo_root: Path,
+    *,
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+):
+    from ..control.plan import load_runtime_app_config
+
+    cfg = load_runtime_app_config(
+        config_path=config_path,
+        repo_root=repo_root,
+        asset=asset,
+        interval_sec=interval_sec,
+    )
+    return build_scope(cfg.asset, int(cfg.interval_sec))
 
 
 
-def _make_context(repo_root: Path, *, asset: str | None = None, interval_sec: int | None = None):
+def _make_context(
+    repo_root: Path,
+    *,
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+):
     from ..control.plan import build_context
 
-    return build_context(repo_root=repo_root, asset=asset, interval_sec=interval_sec)
+    return build_context(repo_root=repo_root, config_path=config_path, asset=asset, interval_sec=interval_sec)
 
 
 
@@ -301,7 +319,14 @@ def _run_cycle(*, repo_root: Path, ctx, scope, topk: int, lookback_candles: int,
         )
         return rep
 
-    plan = build_auto_cycle_plan(repo_root, topk=topk, lookback_candles=lookback_candles)
+    plan = build_auto_cycle_plan(
+        repo_root,
+        config_path=ctx.config.config_path,
+        asset=scope.asset,
+        interval_sec=scope.interval_sec,
+        topk=topk,
+        lookback_candles=lookback_candles,
+    )
     outcomes = run_plan(plan, stop_on_failure=stop_on_failure)
     rep = asdict(report_from_plan(repo_root, plan, outcomes))
     rep['phase'] = 'cycle'
@@ -363,9 +388,19 @@ def _lock_block_payload(*, lock_path: Path, lock_res, lock_mode: str) -> dict[st
     }
 
 
-def run_once(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: int = 2000, stop_on_failure: bool = True, precheck_market_context: bool = False) -> dict[str, Any]:
+def run_once(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    topk: int = 3,
+    lookback_candles: int = 2000,
+    stop_on_failure: bool = True,
+    precheck_market_context: bool = False,
+) -> dict[str, Any]:
     repo_root = Path(repo_root).resolve()
-    scope = _scope_from_repo_root(repo_root)
+    scope = _scope_from_repo_root(repo_root, config_path=config_path, asset=asset, interval_sec=interval_sec)
     owner = _lock_owner(repo_root=repo_root, scope=scope, mode='once')
     lock_path = daemon_lock_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=repo_root / 'runs')
     lock_res = acquire_lock(lock_path, owner=owner)
@@ -375,7 +410,7 @@ def run_once(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: in
     ctx = None
     rep: dict[str, Any] | None = None
     try:
-        ctx = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
+        ctx = _make_context(repo_root, config_path=config_path, asset=scope.asset, interval_sec=scope.interval_sec)
         startup_sanitize_runtime(repo_root=repo_root, ctx=ctx, mode='once', lock_path=lock_path, owner=owner)
         refresh_runtime_lock(lock_path=lock_path, ctx=ctx, owner=owner)
         decision, quota, market_context, control_repo, failsafe = _precheck_payload(
@@ -421,9 +456,22 @@ def run_once(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: in
         release_lock(lock_path)
 
 
-def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: int = 2000, max_cycles: int | None = None, sleep_align_offset_sec: int = 3, stop_on_failure: bool = True, quota_aware_sleep: bool = False, precheck_market_context: bool = False) -> int:
+def run_daemon(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    topk: int = 3,
+    lookback_candles: int = 2000,
+    max_cycles: int | None = None,
+    sleep_align_offset_sec: int = 3,
+    stop_on_failure: bool = True,
+    quota_aware_sleep: bool = False,
+    precheck_market_context: bool = False,
+) -> int:
     repo_root = Path(repo_root).resolve()
-    scope = _scope_from_repo_root(repo_root)
+    scope = _scope_from_repo_root(repo_root, config_path=config_path, asset=asset, interval_sec=interval_sec)
     owner = _lock_owner(repo_root=repo_root, scope=scope, mode='daemon')
     lock_path = daemon_lock_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=repo_root / 'runs')
     lock_res = acquire_lock(lock_path, owner=owner)
@@ -452,7 +500,7 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
 
     try:
         try:
-            ctx_current = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
+            ctx_current = _make_context(repo_root, config_path=config_path, asset=scope.asset, interval_sec=scope.interval_sec)
             startup_sanitize_runtime(repo_root=repo_root, ctx=ctx_current, mode='daemon', lock_path=lock_path, owner=owner)
             refresh_runtime_lock(lock_path=lock_path, ctx=ctx_current, owner=owner)
             obs = dict((ctx_current.resolved_config or {}).get('observability') or {})
@@ -466,7 +514,7 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
 
         while True:
             t0 = time.perf_counter()
-            ctx_current = _make_context(repo_root, asset=scope.asset, interval_sec=scope.interval_sec)
+            ctx_current = _make_context(repo_root, config_path=config_path, asset=scope.asset, interval_sec=scope.interval_sec)
             refresh_runtime_lock(lock_path=lock_path, ctx=ctx_current, owner=owner)
             decision, quota, market_context, control_repo, failsafe = _precheck_payload(
                 repo_root=repo_root,
@@ -601,6 +649,9 @@ def run_daemon(*, repo_root: str | Path = '.', topk: int = 3, lookback_candles: 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description='Python-native daemon for the Thalor runtime cycle (Package J foundation).')
     p.add_argument('--repo-root', default='.')
+    p.add_argument('--config', default=None, help='Optional path to config/base.yaml or another profile YAML')
+    p.add_argument('--asset', default=None, help='Optional asset override for the selected config scope')
+    p.add_argument('--interval-sec', type=int, default=None, help='Optional interval override for the selected config scope')
     p.add_argument('--topk', type=int, default=3)
     p.add_argument('--lookback-candles', type=int, default=2000)
     p.add_argument('--once', action='store_true', help='Run a single cycle and exit')
@@ -621,7 +672,14 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(ns.repo_root).resolve()
     now_override = _parse_now_utc(ns.now_utc)
     if ns.plan_json:
-        plan = build_auto_cycle_plan(repo_root, topk=ns.topk, lookback_candles=ns.lookback_candles)
+        plan = build_auto_cycle_plan(
+            repo_root,
+            config_path=ns.config,
+            asset=ns.asset,
+            interval_sec=ns.interval_sec,
+            topk=ns.topk,
+            lookback_candles=ns.lookback_candles,
+        )
         rep = asdict(report_from_plan(repo_root, plan))
         rep['daemon_capable'] = True
         rep['quota_capable'] = True
@@ -634,15 +692,37 @@ def main(argv: list[str] | None = None) -> int:
             topk=ns.topk,
             sleep_align_offset_sec=ns.sleep_align_offset_sec,
             now_utc=now_override,
+            config_path=ns.config,
         )
         print(json.dumps(snap.as_dict(), ensure_ascii=False, indent=2))
         return 0
     if ns.once:
-        rep = run_once(repo_root=repo_root, topk=ns.topk, lookback_candles=ns.lookback_candles, stop_on_failure=not ns.no_stop_on_failure, precheck_market_context=bool(ns.precheck_market_context))
+        rep = run_once(
+            repo_root=repo_root,
+            config_path=ns.config,
+            asset=ns.asset,
+            interval_sec=ns.interval_sec,
+            topk=ns.topk,
+            lookback_candles=ns.lookback_candles,
+            stop_on_failure=not ns.no_stop_on_failure,
+            precheck_market_context=bool(ns.precheck_market_context),
+        )
         print(json.dumps(rep, ensure_ascii=False, indent=2))
         msg = str(rep.get('message') or '')
         return 0 if classify_report_ok(rep) else (3 if msg.startswith('lock_exists:') else 2)
-    return run_daemon(repo_root=repo_root, topk=ns.topk, lookback_candles=ns.lookback_candles, max_cycles=ns.max_cycles, sleep_align_offset_sec=ns.sleep_align_offset_sec, stop_on_failure=not ns.no_stop_on_failure, quota_aware_sleep=bool(ns.quota_aware_sleep), precheck_market_context=bool(ns.precheck_market_context))
+    return run_daemon(
+        repo_root=repo_root,
+        config_path=ns.config,
+        asset=ns.asset,
+        interval_sec=ns.interval_sec,
+        topk=ns.topk,
+        lookback_candles=ns.lookback_candles,
+        max_cycles=ns.max_cycles,
+        sleep_align_offset_sec=ns.sleep_align_offset_sec,
+        stop_on_failure=not ns.no_stop_on_failure,
+        quota_aware_sleep=bool(ns.quota_aware_sleep),
+        precheck_market_context=bool(ns.precheck_market_context),
+    )
 
 
 if __name__ == '__main__':  # pragma: no cover

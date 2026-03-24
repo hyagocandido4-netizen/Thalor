@@ -25,7 +25,7 @@ módulos legados de coleta / dataset / observer
 1. `runtime_app` é o entrypoint canônico do runtime.
 2. `observe_loop*.ps1` são wrappers finos.
 3. `config/base.yaml` é o config preferido do control plane.
-4. `config.yaml` continua existindo como compatibilidade para o observer legado.
+4. `config.yaml` continua suportado, mas o observer agora resolve a config tipada diretamente.
 5. `repo_root` ancora config, `.env`, `runs/` e `config/base.yaml`.
 6. O plano canônico do ciclo é Python, não PowerShell.
 7. Package N adiciona execução reconciliada sem recolocar lógica no PowerShell.
@@ -35,7 +35,7 @@ módulos legados de coleta / dataset / observer
 1. **Control plane / config**
    - `runtime_app` resolve `repo_root`
    - prefere `config/base.yaml`
-   - faz fallback para `config.yaml`
+   - faz fallback para `config.yaml` quando `config/base.yaml` não existe
    - escreve effective config
 
 2. **Coleta de candles**
@@ -109,7 +109,7 @@ buraco de overlap entre execução manual, scheduler e debug local.
 
 ## Notas de compatibilidade
 
-O observer legado ainda depende de campos do `config.yaml` que ainda não foram
-migrados para o modelo tipado. Por isso o Package M fecha o control plane e o
-ciclo Python sem ainda matar o `config.yaml` como insumo do observer legado.
-Essa limpeza total fica para os packages seguintes.
+O observer legado não lê mais um `config.yaml` hardcoded por conta própria.
+Ele resolve a config selecionada pelo loader tipado, exatamente como o control
+plane. O `config.yaml` continua válido como input legado, mas agora apenas como
+caminho explícito ou fallback automático quando `config/base.yaml` não existe.

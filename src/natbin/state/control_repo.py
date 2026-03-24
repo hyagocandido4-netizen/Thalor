@@ -12,6 +12,7 @@ from ..runtime.perf import load_json_cached, write_text_if_changed
 
 
 CONTROL_DIR_REL = Path('runs') / 'control'
+REPO_CONTROL_DIR_REL = CONTROL_DIR_REL / '_repo'
 
 
 def control_db_path(path: str | Path | None = None) -> Path:
@@ -119,6 +120,38 @@ class RuntimeControlRepository:
             con.close()
 
 
+
+
+def repo_control_dir(*, repo_root: str | Path) -> Path:
+    root = Path(repo_root).resolve()
+    return root / REPO_CONTROL_DIR_REL
+
+
+def repo_control_artifact_paths(*, repo_root: str | Path) -> dict[str, str]:
+    base = repo_control_dir(repo_root=repo_root)
+    return {
+        'repo_control_dir': str(base),
+        'sync': str(base / 'sync.json'),
+    }
+
+
+def write_repo_control_artifact(*, repo_root: str | Path, name: str, payload: dict[str, Any]) -> Path:
+    path_raw = repo_control_artifact_paths(repo_root=repo_root).get(name)
+    if path_raw is None:
+        raise KeyError(f'unknown repo control artifact: {name}')
+    path = Path(path_raw)
+    body = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=False, default=str)
+    write_text_if_changed(path, body, encoding='utf-8')
+    return path
+
+
+def read_repo_control_artifact(*, repo_root: str | Path, name: str) -> dict[str, Any] | None:
+    path_raw = repo_control_artifact_paths(repo_root=repo_root).get(name)
+    if path_raw is None:
+        return None
+    obj = load_json_cached(path_raw)
+    return obj if isinstance(obj, dict) else None
+
 def control_scope_dir(*, repo_root: str | Path, asset: str, interval_sec: int) -> Path:
     root = Path(repo_root).resolve()
     scope = build_scope(asset, interval_sec)
@@ -141,6 +174,11 @@ def control_artifact_paths(*, repo_root: str | Path, asset: str, interval_sec: i
         'guard': str(base / 'guard.json'),
         'lifecycle': str(base / 'lifecycle.json'),
         'security': str(base / 'security.json'),
+        'intelligence': str(base / 'intelligence.json'),
+        'practice': str(base / 'practice.json'),
+        'practice_bootstrap': str(base / 'practice_bootstrap.json'),
+        'practice_round': str(base / 'practice_round.json'),
+        'retrain': str(base / 'retrain.json'),
         'release': str(base / 'release.json'),
         'doctor': str(base / 'doctor.json'),
         'retention': str(base / 'retention.json'),

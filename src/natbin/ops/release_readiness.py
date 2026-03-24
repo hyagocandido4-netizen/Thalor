@@ -152,7 +152,28 @@ def build_release_readiness_payload(
     else:
         checks.append(_check('production_doctor', 'ok', 'Production doctor sem blockers', warnings=doctor.get('warnings') or []))
 
+    from ..ops.intelligence_surface import build_intelligence_surface_payload
+
+    intelligence = build_intelligence_surface_payload(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        write_artifact=True,
+    )
+    intelligence_enabled = bool(intelligence.get('enabled'))
+    intelligence_sev = str(intelligence.get('severity') or 'ok')
+    if not intelligence_enabled:
+        checks.append(_check('intelligence_surface', 'ok', 'Intelligence desabilitada no profile atual.'))
+    elif intelligence_sev == 'error':
+        checks.append(_check('intelligence_surface', 'error', 'Surface de intelligence encontrou blockers.', warnings=intelligence.get('warnings') or []))
+    elif intelligence_sev == 'warn':
+        checks.append(_check('intelligence_surface', 'warn', 'Surface de intelligence com avisos operacionais.', warnings=intelligence.get('warnings') or []))
+    else:
+        checks.append(_check('intelligence_surface', 'ok', 'Surface de intelligence pronta para operação.', summary=intelligence.get('summary') or {}))
+
     execution = dict(ctx.resolved_config.get('execution') or {})
+    broker = dict(ctx.resolved_config.get('broker') or {})
+    execution_account_mode = str(execution.get('account_mode') or 'PRACTICE').upper()
+    broker_balance_mode = str(broker.get('balance_mode') or execution_account_mode or 'PRACTICE').upper()
     live_mode = bool(execution.get('enabled')) and str(execution.get('mode') or 'disabled') == 'live' and str(execution.get('provider') or 'fake') == 'iqoption'
     if live_mode:
         checks.append(_check('execution_mode', 'ok', 'Execução live IQ habilitada'))
@@ -234,11 +255,15 @@ def build_release_readiness_payload(
 
     severity = _severity_from_checks(checks)
     ready_for_live = severity == 'ok' and live_mode
+    ready_for_practice = ready_for_live and execution_account_mode == 'PRACTICE' and broker_balance_mode == 'PRACTICE'
+    ready_for_real = ready_for_live and execution_account_mode == 'REAL' and broker_balance_mode == 'REAL'
     payload = {
         'at_utc': _now_utc(),
         'kind': 'release_readiness',
         'ok': severity != 'error',
         'ready_for_live': ready_for_live,
+        'ready_for_practice': ready_for_practice,
+        'ready_for_real': ready_for_real,
         'severity': severity,
         'repo_root': str(repo),
         'config_path': str(ctx.config.config_path),
@@ -248,6 +273,8 @@ def build_release_readiness_payload(
             'scope_tag': ctx.scope.scope_tag,
         },
         'execution_live': live_mode,
+        'execution_account_mode': execution_account_mode,
+        'broker_balance_mode': broker_balance_mode,
         'checks': checks,
         'alerts': alerts,
         'gates': gates,
@@ -256,10 +283,20 @@ def build_release_readiness_payload(
             'severity': security.get('severity'),
             'credential_source': security.get('credential_source'),
         },
+        'intelligence': {
+            'enabled': intelligence.get('enabled'),
+            'severity': intelligence.get('severity'),
+            'warnings': intelligence.get('warnings'),
+            'summary': intelligence.get('summary'),
+            'allocation': intelligence.get('allocation'),
+            'execution': intelligence.get('execution'),
+        },
         'doctor': {
             'severity': doctor.get('severity'),
             'ready_for_cycle': doctor.get('ready_for_cycle'),
             'ready_for_live': doctor.get('ready_for_live'),
+            'ready_for_practice': doctor.get('ready_for_practice'),
+            'ready_for_real': doctor.get('ready_for_real'),
             'warnings': doctor.get('warnings'),
             'blockers': doctor.get('blockers'),
         },

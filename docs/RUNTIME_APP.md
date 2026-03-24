@@ -23,7 +23,7 @@ python -m natbin.runtime_app observe --repo-root . --topk 3
 - resolving `config/base.yaml` with fallback to `config.yaml`
 - writing effective config dumps
 - exposing the canonical cycle plan
-- exposing quota / precheck / health / security snapshots
+- exposing quota / precheck / health / security / sync / intelligence snapshots
 - exposing execution / orders / reconciliation snapshots
 - calling the Python runtime daemon / cycle
 - writing control-plane artifacts under `runs/control/<scope>/`
@@ -36,6 +36,8 @@ python -m natbin.runtime_app observe --repo-root . --topk 3
 - `precheck`
 - `health`
 - `security`
+- `sync`
+- `intelligence`
 - `observe`
 - `orders`
 - `reconcile`
@@ -57,6 +59,8 @@ For each runtime scope, Package M writes:
 - `runs/control/<scope>/precheck.json`
 - `runs/control/<scope>/health.json`
 - `runs/control/<scope>/security.json`
+- `runs/control/_repo/sync.json`
+- `runs/control/<scope>/intelligence.json`
 - `runs/control/<scope>/loop_status.json`
 - `runs/control/<scope>/effective_config.json`
 - `runs/control/<scope>/execution.json`
@@ -76,11 +80,10 @@ For each runtime scope, Package M writes:
 
 ## Important compatibility note
 
-The legacy observer step (`observe_signal_topk_perday.py`) still consumes
-`config.yaml` for model/tuning fields that have not been migrated yet.
-Therefore Package M makes `config/base.yaml` the preferred control-plane config
-while keeping `config.yaml` present as a compatibility input for the legacy
-observer path.
+The legacy observer step (`observe_signal_topk_perday.py`) now resolves the
+selected typed config directly. `config/base.yaml` remains the preferred input,
+while `config.yaml` stays supported only as an explicit selected config path or
+as the automatic repo fallback when `config/base.yaml` is absent.
 
 
 ## Package M6 security note
@@ -89,3 +92,17 @@ observer path.
 - O payload inclui origem das credenciais, checks de embed/redaction e o estado
   atual do broker guard.
 - O dashboard local usa esse snapshot para o painel **Security (M6)**.
+
+## INT-OPS-1 note
+
+- `runtime_app intelligence` gera a surface operacional por scope e persiste `runs/control/<scope>/intelligence.json`.
+- `runtime_app status` agora inclui esse snapshot em `control.intelligence`.
+- `runtime_app portfolio status` agrega um rollup multi-asset com severidade, score, retrain state e traceabilidade de execution/alocação.
+
+## SYNC-1 note
+
+- `runtime_app sync` compara o workspace atual com os manifests congelados em
+  `docs/canonical_state/`.
+- O comando escreve um artefato repo-level em `runs/control/_repo/sync.json`.
+- Os próprios manifests de `docs/canonical_state/` são ignorados na comparação
+  para evitar drift circular.

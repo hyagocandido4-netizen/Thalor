@@ -76,6 +76,9 @@ intelligence:
   anti_overfit_enable: true
   anti_overfit_fail_closed: false
   anti_overfit_min_robustness: 0.50
+  anti_overfit_tuning_enable: true
+  anti_overfit_tuning_min_robustness_floor: 0.45
+  anti_overfit_tuning_window_flex: 1
 
 execution:
   enabled: true

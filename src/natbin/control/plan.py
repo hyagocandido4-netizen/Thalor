@@ -221,10 +221,20 @@ def build_runtime_plan(
     from ..runtime.cycle import build_auto_cycle_plan
 
     ctx = build_context(repo_root=repo_root, config_path=config_path, asset=asset, interval_sec=interval_sec)
-    plan_steps = [asdict(s) for s in build_auto_cycle_plan(Path(ctx.repo_root), topk=topk, lookback_candles=lookback_candles)]
+    plan_steps = [
+        asdict(s)
+        for s in build_auto_cycle_plan(
+            Path(ctx.repo_root),
+            config_path=ctx.config.config_path,
+            asset=ctx.config.asset,
+            interval_sec=ctx.config.interval_sec,
+            topk=topk,
+            lookback_candles=lookback_candles,
+        )
+    ]
     notes = {
         'design': 'Package M: runtime_app is the canonical control plane. PowerShell wrappers are bootstrap-only.',
-        'config_status': 'config/base.yaml is preferred when present. The observer is now config v2 aware; config.yaml is only an optional fallback for legacy tune fields.',
+        'config_status': 'config/base.yaml remains the preferred config. The observer now resolves the typed config directly; legacy config.yaml is only used when it is the selected config path or when base.yaml is absent.',
         'scheduler_status': 'observe_loop wrappers must call runtime_app observe and should not orchestrate runtime logic.',
     }
     payload = RuntimePlan(
@@ -270,7 +280,7 @@ def build_runtime_app_info(
         )
     notes = {
         'control_plane': 'runtime_app is the canonical control plane entrypoint for Package M.',
-        'legacy_observer': "observe_signal_topk_perday is now config v2 aware; config.yaml is only an optional fallback for legacy tune fields (tune_dir/bounds) if base.yaml doesn't provide them.",
+        'legacy_observer': "observe_signal_topk_perday now resolves the typed config directly. Legacy config.yaml stays supported only as an explicit input path or automatic repo fallback when config/base.yaml is absent.",
         'wrapper': 'observe_loop*.ps1 should only bootstrap Python and call runtime_app observe.',
     }
     return RuntimeAppInfo(

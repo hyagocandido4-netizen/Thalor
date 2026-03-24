@@ -67,6 +67,38 @@ def _seed_runtime_surface(repo: Path, *, execution_live: bool = False) -> Path:
     fresh = {'at_utc': datetime.now(UTC).isoformat(timespec='seconds'), 'state': 'healthy'}
     write_control_artifact(repo_root=repo, asset='EURUSD-OTC', interval_sec=300, name='loop_status', payload=fresh)
     write_control_artifact(repo_root=repo, asset='EURUSD-OTC', interval_sec=300, name='health', payload=fresh)
+    intel_dir = repo / 'runs' / 'intelligence' / SCOPE_TAG
+    intel_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC).isoformat(timespec='seconds')
+    for name, payload in {
+        'pack.json': {
+            'kind': 'intelligence_pack',
+            'generated_at_utc': now,
+            'metadata': {'training_rows': 180},
+        },
+        'latest_eval.json': {
+            'kind': 'intelligence_eval',
+            'evaluated_at_utc': now,
+            'allow_trade': True,
+            'intelligence_score': 0.68,
+            'portfolio_score': 0.72,
+            'portfolio_feedback': {'allocator_blocked': False, 'portfolio_score': 0.72},
+            'retrain_orchestration': {'state': 'idle', 'priority': 'low'},
+        },
+        'retrain_plan.json': {
+            'kind': 'retrain_plan',
+            'at_utc': now,
+            'state': 'idle',
+            'priority': 'low',
+        },
+        'retrain_status.json': {
+            'kind': 'retrain_status',
+            'updated_at_utc': now,
+            'state': 'idle',
+            'priority': 'low',
+        },
+    }.items():
+        (intel_dir / name).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
     return cfg
 
 
@@ -76,10 +108,15 @@ def test_production_doctor_ok_for_local_ready_repo(tmp_path: Path) -> None:
     assert payload['kind'] == 'production_doctor'
     assert payload['severity'] == 'ok'
     assert payload['ready_for_cycle'] is True
+    assert payload['ready_for_live'] is False
+    assert payload['ready_for_practice'] is False
+    assert payload['ready_for_real'] is False
     names = {item['name']: item for item in payload['checks']}
     assert names['dataset_ready']['status'] == 'ok'
     assert names['market_context']['status'] == 'ok'
     assert names['effective_config_artifacts']['status'] == 'ok'
+    assert names['intelligence_surface']['status'] == 'ok'
+    assert payload['intelligence']['severity'] == 'ok'
     artifact = tmp_path / 'runs' / 'control' / SCOPE_TAG / 'doctor.json'
     assert artifact.exists()
 
@@ -92,6 +129,8 @@ def test_production_doctor_flags_live_broker_missing_credentials(tmp_path: Path,
     monkeypatch.setattr(IQOptionAdapter, '_dependency_status', lambda self: {'available': True, 'reason': None})
     payload = build_production_doctor_payload(repo_root=tmp_path, config_path=cfg, probe_broker=False)
     assert payload['severity'] == 'error'
+    assert payload['ready_for_practice'] is False
+    assert payload['ready_for_real'] is False
     assert 'broker_preflight' in payload['blockers']
     broker = next(item for item in payload['checks'] if item['name'] == 'broker_preflight')
     assert broker['reason'] == 'iqoption_missing_credentials'

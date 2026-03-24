@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 from ..portfolio.models import PortfolioScope
 
@@ -17,6 +17,14 @@ _DEFAULTS = {
     'stack_max_penalty': 0.05,
     'learned_fail_closed': False,
     'drift_fail_closed': False,
+    'portfolio_weight': 1.0,
+    'allocator_block_regime': True,
+    'allocator_warn_penalty': 0.04,
+    'allocator_block_penalty': 0.12,
+    'allocator_under_target_bonus': 0.03,
+    'allocator_over_target_penalty': 0.04,
+    'allocator_retrain_penalty': 0.05,
+    'allocator_reliability_penalty': 0.03,
 }
 
 
@@ -65,6 +73,14 @@ def _policy_to_dict(policy: Any) -> dict[str, Any]:
         'stack_max_penalty',
         'learned_fail_closed',
         'drift_fail_closed',
+        'portfolio_weight',
+        'allocator_block_regime',
+        'allocator_warn_penalty',
+        'allocator_block_penalty',
+        'allocator_under_target_bonus',
+        'allocator_over_target_penalty',
+        'allocator_retrain_penalty',
+        'allocator_reliability_penalty',
     ):
         if hasattr(policy, name):
             out[name] = getattr(policy, name)
@@ -116,6 +132,14 @@ def resolve_scope_policy(int_cfg: Any, scope: PortfolioScope) -> dict[str, Any]:
             'stack_max_penalty': _safe_float(getattr(int_cfg, 'stack_max_penalty', None), _DEFAULTS['stack_max_penalty']),
             'learned_fail_closed': _safe_bool(getattr(int_cfg, 'learned_fail_closed', None), _DEFAULTS['learned_fail_closed']),
             'drift_fail_closed': _safe_bool(getattr(int_cfg, 'drift_fail_closed', None), _DEFAULTS['drift_fail_closed']),
+            'portfolio_weight': _safe_float(getattr(int_cfg, 'portfolio_weight', None), _DEFAULTS['portfolio_weight']),
+            'allocator_block_regime': _safe_bool(getattr(int_cfg, 'allocator_block_regime', None), _DEFAULTS['allocator_block_regime']),
+            'allocator_warn_penalty': _safe_float(getattr(int_cfg, 'allocator_warn_penalty', None), _DEFAULTS['allocator_warn_penalty']),
+            'allocator_block_penalty': _safe_float(getattr(int_cfg, 'allocator_block_penalty', None), _DEFAULTS['allocator_block_penalty']),
+            'allocator_under_target_bonus': _safe_float(getattr(int_cfg, 'allocator_under_target_bonus', None), _DEFAULTS['allocator_under_target_bonus']),
+            'allocator_over_target_penalty': _safe_float(getattr(int_cfg, 'allocator_over_target_penalty', None), _DEFAULTS['allocator_over_target_penalty']),
+            'allocator_retrain_penalty': _safe_float(getattr(int_cfg, 'allocator_retrain_penalty', None), _DEFAULTS['allocator_retrain_penalty']),
+            'allocator_reliability_penalty': _safe_float(getattr(int_cfg, 'allocator_reliability_penalty', None), _DEFAULTS['allocator_reliability_penalty']),
         }
     )
 
@@ -137,10 +161,17 @@ def resolve_scope_policy(int_cfg: Any, scope: PortfolioScope) -> dict[str, Any]:
             'min_reliability',
             'stack_max_bonus',
             'stack_max_penalty',
+            'portfolio_weight',
+            'allocator_warn_penalty',
+            'allocator_block_penalty',
+            'allocator_under_target_bonus',
+            'allocator_over_target_penalty',
+            'allocator_retrain_penalty',
+            'allocator_reliability_penalty',
         ):
             if matched.get(key) is not None:
                 base[key] = _safe_float(matched.get(key), float(base[key]))
-        for key in ('neutralize_low_reliability', 'learned_fail_closed', 'drift_fail_closed'):
+        for key in ('neutralize_low_reliability', 'learned_fail_closed', 'drift_fail_closed', 'allocator_block_regime'):
             if matched.get(key) is not None:
                 base[key] = _safe_bool(matched.get(key), bool(base[key]))
         base['match'] = {
@@ -160,4 +191,76 @@ def resolve_scope_policy(int_cfg: Any, scope: PortfolioScope) -> dict[str, Any]:
     base['min_reliability'] = max(0.0, min(1.0, float(base['min_reliability'])))
     base['stack_max_bonus'] = max(0.0, float(base['stack_max_bonus']))
     base['stack_max_penalty'] = max(0.0, float(base['stack_max_penalty']))
+    base['portfolio_weight'] = max(0.0, min(2.0, float(base['portfolio_weight'])))
+    base['allocator_warn_penalty'] = max(0.0, float(base['allocator_warn_penalty']))
+    base['allocator_block_penalty'] = max(0.0, float(base['allocator_block_penalty']))
+    base['allocator_under_target_bonus'] = max(0.0, float(base['allocator_under_target_bonus']))
+    base['allocator_over_target_penalty'] = max(0.0, float(base['allocator_over_target_penalty']))
+    base['allocator_retrain_penalty'] = max(0.0, float(base['allocator_retrain_penalty']))
+    base['allocator_reliability_penalty'] = max(0.0, float(base['allocator_reliability_penalty']))
     return base
+
+
+
+def build_portfolio_feedback(
+    *,
+    intelligence_score: float,
+    coverage: Mapping[str, Any] | None,
+    regime: Mapping[str, Any] | None,
+    learned_reliability: float | None,
+    retrain_plan: Mapping[str, Any] | None,
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    pressure = str((coverage or {}).get('pressure') or 'balanced')
+    regime_level = str((regime or {}).get('level') or 'ok')
+    retrain_state = str((retrain_plan or {}).get('state') or 'idle')
+    retrain_priority = str((retrain_plan or {}).get('priority') or 'low')
+
+    score = float(intelligence_score) * max(0.0, min(2.0, float(policy.get('portfolio_weight') or 1.0)))
+    adjustments: list[dict[str, Any]] = []
+
+    if pressure == 'under_target':
+        delta = max(0.0, float(policy.get('allocator_under_target_bonus') or 0.0))
+        score += delta
+        adjustments.append({'kind': 'coverage_under_target_bonus', 'delta': float(delta)})
+    elif pressure == 'over_target':
+        delta = max(0.0, float(policy.get('allocator_over_target_penalty') or 0.0))
+        score -= delta
+        adjustments.append({'kind': 'coverage_over_target_penalty', 'delta': -float(delta)})
+
+    allocator_blocked = False
+    block_reason = None
+    if regime_level == 'warn':
+        delta = max(0.0, float(policy.get('allocator_warn_penalty') or 0.0))
+        score -= delta
+        adjustments.append({'kind': 'regime_warn_penalty', 'delta': -float(delta)})
+    elif regime_level == 'block':
+        delta = max(0.0, float(policy.get('allocator_block_penalty') or 0.0))
+        score -= delta
+        adjustments.append({'kind': 'regime_block_penalty', 'delta': -float(delta)})
+        if bool(policy.get('allocator_block_regime', True)):
+            allocator_blocked = True
+            block_reason = 'regime_block'
+
+    if learned_reliability is not None and float(learned_reliability) < float(policy.get('min_reliability') or 0.50):
+        delta = max(0.0, float(policy.get('allocator_reliability_penalty') or 0.0))
+        score -= delta
+        adjustments.append({'kind': 'low_reliability_penalty', 'delta': -float(delta)})
+
+    if retrain_state in {'queued', 'cooldown'}:
+        delta = max(0.0, float(policy.get('allocator_retrain_penalty') or 0.0))
+        score -= delta
+        adjustments.append({'kind': 'retrain_penalty', 'delta': -float(delta)})
+
+    return {
+        'kind': 'portfolio_feedback',
+        'pressure': pressure,
+        'regime_level': regime_level,
+        'retrain_state': retrain_state,
+        'retrain_priority': retrain_priority,
+        'learned_reliability': None if learned_reliability is None else float(learned_reliability),
+        'portfolio_score': float(score),
+        'allocator_blocked': bool(allocator_blocked),
+        'block_reason': block_reason,
+        'adjustments': adjustments,
+    }

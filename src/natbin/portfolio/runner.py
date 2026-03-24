@@ -15,7 +15,6 @@ from ..runtime.scope import decision_latest_path as scope_decision_latest_path
 from ..runtime.scope import market_context_path as scope_market_context_path
 from ..runtime.failsafe import CircuitBreakerPolicy, RuntimeFailsafe
 from ..runtime.precheck import run_precheck
-from ..runtime.perf import write_text_if_changed
 from ..runtime.perf import load_json_cached
 from ..state.control_repo import RuntimeControlRepository
 from ..state.portfolio_repo import PortfolioRepository
@@ -28,11 +27,11 @@ from ..intelligence.runtime import enrich_candidate as enrich_candidate_intellig
 
 from . import allocator as _allocator
 from .models import CandidateDecision, PortfolioCycleReport, PortfolioScope
+from .candidate_utils import candidate_from_decision_payload
+from .latest import write_portfolio_latest_payload
 from .paths import (
     ScopeDataPaths,
     ScopeRuntimePaths,
-    portfolio_allocation_latest_path,
-    portfolio_cycle_latest_path,
     resolve_scope_data_paths,
     resolve_scope_runtime_paths,
     scope_tag as compute_scope_tag,
@@ -173,74 +172,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _candidate_from_decision(scope: PortfolioScope, decision: dict[str, Any] | None, *, decision_path: Path) -> CandidateDecision:
-    if not decision:
-        return CandidateDecision(
-            scope_tag=scope.scope_tag,
-            asset=scope.asset,
-            interval_sec=int(scope.interval_sec),
-            day=None,
-            ts=None,
-            action='HOLD',
-            score=None,
-            conf=None,
-            ev=None,
-            reason='decision_missing',
-            blockers=None,
-            decision_path=str(decision_path),
-            raw={},
-        )
-
-    action = str(decision.get('action') or decision.get('signal') or 'HOLD').upper()
-    try:
-        ts = int(decision.get('ts') or decision.get('signal_ts') or 0)
-    except Exception:
-        ts = None
-    if ts == 0:
-        ts = None
-    day = decision.get('day')
-    if day is not None:
-        day = str(day)
-    score = None
-    conf = None
-    ev = None
-    try:
-        if decision.get('score') is not None:
-            score = float(decision.get('score'))
-    except Exception:
-        score = None
-    try:
-        if decision.get('conf') is not None:
-            conf = float(decision.get('conf'))
-    except Exception:
-        conf = None
-    try:
-        if decision.get('ev') is not None:
-            ev = float(decision.get('ev'))
-    except Exception:
-        ev = None
-
-    intelligence = dict(decision.get('intelligence') or {}) if isinstance(decision.get('intelligence'), dict) else {}
-    return CandidateDecision(
-        scope_tag=scope.scope_tag,
-        asset=scope.asset,
-        interval_sec=int(scope.interval_sec),
-        day=day,
-        ts=ts,
-        action=action,
-        score=score,
-        conf=conf,
-        ev=ev,
-        reason=str(decision.get('reason') or decision.get('why') or '') or None,
-        blockers=str(decision.get('blockers') or '') or None,
-        decision_path=str(decision_path),
-        raw=dict(decision),
-        intelligence_score=(float(decision.get('intelligence_score')) if decision.get('intelligence_score') is not None else None),
-        learned_gate_prob=(float(decision.get('learned_gate_prob')) if decision.get('learned_gate_prob') is not None else None),
-        slot_multiplier=(float(decision.get('slot_multiplier')) if decision.get('slot_multiplier') is not None else None),
-        drift_level=(str(decision.get('drift_level')) if decision.get('drift_level') is not None else None),
-        coverage_bias=(float(decision.get('coverage_bias')) if decision.get('coverage_bias') is not None else None),
-        intelligence=intelligence,
-    )
+    return candidate_from_decision_payload(scope, decision, decision_path=decision_path)
 
 
 def prepare_scope(
@@ -701,8 +633,16 @@ def run_portfolio_cycle(
             config_path=str(cfg_path),
         )
         allocation_payload = allocation.as_dict()
-        # persist latest allocation
-        write_text_if_changed(portfolio_allocation_latest_path(root), json.dumps(allocation_payload, indent=2, ensure_ascii=False, default=str))
+        allocation_payload['cycle_id'] = str(cycle_id)
+        allocation_payload['scopes'] = [s.as_dict() for s in scopes]
+        allocation_payload['persisted_paths'] = write_portfolio_latest_payload(
+            root,
+            name='portfolio_allocation_latest.json',
+            payload=allocation_payload,
+            config_path=cfg_path,
+            profile=str(getattr(getattr(cfg, 'runtime', None), 'profile', 'default') or 'default'),
+            write_legacy=True,
+        )
     except Exception as exc:
         errors.append(f'allocation_failed:{type(exc).__name__}:{exc}')
 
@@ -789,7 +729,14 @@ def run_portfolio_cycle(
 
     # Persist latest cycle
     report_payload = report.as_dict()
-    write_text_if_changed(portfolio_cycle_latest_path(root), json.dumps(report_payload, indent=2, ensure_ascii=False, default=str))
+    report_payload['persisted_paths'] = write_portfolio_latest_payload(
+        root,
+        name='portfolio_cycle_latest.json',
+        payload=report_payload,
+        config_path=cfg_path,
+        profile=str(getattr(getattr(cfg, 'runtime', None), 'profile', 'default') or 'default'),
+        write_legacy=True,
+    )
 
     # Persist history (sqlite)
     try:

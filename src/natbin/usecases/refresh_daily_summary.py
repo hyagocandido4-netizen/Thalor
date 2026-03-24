@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .observe_signal_topk_perday import load_cfg, write_daily_summary
+from .observer import load_cfg, write_daily_summary
 
 
 def _target_days(*, tz: ZoneInfo, days: int) -> list[str]:

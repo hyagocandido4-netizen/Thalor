@@ -18,8 +18,15 @@ from .commands import (
     incidents_drill_payload,
     incidents_payload,
     incidents_report_payload,
+    intelligence_payload,
+    intelligence_refresh_payload,
     health_payload,
     observe_payload,
+    practice_payload,
+    practice_bootstrap_payload,
+    practice_round_payload,
+    retrain_run_payload,
+    retrain_status_payload,
     orders_payload,
     plan_payload,
     portfolio_observe_payload,
@@ -32,6 +39,7 @@ from .commands import (
     retention_payload,
     security_payload,
     status_payload,
+    sync_payload,
 )
 from .models import ObserveRequest
 
@@ -123,6 +131,30 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_common(sp_security)
     sp_security.add_argument('--json', action='store_true')
 
+    sp_sync = sub.add_parser('sync', help='Canonicalize / compare the current repo workspace state (SYNC-1)')
+    _add_common(sp_sync)
+    sp_sync.add_argument('--json', action='store_true')
+    sp_sync.add_argument('--base-ref', default='origin/main')
+    sp_sync.add_argument('--write-manifest', action='store_true')
+    sp_sync.add_argument('--manifest-json-path', default=None)
+    sp_sync.add_argument('--manifest-md-path', default=None)
+    sp_sync.add_argument('--strict-clean', action='store_true')
+    sp_sync.add_argument('--strict-base-ref', action='store_true')
+    sp_sync.add_argument('--freeze-docs', action='store_true')
+    sp_sync.add_argument('--strict', action='store_true')
+
+    sp_intelligence = sub.add_parser('intelligence', help='Emit per-scope intelligence operational surface')
+    _add_common(sp_intelligence)
+    sp_intelligence.add_argument('--json', action='store_true')
+
+    sp_intelligence_refresh = sub.add_parser('intelligence-refresh', help='Rebuild/evaluate intelligence artifacts for the current config/profile')
+    _add_common(sp_intelligence_refresh)
+    sp_intelligence_refresh.add_argument('--json', action='store_true')
+    sp_intelligence_refresh.add_argument('--asset', default=None)
+    sp_intelligence_refresh.add_argument('--interval-sec', type=int, default=None)
+    sp_intelligence_refresh.add_argument('--no-rebuild-pack', action='store_true')
+    sp_intelligence_refresh.add_argument('--no-materialize-portfolio', action='store_true')
+
     sp_doctor = sub.add_parser('doctor', help='Emit H9 production doctor / live-readiness payload')
     _add_common(sp_doctor)
     sp_doctor.add_argument('--json', action='store_true')
@@ -142,6 +174,35 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_release = sub.add_parser('release', help='Emit M7 release readiness / production checklist payload')
     _add_common(sp_release)
     sp_release.add_argument('--json', action='store_true')
+
+    sp_practice = sub.add_parser('practice', help='Emit READY-1 controlled practice readiness payload')
+    _add_common(sp_practice)
+    sp_practice.add_argument('--json', action='store_true')
+    sp_practice.add_argument('--max-stake-amount', type=float, default=5.0)
+    sp_practice.add_argument('--soak-stale-after-sec', type=int, default=None)
+
+    sp_practice_bootstrap = sub.add_parser('practice-bootstrap', help='Bootstrap the controlled PRACTICE scope until doctor/practice can turn green')
+    _add_common(sp_practice_bootstrap)
+    sp_practice_bootstrap.add_argument('--json', action='store_true')
+    sp_practice_bootstrap.add_argument('--lookback-candles', type=int, default=2000)
+    sp_practice_bootstrap.add_argument('--soak-cycles', type=int, default=3)
+    sp_practice_bootstrap.add_argument('--force-prepare', action='store_true')
+    sp_practice_bootstrap.add_argument('--force-soak', action='store_true')
+    sp_practice_bootstrap.add_argument('--skip-soak', action='store_true')
+    sp_practice_bootstrap.add_argument('--max-stake-amount', type=float, default=5.0)
+    sp_practice_bootstrap.add_argument('--soak-stale-after-sec', type=int, default=None)
+
+    sp_practice_round = sub.add_parser('practice-round', help='Run the controlled operational round in PRACTICE mode')
+    _add_common(sp_practice_round)
+    sp_practice_round.add_argument('--json', action='store_true')
+    sp_practice_round.add_argument('--soak-cycles', type=int, default=3)
+    sp_practice_round.add_argument('--force-soak', action='store_true')
+    sp_practice_round.add_argument('--skip-soak', action='store_true')
+    sp_practice_round.add_argument('--max-stake-amount', type=float, default=5.0)
+    sp_practice_round.add_argument('--soak-stale-after-sec', type=int, default=None)
+    sp_practice_round.add_argument('--force-send-alerts', action='store_true')
+    sp_practice_round.add_argument('--incident-limit', type=int, default=20)
+    sp_practice_round.add_argument('--window-hours', type=int, default=24)
 
     sp_incidents = sub.add_parser('incidents', help='Incident status / report / alert / drill (M7.1)')
     _add_common(sp_incidents)
@@ -203,6 +264,25 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_reconcile = sub.add_parser('reconcile', help='Run Package N reconciliation now')
     _add_common(sp_reconcile)
     sp_reconcile.add_argument('--json', action='store_true')
+
+
+    sp_retrain = sub.add_parser('retrain', help='Retrain operations / review for the current scope(s)')
+    _add_common(sp_retrain)
+    retrain_sub = sp_retrain.add_subparsers(dest='retrain_cmd', required=True)
+
+    sp_retrain_status = retrain_sub.add_parser('status', help='Show retrain plan/status/review for the current scope(s)')
+    _add_common(sp_retrain_status)
+    sp_retrain_status.add_argument('--json', action='store_true')
+    sp_retrain_status.add_argument('--asset', default=None)
+    sp_retrain_status.add_argument('--interval-sec', type=int, default=None)
+
+    sp_retrain_run = retrain_sub.add_parser('run', help='Execute a scoped retrain/review cycle')
+    _add_common(sp_retrain_run)
+    sp_retrain_run.add_argument('--json', action='store_true')
+    sp_retrain_run.add_argument('--asset', default=None)
+    sp_retrain_run.add_argument('--interval-sec', type=int, default=None)
+    sp_retrain_run.add_argument('--force', action='store_true')
+    sp_retrain_run.add_argument('--promote-threshold', type=float, default=0.5)
 
     sp_observe = sub.add_parser('observe', help='Run the runtime cycle via the control plane')
     _add_common(sp_observe)
@@ -285,7 +365,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    known = {'status', 'plan', 'quota', 'precheck', 'health', 'security', 'doctor', 'retention', 'release', 'incidents', 'alerts', 'observe', 'orders', 'reconcile', 'portfolio', 'asset', 'ops'}
+    known = {'status', 'plan', 'quota', 'precheck', 'health', 'security', 'sync', 'intelligence', 'doctor', 'retention', 'release', 'practice', 'practice-bootstrap', 'practice-round', 'retrain', 'incidents', 'alerts', 'observe', 'orders', 'reconcile', 'portfolio', 'asset', 'ops'}
     raw = list(sys.argv[1:] if argv is None else argv)
     if not raw:
         raw = ['status']
@@ -354,6 +434,55 @@ def main(argv: list[str] | None = None) -> int:
         _print(payload, as_json=bool(ns.json))
         return 0
 
+    if ns.command == 'sync':
+        legacy_sync_mode = (
+            not bool(getattr(ns, 'freeze_docs', False))
+            and not bool(getattr(ns, 'strict', False))
+            and (
+                bool(getattr(ns, 'write_manifest', False))
+                or getattr(ns, 'manifest_json_path', None) not in (None, '')
+                or getattr(ns, 'manifest_md_path', None) not in (None, '')
+                or bool(getattr(ns, 'strict_clean', False))
+                or bool(getattr(ns, 'strict_base_ref', False))
+                or str(getattr(ns, 'base_ref', 'origin/main') or 'origin/main') not in {'', 'origin/main'}
+            )
+        )
+        payload = sync_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            base_ref=str(getattr(ns, 'base_ref', 'origin/main') or 'origin/main'),
+            write_manifest=bool(getattr(ns, 'write_manifest', False)),
+            manifest_json_path=getattr(ns, 'manifest_json_path', None),
+            manifest_md_path=getattr(ns, 'manifest_md_path', None),
+            freeze_docs=bool(getattr(ns, 'freeze_docs', False)),
+            strict=bool(getattr(ns, 'strict', False)),
+            use_legacy_repo_sync=legacy_sync_mode,
+        )
+        _print(payload, as_json=bool(ns.json))
+        if legacy_sync_mode:
+            if bool(getattr(ns, 'strict_base_ref', False)) and not bool((payload.get('base_ref') or {}).get('exists')):
+                return 2
+            if bool(getattr(ns, 'strict_clean', False)) and str(payload.get('status')) not in {'clean', 'no_git'}:
+                return 2
+        return 0 if bool(payload.get('ok', True)) else 2
+
+    if ns.command == 'intelligence':
+        payload = intelligence_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok', True)) else 2
+
+    if ns.command == 'intelligence-refresh':
+        payload = intelligence_refresh_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            rebuild_pack=not bool(getattr(ns, 'no_rebuild_pack', False)),
+            materialize_portfolio=not bool(getattr(ns, 'no_materialize_portfolio', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok', True)) else 2
+
     if ns.command == 'doctor':
         payload = doctor_payload(
             repo_root=_common_repo_root(ns),
@@ -382,6 +511,71 @@ def main(argv: list[str] | None = None) -> int:
         payload = release_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
         _print(payload, as_json=bool(ns.json))
         return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command == 'practice':
+        payload = practice_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            max_stake_amount=float(getattr(ns, 'max_stake_amount', 5.0) or 5.0),
+            soak_stale_after_sec=getattr(ns, 'soak_stale_after_sec', None),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command == 'practice-bootstrap':
+        payload = practice_bootstrap_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            lookback_candles=int(getattr(ns, 'lookback_candles', 2000) or 2000),
+            soak_cycles=int(getattr(ns, 'soak_cycles', 3) or 3),
+            force_prepare=bool(getattr(ns, 'force_prepare', False)),
+            force_soak=bool(getattr(ns, 'force_soak', False)),
+            skip_soak=bool(getattr(ns, 'skip_soak', False)),
+            max_stake_amount=float(getattr(ns, 'max_stake_amount', 5.0) or 5.0),
+            soak_stale_after_sec=getattr(ns, 'soak_stale_after_sec', None),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('round_eligible')) else 2
+
+    if ns.command == 'practice-round':
+        payload = practice_round_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            soak_cycles=int(getattr(ns, 'soak_cycles', 3) or 3),
+            force_soak=bool(getattr(ns, 'force_soak', False)),
+            skip_soak=bool(getattr(ns, 'skip_soak', False)),
+            max_stake_amount=float(getattr(ns, 'max_stake_amount', 5.0) or 5.0),
+            soak_stale_after_sec=getattr(ns, 'soak_stale_after_sec', None),
+            force_send_alerts=bool(getattr(ns, 'force_send_alerts', False)),
+            incident_limit=int(getattr(ns, 'incident_limit', 20) or 20),
+            window_hours=int(getattr(ns, 'window_hours', 24) or 24),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('round_ok')) else 2
+
+
+    if ns.command == 'retrain':
+        cmd = getattr(ns, 'retrain_cmd', None)
+        if cmd == 'status':
+            payload = retrain_status_payload(
+                repo_root=_common_repo_root(ns),
+                config_path=_common_config(ns),
+                asset=getattr(ns, 'asset', None),
+                interval_sec=getattr(ns, 'interval_sec', None),
+            )
+            _print(payload, as_json=bool(ns.json))
+            return 0 if bool(payload.get('ok', True)) else 2
+        if cmd == 'run':
+            payload = retrain_run_payload(
+                repo_root=_common_repo_root(ns),
+                config_path=_common_config(ns),
+                asset=getattr(ns, 'asset', None),
+                interval_sec=getattr(ns, 'interval_sec', None),
+                force=bool(getattr(ns, 'force', False)),
+                promote_threshold=float(getattr(ns, 'promote_threshold', 0.5) or 0.5),
+            )
+            _print(payload, as_json=bool(ns.json))
+            return 0 if bool(payload.get('ok', True)) else 2
 
     if ns.command == 'incidents':
         cmd = getattr(ns, 'incidents_cmd', None)

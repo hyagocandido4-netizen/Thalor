@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from natbin.ops.release_readiness import build_release_readiness_payload
@@ -84,6 +86,38 @@ def _write_repo(repo: Path) -> Path:
         ),
         encoding='utf-8',
     )
+    intel_dir = repo / 'runs' / 'intelligence' / 'EURUSD-OTC_300s'
+    intel_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(tz=UTC).isoformat(timespec='seconds')
+    for name, payload in {
+        'pack.json': {
+            'kind': 'intelligence_pack',
+            'generated_at_utc': now,
+            'metadata': {'training_rows': 256},
+        },
+        'latest_eval.json': {
+            'kind': 'intelligence_eval',
+            'evaluated_at_utc': now,
+            'allow_trade': True,
+            'intelligence_score': 0.71,
+            'portfolio_score': 0.74,
+            'portfolio_feedback': {'allocator_blocked': False, 'portfolio_score': 0.74},
+            'retrain_orchestration': {'state': 'idle', 'priority': 'low'},
+        },
+        'retrain_plan.json': {
+            'kind': 'retrain_plan',
+            'at_utc': now,
+            'state': 'idle',
+            'priority': 'low',
+        },
+        'retrain_status.json': {
+            'kind': 'retrain_status',
+            'updated_at_utc': now,
+            'state': 'idle',
+            'priority': 'low',
+        },
+    }.items():
+        (intel_dir / name).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
     return cfg
 
 
@@ -93,10 +127,15 @@ def test_build_release_readiness_payload_marks_repo_ready(tmp_path: Path) -> Non
     assert payload['kind'] == 'release_readiness'
     assert payload['severity'] == 'ok'
     assert payload['ready_for_live'] is True
+    assert payload['ready_for_practice'] is True
+    assert payload['ready_for_real'] is False
+    assert payload['execution_account_mode'] == 'PRACTICE'
     names = {item['name'] for item in payload['checks']}
     assert 'security_posture' in names
     assert 'telegram_alerting' in names
     assert 'production_doctor' in names
+    assert 'intelligence_surface' in names
     assert payload['doctor']['severity'] == 'ok'
+    assert payload['intelligence']['severity'] == 'ok'
     release_artifact = tmp_path / 'runs' / 'control' / 'EURUSD-OTC_300s' / 'release.json'
     assert release_artifact.exists()

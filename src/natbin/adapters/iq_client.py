@@ -1,4 +1,5 @@
 import time
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,9 +63,6 @@ def require_iqoption_class():
     if not bool(status.get("available")):
         raise IQDependencyUnavailable(str(status.get("reason") or "iqoption_dependency_missing"))
     return _IQ_OPTION_CLASS
-
-
-from ..config.env import env_bool, env_float, env_int
 
 
 @dataclass
@@ -186,6 +184,7 @@ def _throttle_schedule(*, min_interval_s: float, jitter_s: float, state_file: st
 class IQClient:
     def __init__(self, cfg: IQConfig):
         self.cfg = cfg
+        self._guarded_call_cooldowns: dict[str, float] = {}
         IQ_Option = require_iqoption_class()
         self.iq = IQ_Option(cfg.email, cfg.password)
 
@@ -228,6 +227,31 @@ class IQClient:
         base = max(0.05, float(base_s))
         wait = base * (2 ** max(0, int(attempt) - 1))
         return min(float(max_s), wait)
+
+    def _run_with_timeout(self, *, label: str, fn, timeout_s: float):
+        timeout = max(0.0, float(timeout_s or 0.0))
+        if timeout <= 0.0:
+            return fn()
+
+        result: dict[str, Any] = {}
+        error: dict[str, BaseException] = {}
+        done = threading.Event()
+
+        def _worker() -> None:
+            try:
+                result['value'] = fn()
+            except BaseException as exc:  # pragma: no cover - defensive bridge
+                error['exc'] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=_worker, name=f'thalor_iq_{label}', daemon=True)
+        thread.start()
+        if not done.wait(timeout=timeout):
+            raise TimeoutError(f'{label} timed out after {timeout:.1f}s')
+        if 'exc' in error:
+            raise error['exc']
+        return result.get('value')
 
     def connect(self, retries: int | None = None, sleep_s: float | None = None) -> None:
         retries = int(retries if retries is not None else env_int("IQ_CONNECT_RETRIES", 8))
@@ -479,15 +503,54 @@ class IQClient:
 
     def get_recent_closed_options(self, limit: int = 20):
         lim = max(1, int(limit))
-        return self._call_with_retries(
-            label=f'get_optioninfo_v2:{lim}',
-            fn=lambda: self.iq.get_optioninfo_v2(lim),
-            retries_env='IQ_EXEC_HISTORY_RETRIES',
-            sleep_env='IQ_EXEC_HISTORY_SLEEP_S',
-            sleep_max_env='IQ_EXEC_HISTORY_SLEEP_MAX_S',
-            retries_default=2,
-            sleep_default=0.5,
-        )
+        label = f'get_optioninfo_v2:{lim}'
+        cooldown_key = f'history:{lim}'
+        now = time.time()
+        skip_until = float(self._guarded_call_cooldowns.get(cooldown_key, 0.0) or 0.0)
+        if skip_until > now:
+            return {
+                'msg': {'closed_options': []},
+                'skipped': {
+                    'reason': 'history_timeout_cooldown',
+                    'label': label,
+                    'until_epoch': skip_until,
+                },
+            }
+
+        retries = int(env_int('IQ_EXEC_HISTORY_RETRIES', 1))
+        sleep_s = float(env_float('IQ_EXEC_HISTORY_SLEEP_S', 0.5))
+        sleep_max_s = float(env_float('IQ_EXEC_HISTORY_SLEEP_MAX_S', max(2.0, sleep_s * 4.0)))
+        timeout_s = float(env_float('IQ_EXEC_HISTORY_TIMEOUT_S', 8.0))
+        cooldown_s = max(0.0, float(env_float('IQ_EXEC_HISTORY_COOLDOWN_S', 300.0)))
+
+        last_reason = None
+        for attempt in range(1, max(1, retries) + 1):
+            try:
+                self._maybe_throttle(f'call:{label}')
+                self.ensure_connection()
+                return self._run_with_timeout(label=label, fn=lambda: self.iq.get_optioninfo_v2(lim), timeout_s=timeout_s)
+            except TimeoutError as e:
+                last_reason = f'{type(e).__name__}: {e}'
+                if cooldown_s > 0.0:
+                    self._guarded_call_cooldowns[cooldown_key] = time.time() + cooldown_s
+                print(f'[IQ][{label}] guarded timeout: reason={last_reason}; using empty closed history for now')
+                return {
+                    'msg': {'closed_options': []},
+                    'skipped': {
+                        'reason': 'timeout',
+                        'label': label,
+                        'timeout_sec': timeout_s,
+                        'cooldown_sec': cooldown_s,
+                    },
+                }
+            except Exception as e:
+                last_reason = f'{type(e).__name__}: {e}'
+            if attempt < retries:
+                wait_s = self._backoff(sleep_s, attempt, sleep_max_s)
+                print(f'[IQ][{label}] attempt {attempt}/{retries} failed: reason={last_reason}; retry in {wait_s:.1f}s')
+                self._new_api()
+                time.sleep(wait_s)
+        raise RuntimeError(f'Falha em {label} após {retries} tentativas. reason={last_reason}')
 
     def get_option_open_by_other_pc(self):
         return self._call_with_retries(

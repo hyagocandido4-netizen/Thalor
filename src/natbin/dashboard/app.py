@@ -168,7 +168,7 @@ def run() -> None:
     # --- Control plane (health / precheck) ---
     st.subheader("Control plane")
 
-    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
 
     with col_a:
         st.markdown("**Health**")
@@ -218,13 +218,62 @@ def run() -> None:
             summary = {
                 'severity': rel.get('severity') if isinstance(rel, dict) else None,
                 'ready_for_live': rel.get('ready_for_live') if isinstance(rel, dict) else None,
+                'ready_for_practice': rel.get('ready_for_practice') if isinstance(rel, dict) else None,
+                'ready_for_real': rel.get('ready_for_real') if isinstance(rel, dict) else None,
                 'execution_live': rel.get('execution_live') if isinstance(rel, dict) else None,
+                'execution_account_mode': rel.get('execution_account_mode') if isinstance(rel, dict) else None,
             }
             st.json(summary, expanded=False)
             with st.expander('raw release payload'):
                 st.json(rel, expanded=False)
         except Exception as e:
             st.warning(f"release_payload falhou: {e}")
+
+    with col_e:
+        st.markdown("**Practice (READY-1)**")
+        try:
+            from natbin.control.commands import practice_payload
+
+            practice = practice_payload(repo_root=str(repo), config_path=str(cfg))
+            summary = {
+                'severity': practice.get('severity') if isinstance(practice, dict) else None,
+                'ready_for_practice': practice.get('ready_for_practice') if isinstance(practice, dict) else None,
+                'account_mode': ((practice.get('execution') or {}).get('account_mode') if isinstance(practice, dict) else None),
+                'soak_status': ((practice.get('soak') or {}).get('status') if isinstance(practice, dict) else None),
+                'soak_age_sec': ((practice.get('soak') or {}).get('age_sec') if isinstance(practice, dict) else None),
+            }
+            st.json(summary, expanded=False)
+            with st.expander('raw practice payload'):
+                st.json(practice, expanded=False)
+        except Exception as e:
+            st.warning(f"practice_payload falhou: {e}")
+
+    st.markdown("**Practice round (PRACTICE-OPS-1)**")
+    try:
+        from natbin.control.plan import build_context
+
+        dash_ctx = build_context(repo_root=str(repo), config_path=str(cfg), dump_snapshot=False)
+        round_path = repo / 'runs' / 'control' / str(dash_ctx.scope.scope_tag) / 'practice_round.json'
+        round_payload = _read_json(round_path)
+        if isinstance(round_payload, dict):
+            summary = {
+                'severity': round_payload.get('severity'),
+                'round_ok': round_payload.get('round_ok'),
+                'phase': round_payload.get('phase'),
+                'blocked_reason': round_payload.get('blocked_reason'),
+                'soak_action': ((round_payload.get('soak') or {}).get('action') if isinstance(round_payload.get('soak'), dict) else None),
+                'validation_required_passed': ((round_payload.get('validation') or {}).get('required_passed') if isinstance(round_payload.get('validation'), dict) else None),
+                'latest_intent_state': (((round_payload.get('validation') or {}).get('observe') or {}).get('latest_intent_state') if isinstance(round_payload.get('validation'), dict) else None),
+                'submit_transport_status': (((round_payload.get('validation') or {}).get('observe') or {}).get('submit_transport_status') if isinstance(round_payload.get('validation'), dict) else None),
+                'report_path': ((round_payload.get('artifacts') or {}).get('report_path') if isinstance(round_payload.get('artifacts'), dict) else None),
+            }
+            st.json(summary, expanded=False)
+            with st.expander('raw practice round payload'):
+                st.json(round_payload, expanded=False)
+        else:
+            st.info('Nenhuma rodada de practice encontrada ainda.')
+    except Exception as e:
+        st.warning(f"practice round payload falhou: {e}")
 
     # --- Portfolio status / last cycle ---
     st.subheader("Portfolio (multi-asset)")
@@ -306,6 +355,22 @@ def run() -> None:
                 "suppressed": latest_alloc.get("suppressed"),
             }
             st.json(summary, expanded=False)
+
+        portfolio_intel = status.get("intelligence") or {}
+        if portfolio_intel:
+            st.markdown("**Portfolio intelligence ops**")
+            summary = {
+                "enabled": portfolio_intel.get("enabled"),
+                "severity": portfolio_intel.get("severity"),
+                "summary": portfolio_intel.get("summary"),
+            }
+            st.json(summary, expanded=False)
+            items = list(portfolio_intel.get("items") or [])
+            if items:
+                if pd is not None:
+                    st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
+                else:
+                    st.json(items, expanded=False)
 
     # --- Operations / Alerts (M7) ---
     st.subheader("Operations / Alerts (M7)")
@@ -442,24 +507,36 @@ def run() -> None:
                     st.json(dec)
 
         with c2:
-            st.markdown("**Intelligence (M5)**")
+            st.markdown("**Intelligence (M5 / H12)**")
             intel_dir = repo / "runs" / "intelligence" / str(chosen_tag)
             eval_path = intel_dir / "latest_eval.json"
             pack_path = intel_dir / "pack.json"
-            retrain_path = intel_dir / "retrain_trigger.json"
+            retrain_trigger_path = intel_dir / "retrain_trigger.json"
+            retrain_plan_path = intel_dir / "retrain_plan.json"
+            retrain_status_path = intel_dir / "retrain_status.json"
+            retrain_review_path = intel_dir / "retrain_review.json"
             intel_eval = _read_json(eval_path)
             intel_pack = _read_json(pack_path)
-            retrain = _read_json(retrain_path)
+            retrain_trigger = _read_json(retrain_trigger_path)
+            retrain_plan = _read_json(retrain_plan_path)
+            retrain_status = _read_json(retrain_status_path)
+            retrain_review = _read_json(retrain_review_path)
             if intel_eval is None:
                 st.info(f"Não encontrei {eval_path}")
             else:
+                retrain_orchestration = intel_eval.get("retrain_orchestration") if isinstance(intel_eval, dict) else None
+                portfolio_feedback = intel_eval.get("portfolio_feedback") if isinstance(intel_eval, dict) else None
                 summary = {
                     "pack_available": intel_eval.get("pack_available") if isinstance(intel_eval, dict) else None,
                     "base_rank": intel_eval.get("base_rank") if isinstance(intel_eval, dict) else None,
                     "learned_gate_prob": intel_eval.get("learned_gate_prob") if isinstance(intel_eval, dict) else None,
                     "intelligence_score": intel_eval.get("intelligence_score") if isinstance(intel_eval, dict) else None,
+                    "portfolio_score": intel_eval.get("portfolio_score") if isinstance(intel_eval, dict) else None,
                     "allow_trade": intel_eval.get("allow_trade") if isinstance(intel_eval, dict) else None,
                     "block_reason": intel_eval.get("block_reason") if isinstance(intel_eval, dict) else None,
+                    "retrain_state": (retrain_orchestration or {}).get("state") if isinstance(retrain_orchestration, dict) else None,
+                    "retrain_priority": (retrain_orchestration or {}).get("priority") if isinstance(retrain_orchestration, dict) else None,
+                    "portfolio_feedback": portfolio_feedback if isinstance(portfolio_feedback, dict) else None,
                     "slot": intel_eval.get("slot") if isinstance(intel_eval, dict) else None,
                     "coverage": intel_eval.get("coverage") if isinstance(intel_eval, dict) else None,
                     "drift": intel_eval.get("drift") if isinstance(intel_eval, dict) else None,
@@ -477,9 +554,41 @@ def run() -> None:
                     "anti_overfit": intel_pack.get("anti_overfit"),
                 }
                 st.json(pack_summary, expanded=False)
-            if retrain is not None:
+            if retrain_trigger is not None:
                 st.warning("Retrain trigger ativo")
-                st.json(retrain, expanded=False)
+                st.json(retrain_trigger, expanded=False)
+            if retrain_plan is not None:
+                st.caption("retrain_plan.json carregado")
+                plan_summary = {
+                    "state": retrain_plan.get("state"),
+                    "priority": retrain_plan.get("priority"),
+                    "reasons": retrain_plan.get("reasons"),
+                    "recommended_action": retrain_plan.get("recommended_action"),
+                    "cooldown_until_utc": retrain_plan.get("cooldown_until_utc"),
+                }
+                st.json(plan_summary, expanded=False)
+            if retrain_status is not None:
+                st.caption("retrain_status.json carregado")
+                status_summary = {
+                    "updated_at_utc": retrain_status.get("updated_at_utc"),
+                    "state": retrain_status.get("state"),
+                    "previous_state": retrain_status.get("previous_state"),
+                    "priority": retrain_status.get("priority"),
+                    "plan_state": retrain_status.get("plan_state"),
+                    "plan_priority": retrain_status.get("plan_priority"),
+                    "verdict": retrain_status.get("verdict"),
+                }
+                st.json(status_summary, expanded=False)
+            if retrain_review is not None:
+                st.caption("retrain_review.json carregado")
+                review_summary = {
+                    "finished_at_utc": retrain_review.get("finished_at_utc"),
+                    "verdict": retrain_review.get("verdict"),
+                    "reason": retrain_review.get("reason"),
+                    "restored_previous_artifacts": retrain_review.get("restored_previous_artifacts"),
+                    "comparison": retrain_review.get("comparison"),
+                }
+                st.json(review_summary, expanded=False)
 
         with c3:
             st.markdown("**Signals (recent)**")

@@ -6,21 +6,35 @@ import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
-import yaml
 
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 
+from .observer import load_cfg as load_observer_cfg
 
-def load_best_cfg() -> dict:
-    cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8")) or {}
-    best = cfg.get("best")
+
+def load_best_cfg(
+    *,
+    repo_root: str | Path | None = None,
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+) -> dict[str, Any]:
+    _cfg, best = load_observer_cfg(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+    )
     if not best:
-        raise RuntimeError("Nao achei bloco 'best' em config.yaml. Rode phase3_3_bootstrap.ps1.")
+        raise RuntimeError(
+            "Nao achei configuracao de decisao na config resolvida. Defina decision.threshold/tune_dir/bounds no config selecionado."
+        )
     return best
 
 
@@ -91,12 +105,18 @@ def append_csv_with_retry(path: Path, row: dict, retries: int = 8) -> bool:
     return False
 
 
-def main():
-    best = load_best_cfg()
+def main() -> None:
+    cfg, best = load_observer_cfg()
+    if not best:
+        raise RuntimeError(
+            "Nao achei configuracao de decisao na config resolvida. Defina decision.threshold/tune_dir/bounds no config selecionado."
+        )
+
     thr = float(best["threshold"])
     b = best["bounds"]
+    dataset_path = Path(str(cfg.get("phase2", {}).get("dataset_path", "data/dataset_phase2.csv")))
 
-    df = pd.read_csv("data/dataset_phase2.csv").sort_values("ts").reset_index(drop=True)
+    df = pd.read_csv(dataset_path).sort_values("ts").reset_index(drop=True)
     feat = [c for c in df.columns if c.startswith("f_")]
 
     cut = max(1000, len(df) - 200)

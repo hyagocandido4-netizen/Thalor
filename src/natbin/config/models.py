@@ -85,6 +85,61 @@ class DataSettings(BaseModel):
     max_batch: int = 1000
 
 
+class RegimeBoundsSettings(BaseModel):
+    vol_lo: float
+    vol_hi: float
+    bb_lo: float
+    bb_hi: float
+    atr_lo: float
+    atr_hi: float
+
+    @model_validator(mode="after")
+    def _validate(self) -> "RegimeBoundsSettings":
+        pairs = [
+            (float(self.vol_lo), float(self.vol_hi), "vol"),
+            (float(self.bb_lo), float(self.bb_hi), "bb"),
+            (float(self.atr_lo), float(self.atr_hi), "atr"),
+        ]
+        for lo, hi, prefix in pairs:
+            if lo > hi:
+                raise ValueError(f"decision.bounds.{prefix}_lo must be <= decision.bounds.{prefix}_hi")
+        return self
+
+    def as_dict(self) -> dict[str, float]:
+        return {k: float(v) for k, v in self.model_dump(mode="python").items()}
+
+
+class CpRegSettings(BaseModel):
+    enabled: bool = False
+    alpha_start: float = 0.06
+    alpha_end: float = 0.09
+    warmup_frac: float = 0.50
+    ramp_end_frac: float = 0.90
+    slot2_mult: float = 0.85
+    clamp_min: float = 0.001
+    clamp_max: float = 0.50
+
+    @model_validator(mode="after")
+    def _validate(self) -> "CpRegSettings":
+        if float(self.alpha_start) <= 0.0:
+            raise ValueError("decision.cpreg.alpha_start must be > 0")
+        if float(self.alpha_end) <= 0.0:
+            raise ValueError("decision.cpreg.alpha_end must be > 0")
+        if not 0.0 <= float(self.warmup_frac) <= 1.0:
+            raise ValueError("decision.cpreg.warmup_frac must be between 0 and 1")
+        if not 0.0 <= float(self.ramp_end_frac) <= 1.0:
+            raise ValueError("decision.cpreg.ramp_end_frac must be between 0 and 1")
+        if float(self.ramp_end_frac) < float(self.warmup_frac):
+            raise ValueError("decision.cpreg.ramp_end_frac must be >= decision.cpreg.warmup_frac")
+        if float(self.slot2_mult) <= 0.0:
+            raise ValueError("decision.cpreg.slot2_mult must be > 0")
+        if float(self.clamp_min) <= 0.0:
+            raise ValueError("decision.cpreg.clamp_min must be > 0")
+        if float(self.clamp_max) < float(self.clamp_min):
+            raise ValueError("decision.cpreg.clamp_max must be >= decision.cpreg.clamp_min")
+        return self
+
+
 class DecisionSettings(BaseModel):
     # Requested gating mode for scoring. The scorer may report a more specific
     # gate_used (e.g. cp_meta_iso), but config should stay stable.
@@ -93,17 +148,27 @@ class DecisionSettings(BaseModel):
     thresh_on: str = "ev"
     threshold: float = 0.02
 
+    # Static conformal alpha used when CPREG is disabled.
+    cp_alpha: float | None = None
+    cpreg: CpRegSettings = Field(default_factory=CpRegSettings)
+
     # Optional model registry / tuning pointer for live runtime.
     # When set, this is recorded into decision snapshots for traceability.
     tune_dir: str = ""
     # Optional regime bounds used by make_regime_mask (keys: vol_lo/hi, bb_lo/hi, atr_lo/hi).
-    bounds: dict[str, float] = Field(default_factory=dict)
+    bounds: RegimeBoundsSettings | None = None
 
     rolling_minutes: int = 360
     min_gap_minutes: int = 30
     pacing_enable: bool = True
 
     fail_closed: bool = True
+
+    @model_validator(mode="after")
+    def _validate(self) -> "DecisionSettings":
+        if self.cp_alpha is not None and not 0.0 <= float(self.cp_alpha) <= 1.0:
+            raise ValueError("decision.cp_alpha must be between 0 and 1")
+        return self
 
 
 class QuotaSettings(BaseModel):
@@ -224,6 +289,14 @@ class IntelligenceScopePolicy(BaseModel):
     stack_max_penalty: float | None = None
     learned_fail_closed: bool | None = None
     drift_fail_closed: bool | None = None
+    portfolio_weight: float | None = None
+    allocator_block_regime: bool | None = None
+    allocator_warn_penalty: float | None = None
+    allocator_block_penalty: float | None = None
+    allocator_under_target_bonus: float | None = None
+    allocator_over_target_penalty: float | None = None
+    allocator_retrain_penalty: float | None = None
+    allocator_reliability_penalty: float | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "IntelligenceScopePolicy":
@@ -235,7 +308,18 @@ class IntelligenceScopePolicy(BaseModel):
                 raise ValueError(f"intelligence.scope_policies[].{name} must be within [0,1]")
         if self.abstain_band is not None and not (0.0 <= float(self.abstain_band) <= 0.50):
             raise ValueError("intelligence.scope_policies[].abstain_band must be within [0,0.50]")
-        for name in ('stack_max_bonus', 'stack_max_penalty'):
+        if self.portfolio_weight is not None and not (0.0 <= float(self.portfolio_weight) <= 2.0):
+            raise ValueError("intelligence.scope_policies[].portfolio_weight must be within [0,2]")
+        for name in (
+            'stack_max_bonus',
+            'stack_max_penalty',
+            'allocator_warn_penalty',
+            'allocator_block_penalty',
+            'allocator_under_target_bonus',
+            'allocator_over_target_penalty',
+            'allocator_retrain_penalty',
+            'allocator_reliability_penalty',
+        ):
             value = getattr(self, name)
             if value is not None and float(value) < 0:
                 raise ValueError(f"intelligence.scope_policies[].{name} must be >= 0")
@@ -274,6 +358,14 @@ class IntelligenceSettings(BaseModel):
     learned_neutralize_low_reliability: bool = True
     stack_max_bonus: float = 0.05
     stack_max_penalty: float = 0.05
+    portfolio_weight: float = 1.0
+    allocator_block_regime: bool = True
+    allocator_warn_penalty: float = 0.04
+    allocator_block_penalty: float = 0.12
+    allocator_under_target_bonus: float = 0.03
+    allocator_over_target_penalty: float = 0.04
+    allocator_retrain_penalty: float = 0.05
+    allocator_reliability_penalty: float = 0.03
     scope_policies: list[IntelligenceScopePolicy] = Field(default_factory=list)
 
     # P20 — drift / regime monitor
@@ -287,6 +379,11 @@ class IntelligenceSettings(BaseModel):
     retrain_warn_streak: int = 3
     retrain_block_streak: int = 1
     retrain_cooldown_hours: int = 12
+    retrain_plan_cooldown_hours: int = 24
+    retrain_rejection_backoff_hours: int = 6
+    retrain_watch_reliability_below: float = 0.55
+    retrain_queue_on_regime_block: bool = True
+    retrain_queue_on_anti_overfit_reject: bool = True
 
     # P21 — coverage regulator 2.0
     coverage_regulator_enable: bool = True
@@ -303,6 +400,12 @@ class IntelligenceSettings(BaseModel):
     anti_overfit_min_robustness: float = 0.50
     anti_overfit_min_windows: int = 3
     anti_overfit_gap_penalty_weight: float = 0.10
+    anti_overfit_tuning_enable: bool = True
+    anti_overfit_tuning_min_robustness_floor: float = 0.45
+    anti_overfit_tuning_window_flex: int = 1
+    anti_overfit_tuning_gap_penalty_flex: float = 0.03
+    anti_overfit_tuning_recent_rows_min: int = 48
+    anti_overfit_tuning_objective_min_delta: float = 0.015
 
     @model_validator(mode="after")
     def _validate(self) -> "IntelligenceSettings":
@@ -333,6 +436,18 @@ class IntelligenceSettings(BaseModel):
             raise ValueError("intelligence.learned_min_reliability must be within [0,1]")
         if float(self.stack_max_bonus) < 0 or float(self.stack_max_penalty) < 0:
             raise ValueError("intelligence stack max bonus/penalty must be >= 0")
+        if not (0.0 <= float(self.portfolio_weight) <= 2.0):
+            raise ValueError("intelligence.portfolio_weight must be within [0,2]")
+        for name in (
+            'allocator_warn_penalty',
+            'allocator_block_penalty',
+            'allocator_under_target_bonus',
+            'allocator_over_target_penalty',
+            'allocator_retrain_penalty',
+            'allocator_reliability_penalty',
+        ):
+            if float(getattr(self, name)) < 0:
+                raise ValueError(f"intelligence.{name} must be >= 0")
         if int(self.drift_recent_limit) < 20:
             raise ValueError("intelligence.drift_recent_limit must be >= 20")
         if float(self.drift_warn_psi) <= 0:
@@ -349,6 +464,12 @@ class IntelligenceSettings(BaseModel):
             raise ValueError("intelligence.retrain_block_streak must be >= 1")
         if int(self.retrain_cooldown_hours) < 0:
             raise ValueError("intelligence.retrain_cooldown_hours must be >= 0")
+        if int(self.retrain_plan_cooldown_hours) < 0:
+            raise ValueError("intelligence.retrain_plan_cooldown_hours must be >= 0")
+        if int(self.retrain_rejection_backoff_hours) < 0:
+            raise ValueError("intelligence.retrain_rejection_backoff_hours must be >= 0")
+        if not (0.0 <= float(self.retrain_watch_reliability_below) <= 1.0):
+            raise ValueError("intelligence.retrain_watch_reliability_below must be within [0,1]")
         if self.coverage_target_trades_per_day is not None and float(self.coverage_target_trades_per_day) <= 0:
             raise ValueError("intelligence.coverage_target_trades_per_day must be > 0 when set")
         if float(self.coverage_tolerance) < 0:
@@ -365,6 +486,18 @@ class IntelligenceSettings(BaseModel):
             raise ValueError("intelligence.anti_overfit_min_windows must be >= 1")
         if float(self.anti_overfit_gap_penalty_weight) < 0:
             raise ValueError("intelligence.anti_overfit_gap_penalty_weight must be >= 0")
+        if not (0.0 <= float(self.anti_overfit_tuning_min_robustness_floor) <= 1.0):
+            raise ValueError("intelligence.anti_overfit_tuning_min_robustness_floor must be within [0,1]")
+        if float(self.anti_overfit_tuning_min_robustness_floor) > float(self.anti_overfit_min_robustness):
+            raise ValueError("intelligence.anti_overfit_tuning_min_robustness_floor must be <= anti_overfit_min_robustness")
+        if int(self.anti_overfit_tuning_window_flex) < 0:
+            raise ValueError("intelligence.anti_overfit_tuning_window_flex must be >= 0")
+        if float(self.anti_overfit_tuning_gap_penalty_flex) < 0:
+            raise ValueError("intelligence.anti_overfit_tuning_gap_penalty_flex must be >= 0")
+        if int(self.anti_overfit_tuning_recent_rows_min) < 20:
+            raise ValueError("intelligence.anti_overfit_tuning_recent_rows_min must be >= 20")
+        if float(self.anti_overfit_tuning_objective_min_delta) < 0:
+            raise ValueError("intelligence.anti_overfit_tuning_objective_min_delta must be >= 0")
         return self
 
 class SecurityGuardSettings(BaseModel):
@@ -486,8 +619,10 @@ class NotificationsSettings(BaseModel):
 class RuntimeOverrides(BaseModel):
     # Autos/runtime overrides (per-cycle). Keep optional.
     threshold: float | None = None
+    cpreg_enable: bool | None = None
     cpreg_alpha_start: float | None = None
     cpreg_alpha_end: float | None = None
+    cpreg_slot2_mult: float | None = None
     cp_alpha: float | None = None
     meta_iso_blend: float | None = None
     regime_mode: Literal["hard", "soft"] | None = None
@@ -521,6 +656,7 @@ class ExecutionReconcileSettings(BaseModel):
     orphan_lookback_sec: int = 7200
     not_found_grace_sec: int = 20
     settle_grace_sec: int = 30
+    scan_without_pending: bool = False
 
 
 class ExecutionLimitsSettings(BaseModel):

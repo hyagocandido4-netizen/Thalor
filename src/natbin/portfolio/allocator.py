@@ -58,6 +58,11 @@ def _item(
         slot_multiplier=candidate.slot_multiplier,
         drift_level=candidate.drift_level,
         coverage_bias=candidate.coverage_bias,
+        stack_decision=candidate.stack_decision,
+        regime_level=candidate.regime_level,
+        portfolio_score=candidate.portfolio_score,
+        retrain_state=candidate.retrain_state,
+        retrain_priority=candidate.retrain_priority,
         rank_value=float(rank_value),
         selected=bool(selected),
         reason=str(reason),
@@ -65,6 +70,7 @@ def _item(
         cluster_key=_scope_cluster(scope_by_tag, candidate.scope_tag),
         risk_context=dict(risk_context or {}) or None,
         intelligence=dict(candidate.intelligence or {}) or None,
+        portfolio_feedback=dict(candidate.portfolio_feedback or {}) or None,
     )
 
 
@@ -156,6 +162,7 @@ def allocate(
         w = _scope_weight(scope_by_tag, c.scope_tag)
         rv = c.rank_value(weight=w, prefer_ev=prefer_ev)
         cluster = _scope_cluster(scope_by_tag, c.scope_tag)
+        portfolio_feedback = dict(c.portfolio_feedback or {})
 
         if action not in {'CALL', 'PUT'}:
             suppressed.append(
@@ -166,6 +173,22 @@ def allocate(
                     selected=False,
                     reason='not_trade_action',
                     risk_context={'cluster_key': cluster},
+                )
+            )
+            continue
+
+        if bool(portfolio_feedback.get('allocator_blocked', False)):
+            suppressed.append(
+                _item(
+                    scope_by_tag=scope_by_tag,
+                    candidate=c,
+                    rank_value=rv,
+                    selected=False,
+                    reason=f"portfolio_feedback_block:{str(portfolio_feedback.get('block_reason') or 'policy')}",
+                    risk_context={
+                        'cluster_key': cluster,
+                        'portfolio_feedback': portfolio_feedback,
+                    },
                 )
             )
             continue
@@ -310,6 +333,7 @@ def allocate(
                     'cluster_key': cluster,
                     'selected_in_cycle_asset': int(selected_by_asset.get(asset_key, 0)),
                     'selected_in_cycle_cluster': int(selected_by_cluster.get(cluster, 0)),
+                    'portfolio_feedback': dict(c.portfolio_feedback or {}),
                 },
             )
         )
@@ -336,6 +360,7 @@ def allocate(
                     'max_select': int(max_select),
                     'max_allowed': int(max_allowed),
                     'selected_count': int(picked),
+                    'portfolio_feedback': dict(c.portfolio_feedback or {}),
                 },
             )
         )
@@ -355,6 +380,9 @@ def allocate(
         'pending_unknown_by_cluster': dict(sorted(pending_by_cluster.items())),
         'selected_with_drift_warn_or_block': int(sum(1 for i in selected if str(getattr(i, 'drift_level', '') or '') in {'warn', 'block'})),
         'selected_with_learned_gate': int(sum(1 for i in selected if getattr(i, 'learned_gate_prob', None) is not None)),
+        'selected_with_retrain_queue': int(sum(1 for i in selected if str(getattr(i, 'retrain_state', '') or '') in {'queued', 'cooldown'})),
+        'selected_with_portfolio_score': int(sum(1 for i in selected if getattr(i, 'portfolio_score', None) is not None)),
+        'suppressed_feedback_blocks': int(sum(1 for i in suppressed if str(i.reason).startswith('portfolio_feedback_block:'))),
     }
 
     return PortfolioAllocation(

@@ -120,6 +120,7 @@ def test_incident_status_payload_reports_recent_warning(tmp_path: Path) -> None:
     payload = incident_status_payload(repo_root=tmp_path, config_path=cfg_path, limit=10, window_hours=24)
     assert payload['kind'] == 'incident_status'
     assert payload['severity'] in {'warn', 'error'}
+    assert payload['intelligence']['severity'] in {'ok', 'warn'}
     codes = {item['code'] for item in payload['open_issues']}
     assert 'recent_warning_incidents' in codes
     artifact = tmp_path / 'runs' / 'control' / 'EURUSD-OTC_300s' / 'incidents.json'

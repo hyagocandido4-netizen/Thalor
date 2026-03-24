@@ -106,6 +106,7 @@ def test_control_artifact_paths_include_guard_and_lifecycle(tmp_path: Path):
     paths = control_artifact_paths(repo_root=tmp_path, asset='EURUSD-OTC', interval_sec=300)
     assert 'guard' in paths
     assert 'lifecycle' in paths
+    assert 'intelligence' in paths
 
 def test_run_once_returns_lock_exists_when_scope_is_already_locked(tmp_path: Path):
     repo_root = _make_repo(tmp_path)

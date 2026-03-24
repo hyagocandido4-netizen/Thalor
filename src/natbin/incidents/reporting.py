@@ -9,6 +9,7 @@ from typing import Any
 from ..alerting.telegram import alerts_status_payload, dispatch_telegram_alert
 from ..control.ops import gate_status
 from ..control.plan import build_context
+from ..ops.intelligence_surface import build_intelligence_surface_payload
 from ..ops.release_readiness import build_release_readiness_payload
 from ..runtime.hardening import inspect_runtime_freshness
 from ..security.audit import audit_security_posture
@@ -215,7 +216,7 @@ def _loop_summary(repo_root: str | Path, asset: str, interval_sec: int) -> dict[
     return payload if isinstance(payload, dict) else None
 
 
-def _recommended_actions(*, repo_root: Path, config_path: str, issues: list[dict[str, Any]], recent_incidents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _recommended_actions(*, repo_root: Path, config_path: str, asset: str, interval_sec: int, issues: list[dict[str, Any]], recent_incidents: list[dict[str, Any]], stage: str | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
 
@@ -229,6 +230,7 @@ def _recommended_actions(*, repo_root: Path, config_path: str, issues: list[dict
     incident_types = {str(item.get('incident_type') or '') for item in recent_incidents}
     repo_s = str(repo_root)
     cfg_s = str(config_path)
+    stage_key = str(stage or '').strip().lower()
 
     if 'kill_switch_active' in issue_codes:
         add('killswitch_review', 'Kill-switch está ativo; confirmar motivo antes de voltar a submeter ordens.', [
@@ -267,6 +269,12 @@ def _recommended_actions(*, repo_root: Path, config_path: str, issues: list[dict
             f'python -m natbin.runtime_app orders --repo-root {repo_s} --config {cfg_s} --json',
             f'python -m natbin.runtime_app reconcile --repo-root {repo_s} --config {cfg_s} --json',
         ])
+    if {'intelligence_surface_warn', 'intelligence_retrain_pending', 'intelligence_feedback_block', 'intelligence_traceability_warn'} & issue_codes:
+        add('intelligence_review', 'Há avisos na surface de intelligence; revisar score/alocação/retrain antes do próximo ciclo.', [
+            f'python -m natbin.runtime_app intelligence --repo-root {repo_s} --config {cfg_s} --json',
+            f'python -m natbin.runtime_app portfolio status --repo-root {repo_s} --config {cfg_s} --json',
+            f'python -m natbin.intelligence_pack --repo-root {repo_s} --asset {asset} --interval-sec {interval_sec} --json',
+        ])
     if not out:
         add('steady_state_review', 'Superfície operacional está limpa; manter checagens de rotina antes do próximo release/live.', [
             f'python -m natbin.runtime_app release --repo-root {repo_s} --config {cfg_s} --json',
@@ -275,10 +283,11 @@ def _recommended_actions(*, repo_root: Path, config_path: str, issues: list[dict
     return out
 
 
-def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None, limit: int = 20, window_hours: int = 24, write_artifact: bool = True) -> dict[str, Any]:
+def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None, limit: int = 20, window_hours: int = 24, write_artifact: bool = True, stage: str | None = None) -> dict[str, Any]:
     ctx = build_context(repo_root=repo_root, config_path=config_path, dump_snapshot=False)
     repo = Path(ctx.repo_root).resolve()
     now = _now()
+    stage_key = str(stage or '').strip().lower()
     release = build_release_readiness_payload(repo_root=repo, config_path=ctx.config.config_path)
     alerts = alerts_status_payload(repo_root=repo, resolved_config=ctx.resolved_config, limit=max(5, int(limit)))
     gates = gate_status(repo_root=repo, config_path=ctx.config.config_path)
@@ -287,6 +296,11 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
         config_path=ctx.config.config_path,
         resolved_config=ctx.resolved_config,
         source_trace=list(ctx.source_trace),
+    )
+    intelligence = build_intelligence_surface_payload(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        write_artifact=True,
     )
     freshness = inspect_runtime_freshness(repo_root=repo, ctx=ctx, now_utc=now)
     health = _health_summary(repo, ctx.config.asset, int(ctx.config.interval_sec))
@@ -298,13 +312,30 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
     release_sev = str(release.get('severity') or 'ok')
     if release_sev == 'error':
         issues.append(_issue('release_readiness_error', 'error', 'Release readiness contém bloqueadores abertos.', severity_release=release_sev))
-    elif release_sev == 'warn':
+    elif release_sev == 'warn' and stage_key != 'practice':
         issues.append(_issue('release_readiness_warn', 'warn', 'Release readiness ainda contém avisos pendentes.', severity_release=release_sev))
 
     if bool(security.get('blocked')):
         issues.append(_issue('security_blocked', 'error', 'Auditoria de segurança bloqueia operação/release.', security_severity=security.get('severity')))
     elif str(security.get('severity') or 'ok') == 'warn':
         issues.append(_issue('security_warn', 'warn', 'Auditoria de segurança com avisos pendentes.', security_severity=security.get('severity')))
+
+    intelligence_enabled = bool(intelligence.get('enabled'))
+    intelligence_summary = dict(intelligence.get('summary') or {})
+    intelligence_allocation = dict(intelligence.get('allocation') or {})
+    intelligence_execution = dict(intelligence.get('execution') or {})
+    intelligence_sev = str(intelligence.get('severity') or 'ok')
+    retrain_state = str(intelligence_summary.get('retrain_state') or '')
+    retrain_priority = str(intelligence_summary.get('retrain_priority') or '')
+    if intelligence_enabled and intelligence_sev in {'warn', 'error'}:
+        issues.append(_issue('intelligence_surface_warn', 'warn' if intelligence_sev == 'warn' else 'error', 'Surface operacional de intelligence contém avisos.', warnings=intelligence.get('warnings') or []))
+    if intelligence_enabled and (retrain_priority.lower() == 'high' or retrain_state.lower() in {'queued', 'cooldown'}):
+        issues.append(_issue('intelligence_retrain_pending', 'warn', 'Scope requer atenção de retrain / monitoramento.', retrain_state=retrain_state or None, retrain_priority=retrain_priority or None))
+    if intelligence_enabled and bool(intelligence_summary.get('portfolio_feedback_blocked')):
+        issues.append(_issue('intelligence_feedback_block', 'warn', 'Portfolio feedback está bloqueando o scope.', reason=intelligence_summary.get('portfolio_feedback_reason') or intelligence_summary.get('block_reason')))
+    missing_trace_fields = list(intelligence_execution.get('missing_fields') or [])
+    if intelligence_enabled and missing_trace_fields:
+        issues.append(_issue('intelligence_traceability_warn', 'warn', 'Intent recente sem trilha completa de intelligence/alocação.', missing_fields=missing_trace_fields, allocation_id=intelligence_allocation.get('allocation_id')))
 
     if bool((gates.get('kill_switch') or {}).get('active')):
         issues.append(_issue('kill_switch_active', 'error', 'Kill-switch ativo.', reason=(gates.get('kill_switch') or {}).get('reason')))
@@ -338,8 +369,11 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
     recommended = _recommended_actions(
         repo_root=repo,
         config_path=str(ctx.config.config_path),
+        asset=str(ctx.config.asset),
+        interval_sec=int(ctx.config.interval_sec),
         issues=issues,
         recent_incidents=recent_incidents,
+        stage=stage_key or None,
     )
     payload = {
         'at_utc': _iso(now),
@@ -356,6 +390,7 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
         },
         'window_hours': int(window_hours),
         'limit': int(limit),
+        'stage': stage_key or None,
         'gates': gates,
         'release': {
             'severity': release.get('severity'),
@@ -366,6 +401,14 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
             'severity': security.get('severity'),
             'blocked': security.get('blocked'),
             'credential_source': security.get('credential_source'),
+        },
+        'intelligence': {
+            'enabled': intelligence.get('enabled'),
+            'severity': intelligence.get('severity'),
+            'warnings': intelligence.get('warnings'),
+            'summary': intelligence.get('summary'),
+            'allocation': intelligence.get('allocation'),
+            'execution': intelligence.get('execution'),
         },
         'alerts': {
             'telegram': {
@@ -408,8 +451,8 @@ def _write_report_files(*, repo_root: Path, scope_tag: str, payload: dict[str, A
     return {'latest_report_path': str(latest_path), 'report_path': str(report_path)}
 
 
-def incident_report_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None, limit: int = 20, window_hours: int = 24, write_artifact: bool = True) -> dict[str, Any]:
-    status = incident_status_payload(repo_root=repo_root, config_path=config_path, limit=limit, window_hours=window_hours, write_artifact=write_artifact)
+def incident_report_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None, limit: int = 20, window_hours: int = 24, write_artifact: bool = True, stage: str | None = None) -> dict[str, Any]:
+    status = incident_status_payload(repo_root=repo_root, config_path=config_path, limit=limit, window_hours=window_hours, write_artifact=write_artifact, stage=stage)
     ctx = build_context(repo_root=repo_root, config_path=config_path, dump_snapshot=False)
     repo = Path(ctx.repo_root).resolve()
     release_full = read_control_artifact(repo_root=repo, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='release') or build_release_readiness_payload(repo_root=repo, config_path=ctx.config.config_path)
@@ -427,6 +470,7 @@ def incident_report_payload(*, repo_root: str | Path = '.', config_path: str | P
         'repo_root': str(repo),
         'config_path': str(ctx.config.config_path),
         'scope': status.get('scope'),
+        'stage': status.get('stage'),
         'status': status,
         'release_full': release_full,
         'security_full': security_full,
@@ -435,6 +479,7 @@ def incident_report_payload(*, repo_root: str | Path = '.', config_path: str | P
             'runtime_freshness': status.get('runtime_freshness'),
             'health': status.get('health'),
             'loop_status': status.get('loop_status'),
+            'intelligence': status.get('intelligence'),
         },
         'timeline': {
             'recent_incidents': (status.get('incidents') or {}).get('recent') or [],

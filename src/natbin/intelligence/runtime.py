@@ -12,7 +12,8 @@ from .coverage import coverage_bias
 from .drift import assess_drift, load_recent_signal_rows, update_drift_state
 from .learned_gate import feature_row_from_signal, predict_probability, stack_decision
 from .paths import drift_state_path, latest_eval_path, pack_path, retrain_trigger_path
-from .policy import resolve_scope_policy
+from .policy import build_portfolio_feedback, resolve_scope_policy
+from .retrain import orchestrate_retrain
 from .slot_profile import slot_stats_for_ts
 
 
@@ -75,7 +76,7 @@ def enrich_candidate(
     pack = load_intelligence_pack(repo_root=repo_root, scope_tag=scope.scope_tag, artifact_dir=artifact_dir)
     eval_payload: dict[str, Any] = {
         'kind': 'intelligence_eval',
-        'schema_version': 'phase1-intelligence-eval-v2',
+        'schema_version': 'phase1-intelligence-eval-v3',
         'evaluated_at_utc': _now_utc(),
         'scope_tag': scope.scope_tag,
         'asset': scope.asset,
@@ -162,7 +163,6 @@ def enrich_candidate(
         max_bonus=float(policy.get('stack_max_bonus') or getattr(int_cfg, 'stack_max_bonus', 0.05)),
         max_penalty=float(policy.get('stack_max_penalty') or getattr(int_cfg, 'stack_max_penalty', 0.05)),
     )
-    blended_quality = float(stack.get('blended_quality') or base_quality_f)
     quality_delta = float(stack.get('delta') or 0.0)
 
     drift_report = {
@@ -241,6 +241,32 @@ def enrich_candidate(
     intelligence_score -= float(drift_report.get('penalty') or 0.0)
     intelligence_score -= float(anti_penalty)
 
+    retrain_plan = orchestrate_retrain(
+        repo_root=repo_root,
+        scope_tag=scope.scope_tag,
+        artifact_dir=artifact_dir,
+        trigger_payload=retrain_payload,
+        drift_state=drift_state,
+        regime=drift_report.get('regime') or {},
+        coverage=cov,
+        learned_reliability=learned_reliability,
+        anti_overfit=anti,
+        policy=policy,
+        cooldown_hours=int(getattr(int_cfg, 'retrain_plan_cooldown_hours', 24)),
+        watch_reliability_below=float(getattr(int_cfg, 'retrain_watch_reliability_below', 0.55)),
+        queue_on_regime_block=bool(getattr(int_cfg, 'retrain_queue_on_regime_block', True)),
+        queue_on_anti_overfit_reject=bool(getattr(int_cfg, 'retrain_queue_on_anti_overfit_reject', True)),
+    )
+    portfolio_feedback = build_portfolio_feedback(
+        intelligence_score=float(intelligence_score),
+        coverage=cov,
+        regime=drift_report.get('regime') or {},
+        learned_reliability=learned_reliability,
+        retrain_plan=retrain_plan,
+        policy=policy,
+    )
+    portfolio_score = float(portfolio_feedback.get('portfolio_score') or intelligence_score)
+
     allow_trade = True
     block_reason = None
     if action in {'CALL', 'PUT'} and str(drift_report.get('level') or 'ok') == 'block' and bool(policy.get('drift_fail_closed', getattr(int_cfg, 'drift_fail_closed', False))):
@@ -280,10 +306,14 @@ def enrich_candidate(
         'regime': drift_report.get('regime') or {'level': 'ok', 'severity': 0.0, 'direction': 'flat'},
         'drift_state': drift_state,
         'anti_overfit': anti,
+        'anti_overfit_tuning': pack.get('anti_overfit_tuning'),
         'intelligence_score': float(intelligence_score),
+        'portfolio_score': float(portfolio_score),
+        'portfolio_feedback': portfolio_feedback,
         'allow_trade': bool(allow_trade),
         'block_reason': block_reason,
         'retrain_trigger': retrain_payload,
+        'retrain_orchestration': retrain_plan,
     }
 
     eval_payload.update(intelligence)
@@ -292,6 +322,7 @@ def enrich_candidate(
 
     raw['intelligence'] = intelligence
     raw['intelligence_score'] = float(intelligence_score)
+    raw['portfolio_score'] = float(portfolio_score)
     raw['learned_gate_prob'] = None if learned_prob is None else float(learned_prob)
     raw['slot_multiplier'] = float(slot_multiplier)
     raw['drift_level'] = str(drift_report.get('level') or 'ok')
@@ -299,6 +330,8 @@ def enrich_candidate(
     raw['stack_decision'] = str(stack.get('decision') or 'neutral')
     raw['learned_reliability'] = learned_reliability
     raw['regime_level'] = str(((drift_report.get('regime') or {}).get('level')) or 'ok')
+    raw['retrain_state'] = str(retrain_plan.get('state') or 'idle')
+    raw['retrain_priority'] = str(retrain_plan.get('priority') or 'low')
 
     return replace(
         candidate,
@@ -313,5 +346,9 @@ def enrich_candidate(
         coverage_bias=float(cov.get('bias') or 0.0),
         stack_decision=str(stack.get('decision') or 'neutral'),
         regime_level=str(((drift_report.get('regime') or {}).get('level')) or 'ok'),
+        portfolio_score=float(portfolio_score),
+        retrain_state=str(retrain_plan.get('state') or 'idle'),
+        retrain_priority=str(retrain_plan.get('priority') or 'low'),
         intelligence=intelligence,
+        portfolio_feedback=portfolio_feedback,
     )

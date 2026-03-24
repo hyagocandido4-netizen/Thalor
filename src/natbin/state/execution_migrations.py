@@ -3,6 +3,24 @@ from __future__ import annotations
 import sqlite3
 
 
+_ORDER_INTENT_ADDITIONAL_COLUMNS: dict[str, str] = {
+    'intelligence_score': 'REAL',
+    'retrain_state': 'TEXT',
+    'retrain_priority': 'TEXT',
+    'allocation_reason': 'TEXT',
+    'allocation_rank': 'INTEGER',
+    'portfolio_feedback_json': 'TEXT',
+}
+
+
+def _ensure_order_intents_columns(con: sqlite3.Connection) -> None:
+    info = con.execute('PRAGMA table_info(order_intents)').fetchall()
+    cols = {str(row[1]) for row in info}
+    for name, col_type in _ORDER_INTENT_ADDITIONAL_COLUMNS.items():
+        if name not in cols:
+            con.execute(f'ALTER TABLE order_intents ADD COLUMN {name} {col_type}')
+
+
 def ensure_execution_db(con: sqlite3.Connection) -> None:
     con.execute(
         """
@@ -41,10 +59,17 @@ def ensure_execution_db(con: sqlite3.Connection) -> None:
             allocation_batch_id TEXT,
             cluster_key TEXT,
             portfolio_score REAL,
+            intelligence_score REAL,
+            retrain_state TEXT,
+            retrain_priority TEXT,
+            allocation_reason TEXT,
+            allocation_rank INTEGER,
+            portfolio_feedback_json TEXT,
             UNIQUE(broker_name, account_mode, asset, interval_sec, day, signal_ts)
         )
         """
     )
+    _ensure_order_intents_columns(con)
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS order_submit_attempts (
@@ -117,11 +142,11 @@ def ensure_execution_db(con: sqlite3.Connection) -> None:
         )
         """
     )
-    con.execute("CREATE INDEX IF NOT EXISTS idx_order_intents_scope_state ON order_intents(scope_tag, intent_state)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_order_intents_asset_day ON order_intents(asset, interval_sec, day)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_order_intents_external_id ON order_intents(external_order_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_order_submit_attempts_intent ON order_submit_attempts(intent_id, attempt_no)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_broker_orders_intent ON broker_orders(intent_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_broker_orders_client_key ON broker_orders(client_order_key)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_order_events_intent ON order_events(intent_id, created_at_utc)")
+    con.execute('CREATE INDEX IF NOT EXISTS idx_order_intents_scope_state ON order_intents(scope_tag, intent_state)')
+    con.execute('CREATE INDEX IF NOT EXISTS idx_order_intents_asset_day ON order_intents(asset, interval_sec, day)')
+    con.execute('CREATE INDEX IF NOT EXISTS idx_order_intents_external_id ON order_intents(external_order_id)')
+    con.execute('CREATE INDEX IF NOT EXISTS idx_order_submit_attempts_intent ON order_submit_attempts(intent_id, attempt_no)')
+    con.execute('CREATE INDEX IF NOT EXISTS idx_broker_orders_intent ON broker_orders(intent_id)')
+    con.execute('CREATE INDEX IF NOT EXISTS idx_broker_orders_client_key ON broker_orders(client_order_key)')
+    con.execute('CREATE INDEX IF NOT EXISTS idx_order_events_intent ON order_events(intent_id, created_at_utc)')
     con.commit()

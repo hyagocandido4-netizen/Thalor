@@ -165,3 +165,6 @@ def test_fit_intelligence_pack_builds_pack(tmp_path: Path, monkeypatch) -> None:
     assert pack['scope_policy']['name'] == 'eurusd_scope'
     assert pack['scope_policy']['learned_weight'] == 0.72
     assert 'phase1' in pack['metadata']
+    assert pack['metadata']['phase1']['learned_calibration_enable'] is True
+    assert pack['metadata']['phase1']['coverage_max_bonus'] == 0.05
+    assert pack['metadata']['phase1']['retrain_queue_on_regime_block'] is True

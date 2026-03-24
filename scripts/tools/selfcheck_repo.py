@@ -257,6 +257,17 @@ def main() -> None:
         _fail(f"observe_signal_topk_perday import failed: {e}")
     _ok("observe_signal_topk_perday import ok")
 
+    # 2a) operational observers must not hardcode config.yaml anymore
+    for rel in [
+        Path("src/natbin/usecases/observe_signal_topk_perday.py"),
+        Path("src/natbin/usecases/observe_signal_latest.py"),
+    ]:
+        txt_obs = (root / rel).read_text(encoding="utf-8", errors="replace")
+        if 'Path("config.yaml")' in txt_obs or "Path('config.yaml')" in txt_obs:
+            _fail(f"{rel.as_posix()} still hardcodes config.yaml")
+        if 'yaml.safe_load(Path("config.yaml")' in txt_obs or "yaml.safe_load(Path('config.yaml')" in txt_obs:
+            _fail(f"{rel.as_posix()} still parses config.yaml directly")
+    _ok("operational observers resolve config via typed loader")
 
     # 2b) thin scheduler wrappers point to runtime_app control plane
     ps1_py = root / "scripts" / "scheduler" / "observe_loop_auto_py.ps1"

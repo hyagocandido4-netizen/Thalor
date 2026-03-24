@@ -30,7 +30,7 @@ Copy-Item .\config\broker_secrets.yaml.example .\config\broker_secrets.yaml
 $env:THALOR_SECRETS_FILE = (Resolve-Path .\config\broker_secrets.yaml)
 ```
 
-Sem isso, `runtime_app security` e `runtime_app release` vão acusar corretamente
+Sem isso, `runtime_app security`, `runtime_app release` e `runtime_app practice` vão acusar corretamente
 que faltam credenciais do broker.
 
 ### 1) Baseline
@@ -68,6 +68,7 @@ Rode:
 
 Esse estágio:
 - valida `security/health/release`
+- valida `practice` (`runtime_app practice`)
 - prepara dataset / market context
 - roda `precheck` com `--enforce-market-context`
 - executa `observe --once` no adapter live **em PRACTICE**
@@ -78,6 +79,26 @@ Esse estágio:
 Observação importante: se não surgir candidato naquele candle, o relatório vai
 mostrar que o ciclo rodou, mas pode não existir submit. Isso não é bug por si
 só.
+
+Dica READY-1:
+
+```powershell
+python scripts/tools/runtime_soak.py --repo-root . --config config/live_controlled_practice.yaml --max-cycles 3
+python -m natbin.runtime_app practice --repo-root . --config config/live_controlled_practice.yaml --json
+```
+
+O primeiro comando cria a evidência de soak por scope; o segundo consolida o gate
+operacional estrito para o stage `practice`.
+
+Se você quiser executar a **rodada operacional completa** em um único comando, use:
+
+```powershell
+python scripts/tools/controlled_practice_round.py --repo-root . --config config/live_controlled_practice.yaml --json
+```
+
+Esse runner decide se precisa renovar o soak, revalida o READY-1, roda o
+`controlled_live_validation` do stage `practice` e grava um resumo canônico em
+`runs/control/<scope_tag>/practice_round.json`.
 
 ### 3) REAL preflight sem submit
 

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from natbin.intelligence.drift import build_drift_baseline
 from natbin.intelligence.learned_gate import fit_learned_gate
-from natbin.intelligence.paths import latest_eval_path, pack_path
+from natbin.intelligence.paths import latest_eval_path, pack_path, retrain_plan_path, retrain_status_path
 from natbin.intelligence.runtime import enrich_candidate
 from natbin.portfolio.models import CandidateDecision, PortfolioScope
 from natbin.portfolio.paths import ScopeRuntimePaths
@@ -258,3 +258,43 @@ def test_enrich_candidate_applies_scope_policy(tmp_path: Path):
     out = enrich_candidate(repo_root=tmp_path, scope=scope, candidate=cand, runtime_paths=runtime_paths, cfg=_make_cfg(scope_policies=policies))
     assert out.intelligence['policy']['name'] == 'scope_exact'
     assert out.intelligence['policy']['learned_weight'] == 0.75
+
+
+
+def test_enrich_candidate_writes_portfolio_feedback_and_retrain_artifacts(tmp_path: Path):
+    scope = PortfolioScope(asset='EURUSD-OTC', interval_sec=300, timezone='UTC', scope_tag='EURUSD-OTC_300s')
+    runtime_paths = ScopeRuntimePaths(
+        signals_db_path=tmp_path / 'runs' / 'signals' / scope.scope_tag / 'live_signals.sqlite3',
+        state_db_path=tmp_path / 'runs' / 'state' / scope.scope_tag / 'live_topk_state.sqlite3',
+    )
+    _make_signals_db(
+        runtime_paths.signals_db_path,
+        [
+            {'ts': 1773136800 + i * 300, 'asset': scope.asset, 'interval_sec': scope.interval_sec, 'action': 'CALL', 'proba_up': 0.25, 'conf': 0.22, 'score': 0.10, 'ev': -0.12, 'payout': 0.8, 'reason': 'topk_emit', 'executed_today': 4}
+            for i in range(25)
+        ],
+    )
+    _write_pack(tmp_path, scope.scope_tag)
+    cand = CandidateDecision(
+        scope_tag=scope.scope_tag,
+        asset=scope.asset,
+        interval_sec=scope.interval_sec,
+        day='2026-03-10',
+        ts=1773136800,
+        action='CALL',
+        score=0.82,
+        conf=0.81,
+        ev=0.17,
+        reason='topk_emit',
+        blockers=None,
+        decision_path='runs/decisions/decision_latest_EURUSD-OTC_300s.json',
+        raw={'ts': 1773136800, 'proba_up': 0.78, 'payout': 0.8, 'executed_today': 4},
+    )
+    out = enrich_candidate(repo_root=tmp_path, scope=scope, candidate=cand, runtime_paths=runtime_paths, cfg=_make_cfg())
+    assert out.portfolio_score is not None
+    assert out.portfolio_feedback['portfolio_score'] == out.portfolio_score
+    plan = json.loads(retrain_plan_path(repo_root=tmp_path, scope_tag=scope.scope_tag, artifact_dir='runs/intelligence').read_text(encoding='utf-8'))
+    status = json.loads(retrain_status_path(repo_root=tmp_path, scope_tag=scope.scope_tag, artifact_dir='runs/intelligence').read_text(encoding='utf-8'))
+    assert plan['state'] in {'queued', 'watch', 'cooldown'}
+    assert status['kind'] == 'retrain_status'
+    assert out.retrain_state == plan['state']

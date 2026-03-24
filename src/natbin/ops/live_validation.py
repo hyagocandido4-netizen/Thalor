@@ -209,6 +209,11 @@ def build_validation_plan(
         specs = [
             *common_specs,
             ValidationSpec(
+                "runtime_practice_readiness",
+                _rt_cmd("practice", repo_root=root_str, config=cfg),
+                note="Controlled practice readiness gate",
+            ),
+            ValidationSpec(
                 "alerts_test",
                 _rt_cmd(
                     "alerts",

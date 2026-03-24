@@ -88,6 +88,12 @@ class OrderIntent:
     allocation_batch_id: str | None = None
     cluster_key: str | None = None
     portfolio_score: float | None = None
+    intelligence_score: float | None = None
+    retrain_state: str | None = None
+    retrain_priority: str | None = None
+    allocation_reason: str | None = None
+    allocation_rank: int | None = None
+    portfolio_feedback_json: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -47,21 +47,31 @@ class CandidateDecision:
     coverage_bias: float | None = None
     stack_decision: str | None = None
     regime_level: str | None = None
+    portfolio_score: float | None = None
+    retrain_state: str | None = None
+    retrain_priority: str | None = None
     intelligence: dict[str, Any] = field(default_factory=dict)
+    portfolio_feedback: dict[str, Any] = field(default_factory=dict)
 
     def rank_value(self, *, weight: float = 1.0, prefer_ev: bool = True) -> float:
         """Rank value used by the portfolio allocator.
 
         Priority:
-        1) intelligence_score (when available)
-        2) ev (expected value) when present and prefer_ev=True
-        3) score
-        4) conf
+        1) portfolio_score (when available)
+        2) intelligence_score (when available)
+        3) ev (expected value) when present and prefer_ev=True
+        4) score
+        5) conf
 
         The returned value is multiplied by the provided weight.
         """
         base = 0.0
-        if self.intelligence_score is not None:
+        if self.portfolio_score is not None:
+            try:
+                base = float(self.portfolio_score)
+            except Exception:
+                base = 0.0
+        elif self.intelligence_score is not None:
             try:
                 base = float(self.intelligence_score)
             except Exception:
@@ -173,10 +183,14 @@ class AllocationItem:
     coverage_bias: float | None = None
     stack_decision: str | None = None
     regime_level: str | None = None
+    portfolio_score: float | None = None
+    retrain_state: str | None = None
+    retrain_priority: str | None = None
     rank: int | None = None
     cluster_key: str | None = None
     risk_context: dict[str, Any] | None = None
     intelligence: dict[str, Any] | None = None
+    portfolio_feedback: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

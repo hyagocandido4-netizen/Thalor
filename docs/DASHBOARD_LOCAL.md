@@ -7,6 +7,7 @@ Este pacote adiciona um **dashboard local, read-only**, para acompanhar em tempo
 - Últimas decisões por `scope_tag`
 - Feed dos eventos de execução (`runs/logs/execution_events.jsonl`) quando existir
 - Painel de inteligência M5 (`pack.json`, `latest_eval.json`, `retrain_trigger.json`) por `scope_tag`
+- Resumo portfolio-level da surface operacional da inteligência (`portfolio status -> intelligence`)
 
 A implementação é feita em **Streamlit** (web local).
 
@@ -50,6 +51,7 @@ Arquivos adicionados:
 - `src/natbin/dashboard/__main__.py` → launcher (`python -m natbin.dashboard`)
 - `src/natbin/dashboard/app.py` → app Streamlit
   - inclui a coluna **Intelligence (M5)** no detalhe do scope
+  - inclui o quadro **Portfolio intelligence ops** no resumo multi-asset
 - `scripts/tools/run_dashboard.ps1` → helper opcional no Windows
 - `tests/test_dashboard_importable.py` → garante que o módulo não quebra CI sem Streamlit
 
@@ -62,3 +64,7 @@ O dashboard local agora também mostra um painel **Security (M6)** com:
 - origem atual das credenciais (`credential_source`)
 - checks individuais
 - estado persistido do broker guard
+
+## INT-OPS-1
+
+O dashboard agora cruza a visão per-scope (`latest_eval`, `retrain_plan`, `retrain_status`) com o rollup de operações da inteligência. Isso facilita ver, em um único lugar, se um scope foi selecionado pelo allocator, se há feedback bloqueando trade, se existe retrain pendente e se a execution ledger preservou `allocation_batch_id`, `portfolio_score` e metadados de retrain.

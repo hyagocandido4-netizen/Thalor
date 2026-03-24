@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ..config.compat_helpers import portable_path_str
 from ..config.loader import load_thalor_config
 from ..config.paths import resolve_config_path, resolve_repo_root
 from ..portfolio.models import PortfolioScope
@@ -15,10 +16,18 @@ from ..portfolio.paths import resolve_scope_data_paths, resolve_scope_runtime_pa
 from .anti_overfit import build_anti_overfit_report, load_json as load_summary_json
 from .coverage import build_coverage_profile
 from .drift import build_drift_baseline
-from .learned_gate import build_training_rows, fit_learned_gate
-from .paths import pack_path
+from .learned_gate import fit_learned_gate
+from .recovery import (
+    recover_training_rows,
+    synthesize_multiwindow_summary_from_daily_hourly_summaries,
+    synthesize_multiwindow_summary_from_daily_summaries,
+    synthesize_multiwindow_summary_from_signal_rows,
+    synthesize_multiwindow_summary_from_training_rows,
+)
+from .paths import anti_overfit_data_summary_path, anti_overfit_summary_path, anti_overfit_tuning_path, pack_path
 from .policy import resolve_scope_policy
 from .slot_profile import build_slot_profile
+from .tuning import tune_anti_overfit
 
 
 def _find_default_multiwindow_summary(repo_root: Path, cfg: Any) -> Path | None:
@@ -116,18 +125,21 @@ def fit_intelligence_pack(
 
     scope = PortfolioScope(asset=str(chosen.asset), interval_sec=int(chosen.interval_sec), timezone=str(getattr(chosen, 'timezone', 'UTC')), scope_tag=scope_tag)
 
-    training_rows = build_training_rows(
-        signals_db_path=signals_path,
+    min_rows = int(getattr(int_cfg, 'learned_gating_min_rows', 50))
+    training_rows, training_meta = recover_training_rows(
+        repo_root=root,
+        scope_tag=scope_tag,
         dataset_path=ds_path,
         asset=str(chosen.asset),
         interval_sec=int(chosen.interval_sec),
         timezone_name=str(getattr(chosen, 'timezone', 'UTC')),
         slot_profile=slot_profile,
-        limit=None,
+        explicit_signals_db_path=signals_path,
+        min_rows=min_rows,
     )
     learned_gate = None
     if bool(getattr(int_cfg, 'learned_gating_enable', True)):
-        learned_gate = fit_learned_gate(training_rows, min_rows=int(getattr(int_cfg, 'learned_gating_min_rows', 50)))
+        learned_gate = fit_learned_gate(training_rows, min_rows=min_rows)
     scope_policy = resolve_scope_policy(int_cfg, scope)
 
     drift_rows = [
@@ -141,12 +153,90 @@ def fit_intelligence_pack(
     drift_baseline = build_drift_baseline(drift_rows)
 
     summary_path = Path(multiwindow_summary_path) if multiwindow_summary_path is not None else _find_default_multiwindow_summary(root, cfg)
+    if summary_path is not None and not summary_path.is_absolute():
+        summary_path = root / summary_path
     anti_payload = load_summary_json(summary_path) if summary_path is not None else None
+    anti_source = 'multiwindow_summary' if anti_payload is not None else 'missing'
+    anti_materialized_path: Path | None = None
+    anti_data_materialized_path: Path | None = None
+    has_per_window = bool((anti_payload.get('per_window') if isinstance(anti_payload, dict) else None) or ((anti_payload.get('best') or {}).get('per_window') if isinstance(anti_payload, dict) else None))
+    if not has_per_window:
+        synthetic = synthesize_multiwindow_summary_from_daily_hourly_summaries(
+            summaries,
+            min_windows=int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
+            min_trades_window=1,
+        )
+        if synthetic is not None:
+            anti_payload = synthetic
+            anti_source = 'daily_hourly_summary_fallback'
+            has_per_window = True
+    if not has_per_window:
+        synthetic = synthesize_multiwindow_summary_from_daily_summaries(summaries)
+        if synthetic is not None:
+            anti_payload = synthetic
+            anti_source = 'daily_summary_fallback'
+            has_per_window = True
+    if not has_per_window:
+        synthetic = synthesize_multiwindow_summary_from_signal_rows(
+            training_rows,
+            timezone_name=str(getattr(chosen, 'timezone', 'UTC')),
+            min_windows=int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
+            min_trades_window=1,
+        )
+        if synthetic is not None:
+            anti_payload = synthetic
+            anti_source = 'signals_eval_fallback'
+            has_per_window = True
+    if not has_per_window:
+        synthetic = synthesize_multiwindow_summary_from_training_rows(
+            training_rows,
+            timezone_name=str(getattr(chosen, 'timezone', 'UTC')),
+            min_windows=int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
+        )
+        if synthetic is not None:
+            anti_payload = synthetic
+            anti_source = 'training_rows_fallback'
+            has_per_window = True
+    if has_per_window and anti_source != 'multiwindow_summary':
+        anti_materialized_path = anti_overfit_summary_path(
+            repo_root=root,
+            scope_tag=scope_tag,
+            artifact_dir=getattr(int_cfg, 'artifact_dir', 'runs/intelligence'),
+        )
+        anti_materialized_path.write_text(json.dumps(anti_payload, indent=2, ensure_ascii=False), encoding='utf-8')
+        if anti_source in {'daily_hourly_summary_fallback', 'daily_summary_fallback', 'signals_eval_fallback'}:
+            anti_data_materialized_path = anti_overfit_data_summary_path(
+                repo_root=root,
+                scope_tag=scope_tag,
+                artifact_dir=getattr(int_cfg, 'artifact_dir', 'runs/intelligence'),
+            )
+            anti_data_materialized_path.write_text(json.dumps(anti_payload, indent=2, ensure_ascii=False), encoding='utf-8')
     anti_overfit = build_anti_overfit_report(
         anti_payload,
         min_robustness=float(getattr(int_cfg, 'anti_overfit_min_robustness', 0.50)),
         min_windows=int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
         gap_penalty_weight=float(getattr(int_cfg, 'anti_overfit_gap_penalty_weight', 0.10)),
+    )
+    anti_tuning_path = anti_overfit_tuning_path(
+        repo_root=root,
+        scope_tag=scope_tag,
+        artifact_dir=getattr(int_cfg, 'artifact_dir', 'runs/intelligence'),
+    )
+    anti_tuning, anti_overfit = tune_anti_overfit(
+        summary_payload=anti_payload,
+        summary_source_kind=anti_source,
+        training_rows=training_rows,
+        timezone_name=str(getattr(chosen, 'timezone', 'UTC')),
+        base_min_robustness=float(getattr(int_cfg, 'anti_overfit_min_robustness', 0.50)),
+        base_min_windows=int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
+        base_gap_penalty_weight=float(getattr(int_cfg, 'anti_overfit_gap_penalty_weight', 0.10)),
+        tuning_enable=bool(getattr(int_cfg, 'anti_overfit_tuning_enable', True)),
+        min_robustness_floor=float(getattr(int_cfg, 'anti_overfit_tuning_min_robustness_floor', 0.45)),
+        window_flex=int(getattr(int_cfg, 'anti_overfit_tuning_window_flex', 1)),
+        gap_penalty_flex=float(getattr(int_cfg, 'anti_overfit_tuning_gap_penalty_flex', 0.03)),
+        recent_rows_min=int(getattr(int_cfg, 'anti_overfit_tuning_recent_rows_min', 48)),
+        objective_min_delta=float(getattr(int_cfg, 'anti_overfit_tuning_objective_min_delta', 0.015)),
+        out_path=anti_tuning_path,
     )
 
     pack = {
@@ -165,13 +255,40 @@ def fit_intelligence_pack(
         'scope_policy': scope_policy,
         'drift_baseline': drift_baseline,
         'anti_overfit': anti_overfit,
+        'anti_overfit_tuning': anti_tuning,
         'metadata': {
             'repo_root': str(root),
             'config_path': str(cfg_path),
-            'signals_db_path': str(signals_path),
-            'dataset_path': str(ds_path),
-            'multiwindow_summary_path': str(summary_path) if summary_path is not None else None,
+            'signals_db_path': portable_path_str(signals_path),
+            'dataset_path': portable_path_str(ds_path),
+            'multiwindow_summary_path': portable_path_str(summary_path) if summary_path is not None else None,
             'training_rows': int(len(training_rows)),
+            'training_strategy': str(training_meta.get('training_strategy') or 'explicit_trades'),
+            'training_sources': list(training_meta.get('training_sources') or []),
+            'explicit_trade_rows': int(training_meta.get('explicit_trade_rows') or 0),
+            'inferred_hold_rows': int(training_meta.get('inferred_hold_rows') or 0),
+            'discovered_signal_db_paths': list(training_meta.get('discovered_signal_db_paths') or []),
+            'anti_overfit_source': {
+                'kind': anti_source,
+                'summary_path': portable_path_str(summary_path) if summary_path is not None else None,
+                'materialized_path': portable_path_str(anti_materialized_path) if anti_materialized_path is not None else None,
+                'data_materialized_path': portable_path_str(anti_data_materialized_path) if anti_data_materialized_path is not None else None,
+                'synthetic': anti_source in {'daily_hourly_summary_fallback', 'daily_summary_fallback', 'signals_eval_fallback', 'training_rows_fallback'},
+                'window_strategy': anti_payload.get('window_strategy') if isinstance(anti_payload, dict) else None,
+                'window_count': int(len((anti_payload.get('per_window') or []))) if isinstance(anti_payload, dict) else 0,
+                'selected_variant': anti_tuning.get('selected_variant'),
+                'selected_source_kind': (anti_tuning.get('selected') or {}).get('source_kind'),
+                'tuning_artifact_path': portable_path_str(anti_tuning_path),
+                'tuned': bool(anti_tuning.get('improved')),
+            },
+            'anti_overfit_tuning': {
+                'enabled': bool(anti_tuning.get('enabled', False)),
+                'selected_variant': anti_tuning.get('selected_variant'),
+                'baseline_variant': anti_tuning.get('baseline_variant'),
+                'selection_reason': anti_tuning.get('selection_reason'),
+                'improved': bool(anti_tuning.get('improved', False)),
+                'artifact_path': portable_path_str(anti_tuning_path),
+            },
             'components': {
                 'slot_aware_enable': bool(getattr(int_cfg, 'slot_aware_enable', True)),
                 'learned_gating_enable': bool(getattr(int_cfg, 'learned_gating_enable', True)),
@@ -186,13 +303,30 @@ def fit_intelligence_pack(
                 'learned_promote_above': float(getattr(int_cfg, 'learned_promote_above', 0.62)),
                 'learned_suppress_below': float(getattr(int_cfg, 'learned_suppress_below', 0.42)),
                 'learned_abstain_band': float(getattr(int_cfg, 'learned_abstain_band', 0.03)),
+                'learned_fail_closed': bool(getattr(int_cfg, 'learned_fail_closed', False)),
+                'learned_calibration_enable': bool(getattr(int_cfg, 'learned_calibration_enable', True)),
                 'learned_min_reliability': float(getattr(int_cfg, 'learned_min_reliability', 0.50)),
+                'learned_neutralize_low_reliability': bool(getattr(int_cfg, 'learned_neutralize_low_reliability', True)),
                 'stack_max_bonus': float(getattr(int_cfg, 'stack_max_bonus', 0.05)),
                 'stack_max_penalty': float(getattr(int_cfg, 'stack_max_penalty', 0.05)),
+                'portfolio_weight': float(getattr(int_cfg, 'portfolio_weight', 1.0)),
+                'allocator_block_regime': bool(getattr(int_cfg, 'allocator_block_regime', True)),
+                'allocator_warn_penalty': float(getattr(int_cfg, 'allocator_warn_penalty', 0.04)),
+                'allocator_block_penalty': float(getattr(int_cfg, 'allocator_block_penalty', 0.12)),
+                'allocator_under_target_bonus': float(getattr(int_cfg, 'allocator_under_target_bonus', 0.03)),
+                'allocator_over_target_penalty': float(getattr(int_cfg, 'allocator_over_target_penalty', 0.04)),
+                'allocator_retrain_penalty': float(getattr(int_cfg, 'allocator_retrain_penalty', 0.05)),
+                'allocator_reliability_penalty': float(getattr(int_cfg, 'allocator_reliability_penalty', 0.03)),
                 'coverage_curve_power': float(getattr(int_cfg, 'coverage_curve_power', 1.20)),
+                'coverage_max_bonus': float(getattr(int_cfg, 'coverage_max_bonus', 0.05)),
+                'coverage_max_penalty': float(getattr(int_cfg, 'coverage_max_penalty', 0.05)),
                 'anti_overfit_min_windows': int(getattr(int_cfg, 'anti_overfit_min_windows', 3)),
                 'anti_overfit_gap_penalty_weight': float(getattr(int_cfg, 'anti_overfit_gap_penalty_weight', 0.10)),
                 'retrain_cooldown_hours': int(getattr(int_cfg, 'retrain_cooldown_hours', 12)),
+                'retrain_plan_cooldown_hours': int(getattr(int_cfg, 'retrain_plan_cooldown_hours', 24)),
+                'retrain_watch_reliability_below': float(getattr(int_cfg, 'retrain_watch_reliability_below', 0.55)),
+                'retrain_queue_on_regime_block': bool(getattr(int_cfg, 'retrain_queue_on_regime_block', True)),
+                'retrain_queue_on_anti_overfit_reject': bool(getattr(int_cfg, 'retrain_queue_on_anti_overfit_reject', True)),
             },
         },
     }
@@ -233,15 +367,22 @@ def main(argv: list[str] | None = None) -> int:
         multiwindow_summary_path=ns.multiwindow_summary_path,
         out_path=ns.out_path,
     )
+    meta = dict(pack.get('metadata') or {})
     payload = {
         'ok': True,
         'out_path': str(out),
         'scope_tag': pack.get('scope_tag'),
         'asset': pack.get('asset'),
         'interval_sec': pack.get('interval_sec'),
-        'training_rows': ((pack.get('metadata') or {}).get('training_rows')),
+        'training_rows': meta.get('training_rows'),
+        'training_strategy': meta.get('training_strategy'),
+        'training_sources': meta.get('training_sources'),
+        'explicit_trade_rows': meta.get('explicit_trade_rows'),
+        'inferred_hold_rows': meta.get('inferred_hold_rows'),
         'learned_gate_available': bool(pack.get('learned_gate')),
         'anti_overfit': pack.get('anti_overfit'),
+        'anti_overfit_source': meta.get('anti_overfit_source'),
+        'anti_overfit_tuning': meta.get('anti_overfit_tuning'),
     }
     if ns.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))

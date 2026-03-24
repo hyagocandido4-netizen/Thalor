@@ -45,6 +45,8 @@ Copy-Item .\config\broker_secrets.yaml.example .\config\broker_secrets.yaml
 
 O runtime agora prefere `config/base.yaml` como configuração moderna do repo e,
 se ele não existir, cai automaticamente para o legado `config.yaml`.
+O observer legado passou a resolver a mesma config tipada; `config.yaml` só é
+usado quando ele é o caminho selecionado ou quando `config/base.yaml` não existe.
 
 Defaults principais do escopo:
 
@@ -97,10 +99,13 @@ Artefatos por scope:
 - `runs/intelligence/<scope_tag>/latest_eval.json`
 - `runs/intelligence/<scope_tag>/drift_state.json`
 - `runs/intelligence/<scope_tag>/retrain_trigger.json` (quando houver trigger)
+- `runs/intelligence/<scope_tag>/retrain_plan.json`
+- `runs/intelligence/<scope_tag>/retrain_status.json`
 
-O dashboard local mostra um painel **Intelligence (M5)** com esses artefatos.
+A priorização do allocator agora usa `portfolio_score` quando disponível e o
+painel local de inteligência passou a mostrar o estado de retrain/feedback do H12.
 
-Docs: `docs/INTELLIGENCE_M5.md`
+Docs: `docs/INTELLIGENCE_M5.md`, `docs/PHASE1_INTELLIGENCE_H11.md`, `docs/PHASE1_INTELLIGENCE_H12.md`
 
 ## Security hardening (Package M6)
 
@@ -119,9 +124,72 @@ Fluxo recomendado para live controlado:
 
 O dashboard local agora mostra um painel **Security (M6)** e os dumps de config
 efetiva / artefatos de control plane passam a ser redigidos antes de serem
-compartilhados.
+compartilhados. No INT-OPS-1, o portfolio status e o dashboard também passam a
+exibir a superfície operacional da inteligência (`runtime_app intelligence`,
+`runs/control/<scope>/intelligence.json` e o rollup multi-asset).
 
 Docs: `docs/SECURITY_HARDENING_M6.md`
+
+## Canonical state sync (SYNC-1)
+
+O repo agora tem um comando explícito para congelar e comparar o estado real do
+workspace local contra um baseline canônico. No hotfix SYNC-1A esse comando
+passa a ter um entrypoint leve e roda mesmo antes do ambiente Python completo
+estar instalado:
+
+```powershell
+python -m natbin.runtime_app sync --repo-root . --json
+```
+
+Regenerar os manifests canônicos quando um novo estado local for aceito:
+
+```powershell
+python -m natbin.runtime_app sync --repo-root . --freeze-docs --json
+```
+
+Esse fluxo grava:
+
+- `runs/control/_repo/sync.json`
+- `docs/canonical_state/published_main_baseline.json`
+- `docs/canonical_state/workspace_manifest.json`
+
+Docs: `docs/SYNC1_CANONICAL_STATE.md`, `docs/V2_PRODUCTION_NEXT_PACKAGES.md`
+
+## Controlled practice readiness (READY-1)
+
+O runtime agora tem um gate específico para o primeiro estágio live-controlado em
+conta `PRACTICE`:
+
+```powershell
+python -m natbin.runtime_app practice --repo-root . --config config/live_controlled_practice.yaml --json
+```
+
+Esse comando consolida `doctor + intelligence + gates + soak recente` e grava
+`runs/control/<scope_tag>/practice.json`. O dashboard local também passou a
+mostrar um card **Practice (READY-1)**.
+
+Docs: `docs/READY1_CONTROLLED_PRACTICE_READINESS.md`
+
+## Controlled practice round (PRACTICE-OPS-1)
+
+O próximo passo depois do READY-1 agora tem um runner canônico que compõe:
+
+- validação READY-1
+- soak automático quando necessário
+- `controlled_live_validation --stage practice`
+- report consolidado por scope em `runs/control/<scope_tag>/practice_round.json`
+
+```powershell
+python -m natbin.runtime_app practice-round --repo-root . --config config/live_controlled_practice.yaml --json
+```
+
+Wrapper direto:
+
+```powershell
+python scripts/tools/controlled_practice_round.py --repo-root . --config config/live_controlled_practice.yaml --json
+```
+
+Docs: `docs/PRACTICE_OPS_1_CONTROLLED_ROUND.md`
 
 ## Comandos principais
 
@@ -136,8 +204,13 @@ python -m natbin.runtime_app quota --repo-root . --json
 python -m natbin.runtime_app precheck --repo-root . --json
 python -m natbin.runtime_app health --repo-root . --json
 python -m natbin.runtime_app security --repo-root . --json
+python -m natbin.runtime_app sync --repo-root . --json
+python -m natbin.runtime_app intelligence --repo-root . --json
+python -m natbin.runtime_app practice --repo-root . --config config/live_controlled_practice.yaml --json
+python -m natbin.runtime_app practice-round --repo-root . --config config/live_controlled_practice.yaml --json
 python -m natbin.runtime_app incidents status --repo-root . --json
 python -m natbin.runtime_app incidents drill --repo-root . --scenario broker_down --json
+python -m natbin.runtime_app portfolio status --repo-root . --json
 ```
 
 Rodar **um ciclo**:

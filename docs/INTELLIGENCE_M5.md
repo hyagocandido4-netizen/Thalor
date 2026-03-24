@@ -79,6 +79,8 @@ Por scope:
 - `runs/intelligence/<scope_tag>/latest_eval.json`
 - `runs/intelligence/<scope_tag>/drift_state.json`
 - `runs/intelligence/<scope_tag>/retrain_trigger.json` (opcional)
+- `runs/intelligence/<scope_tag>/retrain_plan.json`
+- `runs/intelligence/<scope_tag>/retrain_status.json`
 
 ## Integração com o runtime
 
@@ -90,9 +92,10 @@ O enrichment do M5 acontece no `portfolio.runner`:
 4. escreve `latest_eval.json`
 5. devolve um `CandidateDecision` enriquecido
 
-O `CandidateDecision.rank_value()` agora prioriza `intelligence_score` quando ele
-está disponível. Assim o allocator continua simples, mas passa a operar sobre
-um score já ajustado pelo layer de inteligência.
+O `CandidateDecision.rank_value()` agora prioriza `portfolio_score` quando ele
+está disponível e cai para `intelligence_score` como fallback. Assim o allocator
+continua simples, mas passa a operar sobre um score já ajustado pelo layer de
+inteligência e pelo feedback de cobertura/regime do H12.
 
 ## Build do pack
 
@@ -112,11 +115,13 @@ Parâmetros úteis:
 
 ## Dashboard
 
-O dashboard local passa a exibir um painel `Intelligence (M5)` com:
+O dashboard local passa a exibir um painel `Intelligence (M5 / H12)` com:
 
 - resumo do `latest_eval.json`
 - metadados do `pack.json`
 - `retrain_trigger.json` quando presente
+- `retrain_plan.json` + `retrain_status.json` quando presentes
+- `portfolio_score` / `portfolio_feedback` do último eval
 
 ## Testes e smoke
 
@@ -126,3 +131,21 @@ O dashboard local passa a exibir um painel `Intelligence (M5)` com:
 - `tests/test_intelligence_runtime.py`
 - `tests/test_intelligence_fit.py`
 - `scripts/tools/intelligence_pack_smoke.py`
+
+## Extensões posteriores
+
+- `docs/PHASE1_INTELLIGENCE_H11.md` — calibração/stacking e scope policies
+- `docs/PHASE1_INTELLIGENCE_H12.md` — retrain orchestration + allocator feedback + portfolio score
+
+## INT-OPS-1 — integração operacional
+
+O INT-OPS-1 fecha a superfície operacional da inteligência:
+
+- novo comando `python -m natbin.runtime_app intelligence --repo-root . --json`
+- novo artifact `runs/control/<scope>/intelligence.json`
+- `runtime_app status` passa a incluir a surface por scope
+- `runtime_app portfolio status` agrega um rollup portfolio-level com severidade, seleção, feedback e traceabilidade
+- `release_readiness`, `production_doctor` e `incident_status` consomem essa surface
+- a execution ledger (`order_intents`) agora preserva `intelligence_score`, `retrain_state`, `retrain_priority`, `allocation_reason`, `allocation_rank` e `portfolio_feedback_json`
+
+Com isso, a trilha fica fechada de `latest_eval` → `portfolio allocation` → `OrderIntent` → dashboards / doctor / incident report.

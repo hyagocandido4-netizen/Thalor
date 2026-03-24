@@ -1,0 +1,27 @@
+{
+  "kind": "published_main_baseline",
+  "schema_version": 1,
+  "generated_at_utc": "2026-03-24T14:56:41+00:00",
+  "origin_url": "https://github.com/hyagocandido4-netizen/Thalor.git",
+  "published_ref_source": "origin/main",
+  "published_ref": {
+    "sha": "e6e97fed83690448ec882d275ff553a9b88ed7e3",
+    "short_sha": "e6e97fe",
+    "subject": "feat: phase 1 intelligence H10 and H11",
+    "committed_at_utc": "2026-03-19T17:23:18-03:00",
+    "rev": "origin/main"
+  },
+  "head_at_freeze": {
+    "sha": "e6e97fed83690448ec882d275ff553a9b88ed7e3",
+    "short_sha": "e6e97fe",
+    "subject": "feat: phase 1 intelligence H10 and H11",
+    "committed_at_utc": "2026-03-19T17:23:18-03:00",
+    "rev": "HEAD"
+  },
+  "head_matches_published_ref": true,
+  "notes": [
+    "published_main_baseline captures the last commit already visible on public main for this workspace.",
+    "workspace_manifest captures the local working-tree delta beyond that published ref.",
+    "sync metadata files under docs/canonical_state/ are excluded from drift comparison."
+  ]
+}

@@ -35,6 +35,7 @@ def test_build_practice_plan_parses_scope_from_config(tmp_path: Path) -> None:
     names = [spec.name for spec in plan.specs]
     assert plan.asset == "EURUSD-OTC"
     assert plan.interval_sec == 300
+    assert "runtime_practice_readiness" in names
     assert "observe_once_practice_live" in names
     assert plan.dangerous_stage is False
 

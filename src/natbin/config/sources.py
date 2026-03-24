@@ -114,6 +114,24 @@ def legacy_yaml_to_model_dict(raw: dict[str, Any]) -> dict[str, Any]:
         dec["gate_mode"] = gm
     if best.get("meta_model") is not None:
         dec["meta_model"] = str(best.get("meta_model"))
+    if best.get("cp_alpha") is not None:
+        dec["cp_alpha"] = float(best.get("cp_alpha"))
+
+    cpreg: dict[str, Any] = {}
+    if best.get("cpreg_enable") is not None:
+        cpreg["enabled"] = bool(best.get("cpreg_enable"))
+    if best.get("cpreg_alpha_start") is not None:
+        cpreg["alpha_start"] = float(best.get("cpreg_alpha_start"))
+    if best.get("cpreg_alpha_end") is not None:
+        cpreg["alpha_end"] = float(best.get("cpreg_alpha_end"))
+    if best.get("cpreg_warmup_frac") is not None:
+        cpreg["warmup_frac"] = float(best.get("cpreg_warmup_frac"))
+    if best.get("cpreg_ramp_end_frac") is not None:
+        cpreg["ramp_end_frac"] = float(best.get("cpreg_ramp_end_frac"))
+    if best.get("cpreg_slot2_mult") is not None:
+        cpreg["slot2_mult"] = float(best.get("cpreg_slot2_mult"))
+    if cpreg:
+        dec["cpreg"] = cpreg
 
     # Optional tuning pointer / bounds (used by the legacy observer runtime).
     if best.get("tune_dir") is not None:
