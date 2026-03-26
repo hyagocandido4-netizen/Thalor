@@ -10,6 +10,7 @@ from ..runtime.execution_policy import utc_now_iso
 from ..runtime.quota import compute_quota_day_context
 from ..state.execution_repo import ExecutionRepository
 
+from .correlation import resolve_correlation_group
 from .models import AssetQuota, PortfolioQuota, PortfolioScope
 
 
@@ -43,8 +44,15 @@ def compute_asset_quotas(
     for scope in scopes:
         day = _resolve_day(tz_name=scope.timezone, now_utc=now_utc)
 
-        # Per-scope overrides fallback to global config.
+        # Per-scope overrides fallback to multi-asset defaults and then global config.
         max_trades = scope.hard_max_trades_per_day
+        if max_trades is None:
+            try:
+                default_trades = getattr(cfg.multi_asset, 'asset_quota_default_trades_per_day', None)
+                if default_trades is not None:
+                    max_trades = int(default_trades)
+            except Exception:
+                max_trades = None
         if max_trades is None:
             try:
                 max_trades = int(cfg.quota.hard_max_trades_per_day)
@@ -54,11 +62,25 @@ def compute_asset_quotas(
         max_open = scope.max_open_positions
         if max_open is None:
             try:
+                default_open = getattr(cfg.multi_asset, 'asset_quota_default_max_open_positions', None)
+                if default_open is not None:
+                    max_open = int(default_open)
+            except Exception:
+                max_open = None
+        if max_open is None:
+            try:
                 max_open = int(cfg.execution.limits.max_open_positions)
             except Exception:
                 max_open = 1
 
         max_pending = scope.max_pending_unknown
+        if max_pending is None:
+            try:
+                default_pending = getattr(cfg.multi_asset, 'asset_quota_default_max_pending_unknown', None)
+                if default_pending is not None:
+                    max_pending = int(default_pending)
+            except Exception:
+                max_pending = None
         if max_pending is None:
             try:
                 max_pending = int(cfg.execution.limits.max_pending_unknown)
@@ -92,6 +114,7 @@ def compute_asset_quotas(
             kind = 'max_trades_reached'
             reason = f'executed_today>={max_trades}'
 
+        correlation_group = resolve_correlation_group(str(scope.asset), str(scope.cluster_key or 'default'))
         out.append(
             AssetQuota(
                 scope_tag=scope.scope_tag,
@@ -107,7 +130,8 @@ def compute_asset_quotas(
                 max_pending_unknown=int(max_pending),
                 open_positions=int(open_positions),
                 max_open_positions=int(max_open),
-                cluster_key=str(scope.cluster_key or 'default'),
+                cluster_key=str(correlation_group),
+                correlation_group=str(correlation_group),
             )
         )
 
@@ -163,7 +187,7 @@ def compute_portfolio_quota(
             open_scope = 0
 
         asset_key = str(scope.asset)
-        cluster_key = str(scope.cluster_key or 'default')
+        cluster_key = resolve_correlation_group(str(scope.asset), str(scope.cluster_key or 'default'))
         executed_by_asset[asset_key] += int(executed_scope)
         pending_by_asset[asset_key] += int(pending_scope)
         open_by_asset[asset_key] += int(open_scope)

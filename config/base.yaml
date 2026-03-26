@@ -68,6 +68,87 @@ observability:
   incidents_enable: true
   decision_snapshots_enable: true
 
+dashboard:
+  enabled: true
+  title: Thalor
+  theme: cyber_dragon
+  default_refresh_sec: 3.0
+  default_equity_start: 1000.0
+  max_alerts: 50
+  max_equity_points: 500
+  report:
+    output_dir: runs/reports/dashboard
+    export_json: true
+
+
+
+monte_carlo:
+  enabled: true
+  initial_capital_brl: 1000.0
+  horizon_days: 60
+  trials: 1000
+  rng_seed: 42
+  min_realized_trades: 20
+  max_stake_fraction_cap: 0.10
+  conservative:
+    label: Conservador
+    trade_count_scale: 0.85
+    return_scale: 0.90
+    stake_scale: 0.90
+  medium:
+    label: Médio
+    trade_count_scale: 1.00
+    return_scale: 1.00
+    stake_scale: 1.00
+  aggressive:
+    label: Agressivo
+    trade_count_scale: 1.15
+    return_scale: 1.10
+    stake_scale: 1.10
+  report:
+    output_dir: runs/reports/monte_carlo
+    export_json: true
+    export_html: true
+    export_pdf: true
+
+production:
+  enabled: false
+  profile: local
+  backup:
+    enabled: true
+    output_dir: runs/backups
+    archive_prefix: thalor_backup
+    format: tar.gz
+    interval_minutes: 60
+    retention_days: 14
+    max_archives: 48
+    include_globs:
+      - runs/runtime_execution.sqlite3
+      - runs/runtime_control.sqlite3
+      - runs/control/**/*.json
+      - runs/logs/**/*.jsonl
+      - runs/logs/**/*.log
+      - runs/intelligence/**/*
+      - runs/reports/**/*
+      - data/**/*.sqlite3
+      - data/datasets/**/*
+    exclude_globs:
+      - "**/__pycache__/**"
+      - "**/*.tmp"
+      - "**/*.swp"
+      - "**/*.sqlite3-shm"
+      - "**/*.sqlite3-wal"
+    latest_manifest_path: runs/backups/latest.json
+  healthcheck:
+    enabled: true
+    require_loop_status: false
+    max_loop_status_age_sec: 1800
+    check_kill_switch: true
+    check_drain_mode: false
+    require_execution_repo: false
+    scope_sample_limit: 6
+
+
 failsafe:
   global_fail_closed: true
   market_context_fail_closed: true
@@ -84,10 +165,15 @@ failsafe:
 multi_asset:
   enabled: false
   max_parallel_assets: 1
+  stagger_sec: 0.0
+  execution_stagger_sec: 0.0
   portfolio_topk_total: 3
   portfolio_hard_max_positions: 1
   portfolio_hard_max_trades_per_day: null
   portfolio_hard_max_pending_unknown_total: 1
+  asset_quota_default_trades_per_day: null
+  asset_quota_default_max_open_positions: null
+  asset_quota_default_max_pending_unknown: null
   portfolio_hard_max_positions_per_asset: 1
   portfolio_hard_max_positions_per_cluster: 1
   correlation_filter_enable: true
@@ -180,6 +266,43 @@ security:
     allowed_end_local: "23:59"
     blocked_weekdays_local: []
     state_path: runs/security/broker_guard_state.json
+  protection:
+    enabled: false
+    live_submit_only: true
+    state_path: runs/security/account_protection_state.json
+    decision_log_path: runs/logs/account_protection.jsonl
+    sessions:
+      enabled: true
+      inherit_guard_window: true
+      blocked_weekdays_local: []
+      windows: []
+    cadence:
+      enabled: true
+      apply_delay_before_submit: true
+      min_delay_sec: 0.5
+      max_delay_sec: 2.0
+      early_morning_extra_sec: 0.5
+      midday_extra_sec: 0.0
+      evening_extra_sec: 0.25
+      overnight_extra_sec: 0.75
+      volatility_extra_sec: 0.75
+      recent_submit_weight_sec: 0.2
+      jitter_max_sec: 0.5
+    pacing:
+      enabled: true
+      min_spacing_global_sec: 20
+      min_spacing_asset_sec: 45
+      max_submit_15m_global: 4
+      max_submit_15m_asset: 2
+      max_submit_60m_global: 8
+      max_submit_60m_asset: 4
+      max_submit_day_global: 12
+      max_submit_day_asset: 4
+    correlation:
+      enabled: true
+      block_same_cluster_active: true
+      max_active_per_cluster: 1
+      max_pending_per_cluster: 1
 
 notifications:
   enabled: true
@@ -192,8 +315,8 @@ notifications:
     state_path: runs/alerts/telegram_state.json
 
 execution:
-  enabled: false
-  mode: disabled
+  enabled: true
+  mode: disable
   provider: fake
   account_mode: PRACTICE
   fail_closed: true

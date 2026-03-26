@@ -2,644 +2,450 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sqlite3
 import sys
-from collections import deque
-from dataclasses import dataclass
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
+if __package__ in {None, ''}:
+    _SRC_ROOT = Path(__file__).resolve().parents[2]
+    if str(_SRC_ROOT) not in sys.path:
+        sys.path.insert(0, str(_SRC_ROOT))
 
-@dataclass(frozen=True)
-class DashArgs:
-    repo_root: str = "."
-    config: str = "config/multi_asset.yaml"
-    refresh_sec: float = 3.0
-    max_events: int = 200
-    max_signals: int = 200
+from natbin.dashboard.analytics import build_dashboard_snapshot
+from natbin.dashboard.report import export_dashboard_report
+from natbin.dashboard.style import DASHBOARD_CSS
+
+
+class DashArgs(argparse.Namespace):
+    repo_root: str
+    config: str
+    refresh_sec: float
+    max_events: int
+    max_signals: int
+    equity_start: float | None
+    max_alerts: int | None
+    report_dir: str | None
 
 
 def _parse_dash_args(argv: list[str]) -> DashArgs:
-    # Keep this parser lenient: Streamlit may add its own args.
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--repo-root", default=".")
-    p.add_argument("--config", default="config/multi_asset.yaml")
-    p.add_argument("--refresh-sec", type=float, default=3.0)
-    p.add_argument("--max-events", type=int, default=200)
-    p.add_argument("--max-signals", type=int, default=200)
-    ns, _unknown = p.parse_known_args(argv)
-    try:
-        refresh = float(ns.refresh_sec)
-    except Exception:
-        refresh = 0.0
-    if refresh < 0:
-        refresh = 0.0
-    return DashArgs(
-        repo_root=str(ns.repo_root),
-        config=str(ns.config),
-        refresh_sec=refresh,
-        max_events=max(10, int(ns.max_events or 200)),
-        max_signals=max(10, int(ns.max_signals or 200)),
-    )
+    p.add_argument('--repo-root', default='.')
+    p.add_argument('--config', default='config/multi_asset.yaml')
+    p.add_argument('--refresh-sec', type=float, default=3.0)
+    p.add_argument('--max-events', type=int, default=200)
+    p.add_argument('--max-signals', type=int, default=200)
+    p.add_argument('--equity-start', type=float, default=None)
+    p.add_argument('--max-alerts', type=int, default=None)
+    p.add_argument('--report-dir', default=None)
+    ns, _unknown = p.parse_known_args(argv, namespace=DashArgs())
+    ns.refresh_sec = max(0.0, float(getattr(ns, 'refresh_sec', 3.0) or 0.0))
+    ns.max_events = max(10, int(getattr(ns, 'max_events', 200) or 200))
+    ns.max_signals = max(10, int(getattr(ns, 'max_signals', 200) or 200))
+    return ns
 
 
 def _read_json(path: Path) -> Any | None:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding='utf-8'))
     except Exception:
         return None
 
 
-def _tail_jsonl(path: Path, n: int) -> list[dict[str, Any]]:
-    if n <= 0:
-        return []
-    if not path.exists():
-        return []
-    out: deque[dict[str, Any]] = deque(maxlen=n)
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except Exception:
-                    # Keep raw line if JSON is malformed.
-                    out.append({"_raw": line})
-    except Exception:
-        return []
-    return list(out)
+def _sqlite_connect_ro(db_path: Path) -> sqlite3.Connection | None:
+    if not db_path.exists():
+        return None
+    uri = f'file:{db_path.as_posix()}?mode=ro'
+    con = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=1.0)
+    con.row_factory = sqlite3.Row
+    return con
 
 
-def _sqlite_connect_ro(db_path: Path) -> sqlite3.Connection:
-    # Prefer read-only mode (avoids locks).
-    # On Windows, `immutable=1` is safe only if file never changes; avoid it.
-    uri = f"file:{db_path.as_posix()}?mode=ro"
-    return sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=1.0)
+def _sqlite_table_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    cur = con.execute(f'PRAGMA table_info("{table}")')
+    return [str(row[1]) for row in cur.fetchall()]
 
 
-def _sqlite_tables(conn: sqlite3.Connection) -> list[str]:
-    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-    return [r[0] for r in cur.fetchall()]
-
-
-def _sqlite_table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
-    cur = conn.execute(f'PRAGMA table_info("{table}")')
-    # row = (cid, name, type, notnull, dflt_value, pk)
-    return [r[1] for r in cur.fetchall()]
-
-
-def _sqlite_fetch_recent(
-    conn: sqlite3.Connection, table: str, *, limit: int = 200
-) -> list[dict[str, Any]]:
-    cols = _sqlite_table_columns(conn, table)
+def _sqlite_fetch_recent(con: sqlite3.Connection, table: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    cols = _sqlite_table_columns(con, table)
     if not cols:
         return []
     order_col = None
-    for cand in ("ts", "observed_at_utc", "created_at_utc", "id"):
+    for cand in ('ts', 'observed_at_utc', 'created_at_utc', 'id'):
         if cand in cols:
             order_col = cand
             break
-
     if order_col:
-        q = f'SELECT * FROM "{table}" ORDER BY "{order_col}" DESC LIMIT ?'
-        rows = conn.execute(q, (int(limit),)).fetchall()
+        query = f'SELECT * FROM "{table}" ORDER BY "{order_col}" DESC LIMIT ?'
+        rows = con.execute(query, (int(limit),)).fetchall()
     else:
-        q = f'SELECT * FROM "{table}" LIMIT ?'
-        rows = conn.execute(q, (int(limit),)).fetchall()
+        query = f'SELECT * FROM "{table}" LIMIT ?'
+        rows = con.execute(query, (int(limit),)).fetchall()
+    return [{cols[idx]: row[idx] for idx in range(min(len(cols), len(row)))} for row in rows]
 
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        out.append({cols[i]: r[i] for i in range(min(len(cols), len(r)))})
-    return out
+
+def _severity_tone(value: Any) -> str:
+    sev = str(value or 'info').strip().lower()
+    if sev in {'ok', 'ready', 'healthy', 'open', 'accepted'}:
+        return 'ok'
+    if sev in {'warn', 'warning', 'pending', 'cooldown'}:
+        return 'warn'
+    if sev in {'error', 'critical', 'blocked', 'rejected', 'loss'}:
+        return 'danger'
+    return 'accent'
+
+
+def _fmt_number(value: Any, digits: int = 2) -> str:
+    if value in (None, ''):
+        return '—'
+    try:
+        return f'{float(value):,.{digits}f}'
+    except Exception:
+        return str(value)
+
+
+def _fmt_pct(value: Any, digits: int = 2) -> str:
+    if value in (None, ''):
+        return '—'
+    try:
+        return f'{100.0 * float(value):.{digits}f}%'
+    except Exception:
+        return str(value)
+
+
+def _card_html(label: str, value: str, meta: str = '', tone: str = 'accent') -> str:
+    safe_label = str(label)
+    safe_value = str(value)
+    safe_meta = str(meta or '')
+    return (
+        f'<div class="thalor-card {tone}">'
+        f'<div class="label">{safe_label}</div>'
+        f'<div class="value">{safe_value}</div>'
+        f'<div class="meta">{safe_meta}</div>'
+        '</div>'
+    )
+
+
+def _badge_html(text: str, tone: str = 'accent') -> str:
+    classes = 'thalor-pill'
+    if tone == 'ok':
+        classes += ' thalor-badge-ok'
+    elif tone == 'warn':
+        classes += ' thalor-badge-warn'
+    elif tone == 'danger':
+        classes += ' thalor-badge-danger'
+    return f'<span class="{classes}">{text}</span>'
+
+
+def _normalize_jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _normalize_jsonish(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_normalize_jsonish(item) for item in value]
+    return str(value)
+
+
+def _normalize_table_cell(value: Any) -> Any:
+    normalized = _normalize_jsonish(value)
+    if isinstance(normalized, dict):
+        return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+    if isinstance(normalized, list):
+        return json.dumps(normalized, ensure_ascii=False)
+    return normalized
+
+
+def _normalize_rows_for_dataframe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        normalized_rows.append({str(key): _normalize_table_cell(value) for key, value in dict(row).items()})
+    return normalized_rows
+
+
+def _render_dataframe(st, pd, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        st.info('Nenhum dado disponível.')
+        return
+    if pd is not None:
+        st.dataframe(pd.DataFrame(_normalize_rows_for_dataframe(rows)), width='stretch', hide_index=True)
+    else:
+        st.json(rows, expanded=False)
 
 
 def run() -> None:
-    # Heavy deps only inside the Streamlit runtime.
     import streamlit as st
     import streamlit.components.v1 as components
 
     try:
         import pandas as pd
-    except Exception:
+    except Exception:  # pragma: no cover - streamlit env should have pandas
         pd = None  # type: ignore
 
-    # Parse defaults (args passed via: streamlit run app.py -- --repo-root ...).
+    from natbin.config import load_thalor_config
+
     args = _parse_dash_args(sys.argv[1:])
 
-    st.set_page_config(page_title="Thalor Dashboard", layout="wide")
-    st.title("Thalor — Dashboard Local")
+    repo = Path(args.repo_root).expanduser().resolve()
+    cfg = (repo / args.config).resolve() if not Path(args.config).is_absolute() else Path(args.config).resolve()
+    cfg_obj = load_thalor_config(repo_root=repo, config_path=cfg)
+    dash_cfg = cfg_obj.dashboard
 
-    # Sidebar
-    st.sidebar.header("Configuração")
-    repo_root = st.sidebar.text_input("repo_root", value=str(args.repo_root))
-    config_path = st.sidebar.text_input("config", value=str(args.config))
-    refresh_sec = st.sidebar.number_input(
-        "auto-refresh (segundos; 0 = desligado)",
-        min_value=0.0,
-        max_value=120.0,
-        value=float(args.refresh_sec),
-        step=1.0,
-    )
-    max_signals = int(
-        st.sidebar.number_input("max sinais (tabela)", min_value=10, max_value=5000, value=int(args.max_signals), step=10)
-    )
-    max_events = int(
-        st.sidebar.number_input("max eventos execução (jsonl)", min_value=10, max_value=5000, value=int(args.max_events), step=10)
-    )
-    auto_refresh = st.sidebar.checkbox("auto refresh", value=(refresh_sec > 0.0))
-    _ = st.sidebar.button("Refresh agora")
+    st.set_page_config(page_title='Thalor Dashboard Pro', layout='wide')
+    st.markdown(f'<style>{DASHBOARD_CSS}</style>', unsafe_allow_html=True)
+
+    default_refresh = float(args.refresh_sec if args.refresh_sec is not None else dash_cfg.default_refresh_sec)
+    default_equity_start = float(args.equity_start if args.equity_start is not None else dash_cfg.default_equity_start)
+    default_max_alerts = int(args.max_alerts if args.max_alerts is not None else dash_cfg.max_alerts)
+    default_report_dir = str(args.report_dir or dash_cfg.report.output_dir)
+
+    st.sidebar.header('Thalor // Control deck')
+    repo_root = st.sidebar.text_input('repo_root', value=str(repo))
+    config_path = st.sidebar.text_input('config', value=str(cfg))
+    refresh_sec = st.sidebar.number_input('auto-refresh (segundos)', min_value=0.0, max_value=120.0, value=float(default_refresh), step=1.0)
+    auto_refresh = st.sidebar.checkbox('auto refresh', value=(refresh_sec > 0.0))
+    equity_start = st.sidebar.number_input('equity start', min_value=0.0, value=float(default_equity_start), step=100.0)
+    max_alerts = int(st.sidebar.number_input('max alerts', min_value=10, max_value=500, value=int(default_max_alerts), step=10))
+    max_signals = int(st.sidebar.number_input('max sinais', min_value=10, max_value=5000, value=int(args.max_signals), step=10))
+    report_dir = st.sidebar.text_input('report dir', value=str(default_report_dir))
+    _ = st.sidebar.button('Refresh agora')
 
     repo = Path(repo_root).expanduser().resolve()
-    cfg = (repo / config_path).resolve() if not Path(config_path).is_absolute() else Path(config_path).resolve()
+    cfg = Path(config_path).expanduser().resolve() if Path(config_path).is_absolute() else (repo / config_path).resolve()
 
-    st.caption(f"Repo: `{repo}`  |  Config: `{cfg}`")
-
-    if auto_refresh and refresh_sec > 0:
-        # Simple client-side reload without extra deps.
+    if auto_refresh and refresh_sec > 0.0:
         ms = int(float(refresh_sec) * 1000)
-        components.html(
-            f"<script>setTimeout(function(){{window.location.reload();}}, {ms});</script>",
-            height=0,
-        )
+        components.html(f'<script>setTimeout(function(){{window.location.reload();}}, {ms});</script>', height=0)
 
-    # --- Control plane (health / precheck) ---
-    st.subheader("Control plane")
+    snapshot = build_dashboard_snapshot(
+        repo_root=repo,
+        config_path=cfg,
+        equity_start=float(equity_start),
+        max_alerts=int(max_alerts),
+        max_equity_points=int(getattr(dash_cfg, 'max_equity_points', 500) or 500),
+        trade_limit=max(200, int(max_signals) * 5),
+    )
 
-    col_a, col_b, col_c, col_d, col_e = st.columns(5)
+    perf = dict(snapshot.get('performance') or {})
+    control = dict(snapshot.get('control') or {})
+    control_display = dict(snapshot.get('control_display') or {})
+    asset_status = list(snapshot.get('asset_status') or [])
+    alerts_feed = list(snapshot.get('alerts_feed') or [])
+    recent_trades = list(snapshot.get('recent_trades') or [])
+    recent_attempts = list(snapshot.get('recent_attempts') or [])
+    recent_events = list(snapshot.get('recent_events') or [])
+    portfolio = dict(control.get('portfolio') or {})
 
-    with col_a:
-        st.markdown("**Health**")
-        try:
-            from natbin.control.commands import health_payload
+    hero_html = f"""
+    <div class=\"thalor-hero\">
+      <div class=\"eyebrow\">CYBER DRAGON CONTROL DECK</div>
+      <h1>{snapshot.get('dashboard', {}).get('title', 'Thalor')} — Professional Dashboard</h1>
+      <div class=\"subtitle\">Repo: <code>{repo}</code> · Config: <code>{cfg}</code> · Generated at {snapshot.get('generated_at_utc')}</div>
+    </div>
+    """
+    st.markdown(hero_html, unsafe_allow_html=True)
 
-            health = health_payload(repo_root=str(repo), config_path=str(cfg))
-            st.json(health, expanded=False)
-        except Exception as e:
-            st.warning(f"health_payload falhou: {e}")
+    open_positions_total = sum(int(item.get('open_positions') or 0) for item in asset_status)
+    pending_unknown_total = sum(int(item.get('pending_unknown') or 0) for item in asset_status)
 
-    with col_b:
-        st.markdown("**Precheck**")
-        try:
-            from natbin.control.commands import precheck_payload
+    card_cols = st.columns(6)
+    cards = [
+        ('Current equity', _fmt_number(perf.get('current_equity')), f"PnL total {_fmt_number(perf.get('pnl_total'))}", 'accent'),
+        ('Win-rate', _fmt_pct(perf.get('win_rate')), f"Wins {perf.get('wins', 0)} · Losses {perf.get('losses', 0)}", 'ok' if (perf.get('win_rate') or 0) >= 0.5 else 'warn'),
+        ('EV / trade', _fmt_number(perf.get('ev_brl')), f"Expectancy R {_fmt_number(perf.get('expectancy_r'), 3)}", 'accent'),
+        ('Drawdown', _fmt_pct(perf.get('max_drawdown_pct')), f"{_fmt_number(perf.get('max_drawdown_brl'))} BRL", 'danger' if (perf.get('max_drawdown_pct') or 0) > 0.15 else 'warn'),
+        ('Sharpe', _fmt_number(perf.get('sharpe_per_trade'), 3), f"Profit factor {_fmt_number(perf.get('profit_factor'), 3)}", 'ok' if (perf.get('sharpe_per_trade') or 0) >= 1.0 else 'accent'),
+        ('Exposure', f'{open_positions_total} open / {pending_unknown_total} pending', f"{len(asset_status)} assets monitored", 'accent'),
+    ]
+    for col, (label, value, meta, tone) in zip(card_cols, cards):
+        with col:
+            st.markdown(_card_html(label, value, meta, tone=tone), unsafe_allow_html=True)
 
-            pre = precheck_payload(repo_root=str(repo), config_path=str(cfg))
-            st.json(pre, expanded=False)
-        except Exception as e:
-            st.warning(f"precheck_payload falhou: {e}")
+    tabs = st.tabs(['Cockpit', 'Assets', 'Orders', 'Operations', 'Signals / Raw'])
 
-    with col_c:
-        st.markdown("**Security (M6)**")
-        sec_path = repo / 'runs' / 'control'
-        try:
-            from natbin.control.commands import security_payload
+    with tabs[0]:
+        left, right = st.columns([2.1, 1.1])
+        with left:
+            st.markdown('<div class="thalor-section-title"><h3>Equity curve</h3></div>', unsafe_allow_html=True)
+            equity_curve = list(perf.get('equity_curve') or [])
+            if equity_curve and pd is not None:
+                df = pd.DataFrame(equity_curve)
+                if 'trade_at_utc' in df.columns:
+                    df['trade_at_utc'] = pd.to_datetime(df['trade_at_utc'], utc=True, errors='coerce')
+                    df = df.sort_values('trade_at_utc')
+                    df = df.set_index('trade_at_utc')
+                st.line_chart(df[['equity']], width='stretch')
+                if 'drawdown_pct' in df.columns:
+                    st.area_chart(df[['drawdown_pct']], width='stretch')
+            elif equity_curve:
+                st.json(equity_curve[-20:], expanded=False)
+            else:
+                st.info('Ainda não há trades realizados para compor a equity curve.')
 
-            sec = security_payload(repo_root=str(repo), config_path=str(cfg))
-            summary = {
-                'severity': sec.get('severity') if isinstance(sec, dict) else None,
-                'blocked': sec.get('blocked') if isinstance(sec, dict) else None,
-                'credential_source': sec.get('credential_source') if isinstance(sec, dict) else None,
-                'deployment_profile': sec.get('deployment_profile') if isinstance(sec, dict) else None,
-            }
-            st.json(summary, expanded=False)
-            with st.expander('raw security payload'):
-                st.json(sec, expanded=False)
-        except Exception as e:
-            st.warning(f"security_payload falhou: {e}")
+            st.markdown('<div class="thalor-section-title"><h3>Asset PnL</h3></div>', unsafe_allow_html=True)
+            if asset_status and pd is not None:
+                asset_df = pd.DataFrame(asset_status)
+                chart_df = asset_df[['asset', 'pnl_total_brl']].set_index('asset')
+                st.bar_chart(chart_df, width='stretch')
+            else:
+                st.info('Sem PnL por asset ainda.')
 
-    with col_d:
-        st.markdown("**Release (M7)**")
-        try:
-            from natbin.control.commands import release_payload
+        with right:
+            control_cards = st.columns(2)
+            control_status = [
+                ('Release', control_display.get('release') or {}),
+                ('Practice', control_display.get('practice') or {}),
+                ('Doctor', control_display.get('doctor') or {}),
+                ('Security', control_display.get('security') or {}),
+            ]
+            for idx, (label, item) in enumerate(control_status):
+                with control_cards[idx % 2]:
+                    st.markdown(
+                        _card_html(
+                            label,
+                            str(item.get('label') or 'N/A').upper(),
+                            str(item.get('meta') or 'sem contexto'),
+                            tone=str(item.get('tone') or 'accent'),
+                        ),
+                        unsafe_allow_html=True,
+                    )
 
-            rel = release_payload(repo_root=str(repo), config_path=str(cfg))
-            summary = {
-                'severity': rel.get('severity') if isinstance(rel, dict) else None,
-                'ready_for_live': rel.get('ready_for_live') if isinstance(rel, dict) else None,
-                'ready_for_practice': rel.get('ready_for_practice') if isinstance(rel, dict) else None,
-                'ready_for_real': rel.get('ready_for_real') if isinstance(rel, dict) else None,
-                'execution_live': rel.get('execution_live') if isinstance(rel, dict) else None,
-                'execution_account_mode': rel.get('execution_account_mode') if isinstance(rel, dict) else None,
-            }
-            st.json(summary, expanded=False)
-            with st.expander('raw release payload'):
-                st.json(rel, expanded=False)
-        except Exception as e:
-            st.warning(f"release_payload falhou: {e}")
+            st.markdown('<div class="thalor-section-title"><h3>Recent alerts</h3></div>', unsafe_allow_html=True)
+            _render_dataframe(st, pd, alerts_feed[:20])
 
-    with col_e:
-        st.markdown("**Practice (READY-1)**")
-        try:
-            from natbin.control.commands import practice_payload
-
-            practice = practice_payload(repo_root=str(repo), config_path=str(cfg))
-            summary = {
-                'severity': practice.get('severity') if isinstance(practice, dict) else None,
-                'ready_for_practice': practice.get('ready_for_practice') if isinstance(practice, dict) else None,
-                'account_mode': ((practice.get('execution') or {}).get('account_mode') if isinstance(practice, dict) else None),
-                'soak_status': ((practice.get('soak') or {}).get('status') if isinstance(practice, dict) else None),
-                'soak_age_sec': ((practice.get('soak') or {}).get('age_sec') if isinstance(practice, dict) else None),
-            }
-            st.json(summary, expanded=False)
-            with st.expander('raw practice payload'):
-                st.json(practice, expanded=False)
-        except Exception as e:
-            st.warning(f"practice_payload falhou: {e}")
-
-    st.markdown("**Practice round (PRACTICE-OPS-1)**")
-    try:
-        from natbin.control.plan import build_context
-
-        dash_ctx = build_context(repo_root=str(repo), config_path=str(cfg), dump_snapshot=False)
-        round_path = repo / 'runs' / 'control' / str(dash_ctx.scope.scope_tag) / 'practice_round.json'
-        round_payload = _read_json(round_path)
-        if isinstance(round_payload, dict):
-            summary = {
-                'severity': round_payload.get('severity'),
-                'round_ok': round_payload.get('round_ok'),
-                'phase': round_payload.get('phase'),
-                'blocked_reason': round_payload.get('blocked_reason'),
-                'soak_action': ((round_payload.get('soak') or {}).get('action') if isinstance(round_payload.get('soak'), dict) else None),
-                'validation_required_passed': ((round_payload.get('validation') or {}).get('required_passed') if isinstance(round_payload.get('validation'), dict) else None),
-                'latest_intent_state': (((round_payload.get('validation') or {}).get('observe') or {}).get('latest_intent_state') if isinstance(round_payload.get('validation'), dict) else None),
-                'submit_transport_status': (((round_payload.get('validation') or {}).get('observe') or {}).get('submit_transport_status') if isinstance(round_payload.get('validation'), dict) else None),
-                'report_path': ((round_payload.get('artifacts') or {}).get('report_path') if isinstance(round_payload.get('artifacts'), dict) else None),
-            }
-            st.json(summary, expanded=False)
-            with st.expander('raw practice round payload'):
-                st.json(round_payload, expanded=False)
-        else:
-            st.info('Nenhuma rodada de practice encontrada ainda.')
-    except Exception as e:
-        st.warning(f"practice round payload falhou: {e}")
-
-    # --- Portfolio status / last cycle ---
-    st.subheader("Portfolio (multi-asset)")
-
-    status: dict[str, Any] | None = None
-    try:
-        from natbin.control.commands import portfolio_status_payload
-
-        status = portfolio_status_payload(repo_root=str(repo), config_path=str(cfg))
-    except Exception as e:
-        st.error(f"portfolio_status_payload falhou: {e}")
-
-    if status:
-        # High-level summary
-        ma = status.get("multi_asset") or {}
-        latest_cycle = status.get("latest_cycle") or {}
-        latest_alloc = status.get("latest_allocation") or status.get("latest_allocation") or {}
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("multi_asset.enabled", str(ma.get("enabled")))
-        c2.metric("max_parallel_assets", str(ma.get("max_parallel_assets")))
-        c3.metric("stagger_sec", str(ma.get("stagger_sec")))
-        c4.metric("portfolio_topk_total", str(ma.get("portfolio_topk_total")))
-
-        st.markdown("**Último ciclo**")
-        if latest_cycle:
-            st.json(
-                {
-                    "cycle_id": latest_cycle.get("cycle_id"),
-                    "started_at_utc": latest_cycle.get("started_at_utc"),
-                    "finished_at_utc": latest_cycle.get("finished_at_utc"),
-                    "ok": latest_cycle.get("ok"),
-                    "message": latest_cycle.get("message"),
-                    "errors": latest_cycle.get("errors"),
-                    "gates": latest_cycle.get("gates"),
-                },
-                expanded=False,
-            )
-        else:
-            st.info("Nenhum ciclo encontrado (ainda não existe runs/portfolio_cycle_latest.json).")
-
-        # Scopes table
-        scopes = status.get("scopes") or []
-        if scopes:
-            st.markdown("**Scopes**")
-            rows = []
-            for s in scopes:
-                scope = s.get("scope") or {}
-                dp = s.get("data_paths") or {}
-                rp = s.get("runtime_paths") or {}
-                rows.append(
-                    {
-                        "scope_tag": scope.get("scope_tag"),
-                        "asset": scope.get("asset"),
-                        "interval_sec": scope.get("interval_sec"),
-                        "db_path": dp.get("db_path"),
-                        "dataset_path": dp.get("dataset_path"),
-                        "signals_db_path": rp.get("signals_db_path"),
-                        "state_db_path": rp.get("state_db_path"),
-                    }
+            if st.button('Export dashboard report'):
+                output_dir = Path(report_dir).expanduser()
+                paths = export_dashboard_report(
+                    snapshot,
+                    output_dir=(output_dir if output_dir.is_absolute() else (repo / output_dir)),
+                    title=f"{snapshot.get('dashboard', {}).get('title', 'Thalor')} Dashboard Report",
+                    export_json=True,
                 )
-            if pd is not None:
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                st.success(f"Report exported: {paths.get('html_path')}")
+                st.json(paths, expanded=False)
+
+    with tabs[1]:
+        st.markdown('<div class="thalor-section-title"><h3>Unified asset status</h3></div>', unsafe_allow_html=True)
+        _render_dataframe(st, pd, asset_status)
+        st.markdown('<div class="thalor-section-title"><h3>Portfolio asset board</h3></div>', unsafe_allow_html=True)
+        _render_dataframe(st, pd, list(portfolio.get('asset_board') or []))
+        latest_cycle = portfolio.get('latest_cycle') if isinstance(portfolio, dict) else None
+        latest_alloc = portfolio.get('latest_allocation') if isinstance(portfolio, dict) else None
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown('<div class="thalor-section-title"><h3>Latest cycle</h3></div>', unsafe_allow_html=True)
+            if latest_cycle:
+                st.json({
+                    'cycle_id': latest_cycle.get('cycle_id'),
+                    'started_at_utc': latest_cycle.get('started_at_utc'),
+                    'finished_at_utc': latest_cycle.get('finished_at_utc'),
+                    'ok': latest_cycle.get('ok'),
+                    'execution_plan': latest_cycle.get('execution_plan'),
+                }, expanded=False)
             else:
-                st.json(rows, expanded=False)
-
-        # Allocation summary
-        if latest_alloc:
-            st.markdown("**Última alocação**")
-            summary = {
-                "allocation_id": latest_alloc.get("allocation_id"),
-                "at_utc": latest_alloc.get("at_utc"),
-                "max_select": latest_alloc.get("max_select"),
-                "selected_count": len(latest_alloc.get("selected") or []),
-                "suppressed_count": len(latest_alloc.get("suppressed") or []),
-                "portfolio_quota": latest_alloc.get("portfolio_quota"),
-                "risk_summary": latest_alloc.get("risk_summary"),
-                "selected": latest_alloc.get("selected"),
-                "suppressed": latest_alloc.get("suppressed"),
-            }
-            st.json(summary, expanded=False)
-
-        portfolio_intel = status.get("intelligence") or {}
-        if portfolio_intel:
-            st.markdown("**Portfolio intelligence ops**")
-            summary = {
-                "enabled": portfolio_intel.get("enabled"),
-                "severity": portfolio_intel.get("severity"),
-                "summary": portfolio_intel.get("summary"),
-            }
-            st.json(summary, expanded=False)
-            items = list(portfolio_intel.get("items") or [])
-            if items:
-                if pd is not None:
-                    st.dataframe(pd.DataFrame(items), use_container_width=True, hide_index=True)
-                else:
-                    st.json(items, expanded=False)
-
-    # --- Operations / Alerts (M7) ---
-    st.subheader("Operations / Alerts (M7)")
-
-    ops_a, ops_b, ops_c = st.columns(3)
-
-    with ops_a:
-        st.markdown("**Ops gates**")
-        try:
-            from natbin.control.ops import gate_status
-
-            gates = gate_status(repo_root=str(repo), config_path=str(cfg))
-            st.json(gates, expanded=False)
-        except Exception as e:
-            st.warning(f"gate_status falhou: {e}")
-
-    with ops_b:
-        st.markdown("**Alerts (M7)**")
-        try:
-            from natbin.control.commands import alerts_payload
-
-            alert_state = alerts_payload(repo_root=str(repo), config_path=str(cfg), limit=20)
-            tg = (alert_state or {}).get('telegram') or {}
-            summary = {
-                'enabled': tg.get('enabled'),
-                'send_enabled': tg.get('send_enabled'),
-                'credentials_present': tg.get('credentials_present'),
-                'recent_counts': tg.get('recent_counts'),
-            }
-            st.json(summary, expanded=False)
-            recent_alerts = list(tg.get('recent') or [])[-5:]
-            if recent_alerts:
-                with st.expander('recent alerts'):
-                    st.json(recent_alerts, expanded=False)
-        except Exception as e:
-            st.warning(f"alerts_payload falhou: {e}")
-
-    with ops_c:
-        st.markdown("**Runbook quick-check**")
-        quick = {
-            'docs/OPERATIONS.md': (repo / 'docs' / 'OPERATIONS.md').exists(),
-            'docs/DOCKER.md': (repo / 'docs' / 'DOCKER.md').exists(),
-            'docs/ALERTING_M7.md': (repo / 'docs' / 'ALERTING_M7.md').exists(),
-            'docker-compose.prod.yml': (repo / 'docker-compose.prod.yml').exists(),
-        }
-        st.json(quick, expanded=False)
-
-    # --- Incident Ops (M7.1) ---
-    st.subheader("Incident Ops (M7.1)")
-
-    inc_a, inc_b = st.columns(2)
-
-    with inc_a:
-        st.markdown("**Incident status**")
-        try:
-            from natbin.control.commands import incidents_payload
-
-            incident_state = incidents_payload(repo_root=str(repo), config_path=str(cfg), limit=20, window_hours=24)
-            summary = {
-                'severity': incident_state.get('severity') if isinstance(incident_state, dict) else None,
-                'open_issues': len(list((incident_state.get('open_issues') or []) if isinstance(incident_state, dict) else [])),
-                'recent_incidents': ((incident_state.get('incidents') or {}).get('total') if isinstance(incident_state, dict) else None),
-                'release': (incident_state.get('release') or {}).get('severity') if isinstance(incident_state, dict) else None,
-            }
-            st.json(summary, expanded=False)
-            recent_issues = list((incident_state.get('open_issues') or []) if isinstance(incident_state, dict) else [])[:5]
-            if recent_issues:
-                with st.expander('open issues'):
-                    st.json(recent_issues, expanded=False)
-        except Exception as e:
-            st.warning(f"incidents_payload falhou: {e}")
-
-    with inc_b:
-        st.markdown("**Recommended actions**")
-        try:
-            from natbin.control.commands import incidents_payload
-
-            incident_state = incidents_payload(repo_root=str(repo), config_path=str(cfg), limit=20, window_hours=24)
-            actions = list((incident_state.get('recommended_actions') or []) if isinstance(incident_state, dict) else [])[:5]
-            if actions:
-                st.json(actions, expanded=False)
+                st.info('Nenhum ciclo portfolio encontrado.')
+        with col_b:
+            st.markdown('<div class="thalor-section-title"><h3>Latest allocation</h3></div>', unsafe_allow_html=True)
+            if latest_alloc:
+                st.json({
+                    'allocation_id': latest_alloc.get('allocation_id'),
+                    'at_utc': latest_alloc.get('at_utc'),
+                    'selected': latest_alloc.get('selected'),
+                    'suppressed': latest_alloc.get('suppressed'),
+                }, expanded=False)
             else:
-                st.info('Sem ações recomendadas no momento.')
-        except Exception as e:
-            st.warning(f"incident recommended actions falhou: {e}")
+                st.info('Nenhuma alocação encontrada.')
 
-    # --- Per-scope: decision + signals ---
-    st.subheader("Signals / Decisions por scope")
+    with tabs[2]:
+        top_a, top_b = st.columns(2)
+        with top_a:
+            st.markdown('<div class="thalor-section-title"><h3>Recent trades</h3></div>', unsafe_allow_html=True)
+            _render_dataframe(st, pd, recent_trades[:200])
+        with top_b:
+            st.markdown('<div class="thalor-section-title"><h3>Submit attempts</h3></div>', unsafe_allow_html=True)
+            _render_dataframe(st, pd, recent_attempts[:200])
+        st.markdown('<div class="thalor-section-title"><h3>Execution events</h3></div>', unsafe_allow_html=True)
+        _render_dataframe(st, pd, recent_events[:200])
 
-    scope_tags: list[str] = []
-    runtime_paths_by_tag: dict[str, dict[str, Any]] = {}
-    if status and status.get("scopes"):
-        for s in status["scopes"]:
-            scope = s.get("scope") or {}
-            tag = scope.get("scope_tag")
-            if not tag:
-                continue
-            scope_tags.append(tag)
-            runtime_paths_by_tag[tag] = s.get("runtime_paths") or {}
+    with tabs[3]:
+        op_cols = st.columns(5)
+        summaries = [
+            ('Health', control_display.get('health') or {}, control.get('health') or {}),
+            ('Security', control_display.get('security') or {}, control.get('security') or {}),
+            ('Release', control_display.get('release') or {}, control.get('release') or {}),
+            ('Practice', control_display.get('practice') or {}, control.get('practice') or {}),
+            ('Doctor', control_display.get('doctor') or {}, control.get('doctor') or {}),
+        ]
+        for col, (label, display_item, raw_payload) in zip(op_cols, summaries):
+            with col:
+                st.markdown(
+                    _card_html(
+                        label,
+                        str(display_item.get('label') or raw_payload.get('severity') or raw_payload.get('status') or 'n/a').upper(),
+                        str(display_item.get('meta') or f"ok={raw_payload.get('ok')}"),
+                        tone=str(display_item.get('tone') or _severity_tone(raw_payload.get('severity') or raw_payload.get('status'))),
+                    ),
+                    unsafe_allow_html=True,
+                )
+        st.markdown('<div class="thalor-section-title"><h3>Why these statuses?</h3></div>', unsafe_allow_html=True)
+        for label, key in [('Release', 'release'), ('Practice', 'practice'), ('Doctor', 'doctor')]:
+            item = dict(control_display.get(key) or {})
+            raw_payload = dict(control.get(key) or {})
+            with st.expander(f'{label}: {str(item.get("label") or raw_payload.get("severity") or "n/a").upper()}'):
+                st.markdown(f'**Resumo:** {item.get("reason") or "Sem contexto adicional."}')
+                if item.get('meta'):
+                    st.markdown(f'**Detalhe:** `{item.get("meta")}`')
+                blockers = list(raw_payload.get('blockers') or [])
+                warnings = list(raw_payload.get('warnings') or [])
+                if blockers:
+                    st.markdown(f'**Blockers:** `{", ".join(str(v) for v in blockers[:8])}`')
+                if warnings:
+                    st.markdown(f'**Warnings:** `{", ".join(str(v) for v in warnings[:8])}`')
+                checks = list(raw_payload.get('checks') or [])
+                if checks:
+                    failed = [str(it.get('name')) for it in checks if str(it.get('status')) == 'error']
+                    warned = [str(it.get('name')) for it in checks if str(it.get('status')) == 'warn']
+                    if failed:
+                        st.markdown(f'**Checks com erro:** `{", ".join(failed[:8])}`')
+                    if warned:
+                        st.markdown(f'**Checks com aviso:** `{", ".join(warned[:8])}`')
+        with st.expander('Control plane payloads'):
+            st.json(control, expanded=False)
 
-    chosen_tag = st.selectbox("scope_tag", options=scope_tags if scope_tags else ["(none)"])
-
-    if chosen_tag and chosen_tag != "(none)":
-        rp = runtime_paths_by_tag.get(chosen_tag, {})
-        signals_db = rp.get("signals_db_path")
-        state_db = rp.get("state_db_path")
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("**Decision (latest)**")
-            dec_path = repo / "runs" / "decisions" / f"decision_latest_{chosen_tag}.json"
-            dec = _read_json(dec_path)
-            if dec is None:
-                st.info(f"Não encontrei {dec_path}")
+    with tabs[4]:
+        scopes = list(portfolio.get('scopes') or []) if isinstance(portfolio, dict) else []
+        scope_tags = [str((item.get('scope') or {}).get('scope_tag') or '') for item in scopes if str((item.get('scope') or {}).get('scope_tag') or '')]
+        chosen_tag = st.selectbox('scope_tag', options=scope_tags if scope_tags else ['(none)'])
+        if chosen_tag and chosen_tag != '(none)':
+            scope_info = next((item for item in scopes if str((item.get('scope') or {}).get('scope_tag') or '') == chosen_tag), None)
+            runtime_paths = dict((scope_info or {}).get('runtime_paths') or {})
+            decision_path = repo / 'runs' / 'decisions' / f'decision_latest_{chosen_tag}.json'
+            st.markdown('<div class="thalor-section-title"><h3>Latest decision</h3></div>', unsafe_allow_html=True)
+            decision = _read_json(decision_path)
+            if decision is not None:
+                st.json(decision, expanded=False)
             else:
-                # Small summary first
-                raw = dec.get("raw") if isinstance(dec, dict) else None
-                summary = {
-                    "asset": dec.get("asset") if isinstance(dec, dict) else None,
-                    "interval_sec": dec.get("interval_sec") if isinstance(dec, dict) else None,
-                    "dt_local": dec.get("dt_local") if isinstance(dec, dict) else None,
-                    "ts": dec.get("ts") if isinstance(dec, dict) else None,
-                    "action": dec.get("action") if isinstance(dec, dict) else None,
-                    "reason": dec.get("reason") if isinstance(dec, dict) else None,
-                    "blockers": dec.get("blockers") if isinstance(dec, dict) else None,
-                    "proba_up": (raw or {}).get("proba_up") if isinstance(raw, dict) else dec.get("proba_up"),
-                    "conf": (raw or {}).get("conf") if isinstance(raw, dict) else dec.get("conf"),
-                    "ev": (raw or {}).get("ev") if isinstance(raw, dict) else dec.get("ev"),
-                    "gate_mode": (raw or {}).get("gate_mode") if isinstance(raw, dict) else dec.get("gate_mode"),
-                    "regime_ok": (raw or {}).get("regime_ok") if isinstance(raw, dict) else dec.get("regime_ok"),
-                }
-                st.json(summary, expanded=False)
-                with st.expander("raw decision json"):
-                    st.json(dec)
+                st.info(f'No decision snapshot found at {decision_path}')
 
-        with c2:
-            st.markdown("**Intelligence (M5 / H12)**")
-            intel_dir = repo / "runs" / "intelligence" / str(chosen_tag)
-            eval_path = intel_dir / "latest_eval.json"
-            pack_path = intel_dir / "pack.json"
-            retrain_trigger_path = intel_dir / "retrain_trigger.json"
-            retrain_plan_path = intel_dir / "retrain_plan.json"
-            retrain_status_path = intel_dir / "retrain_status.json"
-            retrain_review_path = intel_dir / "retrain_review.json"
-            intel_eval = _read_json(eval_path)
-            intel_pack = _read_json(pack_path)
-            retrain_trigger = _read_json(retrain_trigger_path)
-            retrain_plan = _read_json(retrain_plan_path)
-            retrain_status = _read_json(retrain_status_path)
-            retrain_review = _read_json(retrain_review_path)
-            if intel_eval is None:
-                st.info(f"Não encontrei {eval_path}")
-            else:
-                retrain_orchestration = intel_eval.get("retrain_orchestration") if isinstance(intel_eval, dict) else None
-                portfolio_feedback = intel_eval.get("portfolio_feedback") if isinstance(intel_eval, dict) else None
-                summary = {
-                    "pack_available": intel_eval.get("pack_available") if isinstance(intel_eval, dict) else None,
-                    "base_rank": intel_eval.get("base_rank") if isinstance(intel_eval, dict) else None,
-                    "learned_gate_prob": intel_eval.get("learned_gate_prob") if isinstance(intel_eval, dict) else None,
-                    "intelligence_score": intel_eval.get("intelligence_score") if isinstance(intel_eval, dict) else None,
-                    "portfolio_score": intel_eval.get("portfolio_score") if isinstance(intel_eval, dict) else None,
-                    "allow_trade": intel_eval.get("allow_trade") if isinstance(intel_eval, dict) else None,
-                    "block_reason": intel_eval.get("block_reason") if isinstance(intel_eval, dict) else None,
-                    "retrain_state": (retrain_orchestration or {}).get("state") if isinstance(retrain_orchestration, dict) else None,
-                    "retrain_priority": (retrain_orchestration or {}).get("priority") if isinstance(retrain_orchestration, dict) else None,
-                    "portfolio_feedback": portfolio_feedback if isinstance(portfolio_feedback, dict) else None,
-                    "slot": intel_eval.get("slot") if isinstance(intel_eval, dict) else None,
-                    "coverage": intel_eval.get("coverage") if isinstance(intel_eval, dict) else None,
-                    "drift": intel_eval.get("drift") if isinstance(intel_eval, dict) else None,
-                    "anti_overfit": intel_eval.get("anti_overfit") if isinstance(intel_eval, dict) else None,
-                }
-                st.json(summary, expanded=False)
-                with st.expander("raw intelligence eval"):
-                    st.json(intel_eval)
-            if intel_pack is not None:
-                st.caption("pack.json carregado")
-                pack_summary = {
-                    "generated_at_utc": intel_pack.get("generated_at_utc"),
-                    "training_rows": ((intel_pack.get("metadata") or {}).get("training_rows")),
-                    "learned_gate_available": bool(intel_pack.get("learned_gate")),
-                    "anti_overfit": intel_pack.get("anti_overfit"),
-                }
-                st.json(pack_summary, expanded=False)
-            if retrain_trigger is not None:
-                st.warning("Retrain trigger ativo")
-                st.json(retrain_trigger, expanded=False)
-            if retrain_plan is not None:
-                st.caption("retrain_plan.json carregado")
-                plan_summary = {
-                    "state": retrain_plan.get("state"),
-                    "priority": retrain_plan.get("priority"),
-                    "reasons": retrain_plan.get("reasons"),
-                    "recommended_action": retrain_plan.get("recommended_action"),
-                    "cooldown_until_utc": retrain_plan.get("cooldown_until_utc"),
-                }
-                st.json(plan_summary, expanded=False)
-            if retrain_status is not None:
-                st.caption("retrain_status.json carregado")
-                status_summary = {
-                    "updated_at_utc": retrain_status.get("updated_at_utc"),
-                    "state": retrain_status.get("state"),
-                    "previous_state": retrain_status.get("previous_state"),
-                    "priority": retrain_status.get("priority"),
-                    "plan_state": retrain_status.get("plan_state"),
-                    "plan_priority": retrain_status.get("plan_priority"),
-                    "verdict": retrain_status.get("verdict"),
-                }
-                st.json(status_summary, expanded=False)
-            if retrain_review is not None:
-                st.caption("retrain_review.json carregado")
-                review_summary = {
-                    "finished_at_utc": retrain_review.get("finished_at_utc"),
-                    "verdict": retrain_review.get("verdict"),
-                    "reason": retrain_review.get("reason"),
-                    "restored_previous_artifacts": retrain_review.get("restored_previous_artifacts"),
-                    "comparison": retrain_review.get("comparison"),
-                }
-                st.json(review_summary, expanded=False)
-
-        with c3:
-            st.markdown("**Signals (recent)**")
-            if not signals_db:
-                st.info("signals_db_path não disponível.")
-            else:
-                sdb = Path(str(signals_db))
-                try:
-                    conn = _sqlite_connect_ro(sdb)
+            signals_db = runtime_paths.get('signals_db_path')
+            if signals_db:
+                con = _sqlite_connect_ro(Path(str(signals_db)))
+                if con is not None:
                     try:
-                        tables = _sqlite_tables(conn)
-                        table = "signals_v2" if "signals_v2" in tables else (tables[0] if tables else None)
-                        if not table:
-                            st.info(f"Nenhuma tabela em {sdb}")
-                        else:
-                            rows = _sqlite_fetch_recent(conn, table, limit=max_signals)
-                            if not rows:
-                                st.info("Sem linhas.")
-                            else:
-                                if pd is not None:
-                                    df = pd.DataFrame(rows)
-                                    st.dataframe(df, use_container_width=True, hide_index=True)
-                                    # Quick charts if columns exist
-                                    chart_cols = [c for c in ("proba_up", "conf", "score") if c in df.columns]
-                                    if chart_cols and "ts" in df.columns:
-                                        df2 = df.sort_values("ts")
-                                        st.line_chart(df2.set_index("ts")[chart_cols])
-                                else:
-                                    st.json(rows[:50], expanded=False)
+                        st.markdown('<div class="thalor-section-title"><h3>Recent signals</h3></div>', unsafe_allow_html=True)
+                        _render_dataframe(st, pd, _sqlite_fetch_recent(con, 'signals', limit=max_signals))
+                    except Exception as exc:
+                        st.warning(f'Não foi possível ler signals DB: {exc}')
                     finally:
-                        conn.close()
-                except Exception as e:
-                    st.warning(f"Falha ao ler sqlite {sdb}: {e}")
-
-            if state_db:
-                st.caption(f"state_db_path: `{state_db}`")
-
-    # --- Execution events (jsonl) ---
-    st.subheader("Execution events (JSONL)")
-
-    jsonl_path = repo / "runs" / "logs" / "execution_events.jsonl"
-    events = _tail_jsonl(jsonl_path, max_events)
-    if not events:
-        st.info(f"Sem eventos em {jsonl_path} (ainda).")
-    else:
-        # Normalize to table when possible.
-        if pd is not None:
-            st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
-        else:
-            st.json(events, expanded=False)
+                        con.close()
+        with st.expander('Raw dashboard snapshot'):
+            st.json(snapshot, expanded=False)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

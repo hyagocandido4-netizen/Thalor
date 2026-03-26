@@ -14,6 +14,7 @@ class PortfolioScope:
     # Allocation hints
     weight: float = 1.0
     cluster_key: str = 'default'
+    correlation_group: str | None = None
 
     # Per-scope policy overrides (optional)
     topk_k: int = 3
@@ -122,6 +123,7 @@ class AssetQuota:
     max_open_positions: int
 
     cluster_key: str = 'default'
+    correlation_group: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -188,6 +190,7 @@ class AllocationItem:
     retrain_priority: str | None = None
     rank: int | None = None
     cluster_key: str | None = None
+    correlation_group: str | None = None
     risk_context: dict[str, Any] | None = None
     intelligence: dict[str, Any] | None = None
     portfolio_feedback: dict[str, Any] | None = None
@@ -235,6 +238,7 @@ class PortfolioCycleReport:
     allocation: dict[str, Any] | None
     execution: list[dict[str, Any]]
     errors: list[str]
+    execution_plan: list[dict[str, Any]] | None = None
 
     # Package P: operational gates (kill-switch/drain) and per-scope failsafe blocks.
     gates: dict[str, Any] | None = None

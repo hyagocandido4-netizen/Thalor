@@ -136,6 +136,7 @@ def status_payload(
         'orders': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='orders'),
         'reconcile': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='reconcile'),
         'guard': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='guard'),
+        'protection': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='protection'),
         'lifecycle': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='lifecycle'),
         'security': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='security'),
         'intelligence': intelligence_current,
@@ -277,6 +278,64 @@ def security_payload(
     write_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='security', payload=payload)
     return payload
 
+
+def protection_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    from ..security.account_protection import build_account_protection_payload
+
+    return build_account_protection_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        write_artifact=True,
+    )
+
+
+
+
+def backup_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from ..ops.production_backup import build_backup_payload
+
+    return build_backup_payload(repo_root=repo_root, config_path=config_path, dry_run=dry_run)
+
+
+def healthcheck_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    from ..ops.container_health import build_container_health_payload
+
+    return build_container_health_payload(repo_root=repo_root, config_path=config_path)
+
+
+def monte_carlo_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    initial_capital_brl: float | None = None,
+    horizon_days: int | None = None,
+    trials: int | None = None,
+    rng_seed: int | None = None,
+) -> dict[str, Any]:
+    from ..monte_carlo.engine import build_monte_carlo_payload
+
+    return build_monte_carlo_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        initial_capital_brl=initial_capital_brl,
+        horizon_days=horizon_days,
+        trials=trials,
+        rng_seed=rng_seed,
+        write_report=True,
+    )
 
 
 def intelligence_payload(
@@ -705,6 +764,33 @@ def orders_payload(
     return _orders_payload(repo_root=repo_root, config_path=config_path, limit=limit)
 
 
+def execute_order_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    from ..runtime.execution import process_latest_signal as _process_latest_signal
+
+    return _process_latest_signal(repo_root=repo_root, config_path=config_path)
+
+
+def check_order_status_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    external_order_id: str,
+    refresh: bool = True,
+) -> dict[str, Any]:
+    from ..runtime.execution import check_order_status_payload as _check_order_status_payload
+
+    return _check_order_status_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        external_order_id=external_order_id,
+        refresh=refresh,
+    )
+
+
 def reconcile_payload(
     *,
     repo_root: str | Path = '.',
@@ -766,6 +852,8 @@ def observe_payload(
 
 
 def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None) -> dict[str, Any]:
+    from ..portfolio.board import build_asset_board
+    from ..portfolio.quota import compute_asset_quotas, compute_portfolio_quota
     from ..portfolio.runner import load_scopes
     from ..portfolio.paths import resolve_scope_data_paths, resolve_scope_runtime_paths
     from ..config.paths import resolve_repo_root, resolve_config_path
@@ -824,6 +912,16 @@ def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | 
         runtime_profile = str(getattr(getattr(cfg, 'runtime', None), 'profile', 'default') or 'default')
         current_profile_key = None
 
+    asset_quotas = compute_asset_quotas(root, [s for s in scopes], config_path=cfg_path)
+    portfolio_quota = compute_portfolio_quota(root, [s for s in scopes], config_path=cfg_path)
+    asset_board = build_asset_board(
+        scopes=scopes,
+        asset_quotas=asset_quotas,
+        portfolio_quota=portfolio_quota,
+        latest_cycle=latest_cycle,
+        latest_allocation=latest_alloc,
+    )
+
     from ..ops.intelligence_surface import build_portfolio_intelligence_payload
 
     portfolio_intelligence = build_portfolio_intelligence_payload(repo_root=root, config_path=cfg_path)
@@ -839,10 +937,14 @@ def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | 
             'enabled': bool(getattr(cfg.multi_asset, 'enabled', False)),
             'max_parallel_assets': int(getattr(cfg.multi_asset, 'max_parallel_assets', 1) or 1),
             'stagger_sec': float(getattr(cfg.multi_asset, 'stagger_sec', 0.0) or 0.0),
+            'execution_stagger_sec': float(getattr(cfg.multi_asset, 'execution_stagger_sec', 0.0) or 0.0),
             'portfolio_topk_total': int(getattr(cfg.multi_asset, 'portfolio_topk_total', 1) or 1),
             'portfolio_hard_max_positions': int(getattr(cfg.multi_asset, 'portfolio_hard_max_positions', 1) or 1),
             'portfolio_hard_max_trades_per_day': getattr(cfg.multi_asset, 'portfolio_hard_max_trades_per_day', None),
             'portfolio_hard_max_pending_unknown_total': getattr(cfg.multi_asset, 'portfolio_hard_max_pending_unknown_total', None),
+            'asset_quota_default_trades_per_day': getattr(cfg.multi_asset, 'asset_quota_default_trades_per_day', None),
+            'asset_quota_default_max_open_positions': getattr(cfg.multi_asset, 'asset_quota_default_max_open_positions', None),
+            'asset_quota_default_max_pending_unknown': getattr(cfg.multi_asset, 'asset_quota_default_max_pending_unknown', None),
             'portfolio_hard_max_positions_per_asset': getattr(cfg.multi_asset, 'portfolio_hard_max_positions_per_asset', None),
             'portfolio_hard_max_positions_per_cluster': getattr(cfg.multi_asset, 'portfolio_hard_max_positions_per_cluster', None),
             'correlation_filter_enable': bool(getattr(cfg.multi_asset, 'correlation_filter_enable', True)),
@@ -850,8 +952,12 @@ def portfolio_status_payload(*, repo_root: str | Path = '.', config_path: str | 
             'partition_data_paths': bool(getattr(cfg.multi_asset, 'partition_data_paths', True)),
             'data_db_template': str(getattr(cfg.multi_asset, 'data_db_template', '')),
             'dataset_path_template': str(getattr(cfg.multi_asset, 'dataset_path_template', '')),
+            'asset_count': len(scoped_paths),
         },
         'scopes': scoped_paths,
+        'asset_quotas': [q.as_dict() for q in asset_quotas],
+        'portfolio_quota': portfolio_quota.as_dict(),
+        'asset_board': asset_board,
         'latest_cycle': latest_cycle,
         'latest_allocation': latest_alloc,
         'latest_sources': {
@@ -888,9 +994,9 @@ def portfolio_plan_payload(*, repo_root: str | Path = '.', config_path: str | Pa
                     'optional stagger via multi_asset.stagger_sec'
                 ),
             },
-            {'name': 'allocate', 'description': 'portfolio_allocator chooses top candidates using quota + global pending budget + exposure/correlation caps'},
-            {'name': 'execute', 'description': 'execution layer (Package R): create intent -> place broker order -> reconcile'},
-            {'name': 'persist', 'description': 'writes runs/portfolio_cycle_latest.json + allocation_latest.json'},
+            {'name': 'allocate', 'description': 'portfolio_allocator chooses top candidates using shared quota + per-asset quota + exposure/correlation caps'},
+            {'name': 'execute', 'description': 'execution layer (Package R): create intent -> place broker order -> reconcile; selected assets are staggered by multi_asset.execution_stagger_sec'},
+            {'name': 'persist', 'description': 'writes runs/portfolio_cycle_latest.json + allocation_latest.json with unified asset board inputs'},
         ],
         'scopes': scopes,
     }

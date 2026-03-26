@@ -90,3 +90,37 @@ def test_intelligence_surface_treats_review_only_tuning_as_consistent_after_reje
     assert by_name['anti_overfit_tuning']['status'] == 'ok'
     assert by_name['retrain_review']['status'] == 'ok'
     assert payload['effective_state']['consistency']['expected_review_only_tuning'] is True
+
+
+
+def test_intelligence_surface_recomputes_expired_cooldown_even_with_stale_ops_state_artifact(tmp_path: Path) -> None:
+    cfg = _write_repo(tmp_path)
+    scope_tag = 'EURUSD-OTC_300s'
+    intel_dir = tmp_path / 'runs' / 'intelligence' / scope_tag
+
+    _write_json(intel_dir / 'pack.json', {'kind': 'intelligence_pack', 'generated_at_utc': NOW})
+    _write_json(intel_dir / 'latest_eval.json', {'kind': 'intelligence_eval', 'evaluated_at_utc': NOW, 'retrain_orchestration': {'state': 'cooldown', 'priority': 'high'}})
+    _write_json(intel_dir / 'retrain_plan.json', {'kind': 'retrain_plan', 'state': 'cooldown', 'priority': 'high', 'queue_recommended': True, 'cooldown_active': True, 'cooldown_until_utc': '2026-03-23T14:34:00+00:00'})
+    _write_json(intel_dir / 'retrain_status.json', {'kind': 'retrain_status', 'state': 'rejected', 'priority': 'high', 'plan_state': 'cooldown', 'plan_priority': 'high', 'cooldown_active': True, 'cooldown_until_utc': '2026-03-23T14:34:00+00:00'})
+    _write_json(intel_dir / 'retrain_review.json', {'kind': 'retrain_review', 'generated_at_utc': NOW, 'verdict': 'rejected', 'reason': 'hard_regression', 'executed': True})
+    write_intelligence_ops_state(
+        repo_root=tmp_path,
+        scope_tag=scope_tag,
+        payload={
+            'kind': 'intelligence_ops_state',
+            'schema_version': 'phase1-intelligence-ops-state-v1',
+            'generated_at_utc': NOW,
+            'scope_tag': scope_tag,
+            'asset': 'EURUSD-OTC',
+            'interval_sec': 300,
+            'retrain': {'state': 'rejected', 'plan_state': 'cooldown', 'cooldown_active': True, 'cooldown_until_utc': '2026-03-23T14:34:00+00:00'},
+            'anti_overfit': {'available': False, 'accepted': True, 'tuning': {'present': False, 'source': None, 'review_only': False, 'improved': False, 'review_verdict': None}},
+            'consistency': {'ok': True, 'issues': [], 'expected_rejected_cooldown': True, 'expected_review_only_tuning': False, 'terminal_review_present': True},
+        },
+    )
+
+    payload = build_intelligence_surface_payload(repo_root=tmp_path, config_path=cfg, write_artifact=False)
+
+    assert payload['effective_state']['retrain']['cooldown_active'] is False
+    assert payload['effective_state']['retrain']['state'] == 'ready'
+    assert payload['summary']['retrain_state'] == 'ready'

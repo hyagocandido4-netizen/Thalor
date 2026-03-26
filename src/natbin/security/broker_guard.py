@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..config.execution_mode import execution_mode_uses_broker_submit
 from ..runtime.execution_policy import ensure_utc_iso
 
 
@@ -210,7 +211,7 @@ def evaluate_submit_guard(*, repo_root: str | Path = '.', ctx, now_utc: datetime
             state_path=str(path),
             details={'enabled': False},
         )
-    if live_only and mode != 'live':
+    if live_only and not execution_mode_uses_broker_submit(mode):
         return BrokerGuardDecision(
             allowed=True,
             reason=None,
@@ -314,7 +315,7 @@ def note_submit_attempt(*, repo_root: str | Path = '.', ctx, transport_status: s
             continue
         if now_utc - dt <= timedelta(minutes=1):
             recent.append(dt.isoformat(timespec='seconds'))
-    if enabled and (not live_only or mode == 'live'):
+    if enabled and (not live_only or execution_mode_uses_broker_submit(mode)):
         recent.append(now_utc.isoformat(timespec='seconds'))
         state['last_submit_at_utc'] = now_utc.isoformat(timespec='seconds')
         state['last_transport_status'] = str(transport_status or '')

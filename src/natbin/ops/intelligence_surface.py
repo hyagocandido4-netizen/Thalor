@@ -415,7 +415,7 @@ def _build_scope_surface(
     )
 
     ops_state_payload = artifacts['ops_state']['data'] if isinstance(artifacts['ops_state'].get('data'), dict) else {}
-    effective_ops = dict(ops_state_payload) if ops_state_payload else build_intelligence_ops_state(
+    effective_ops = build_intelligence_ops_state(
         scope_tag=scope_tag,
         asset=asset,
         interval_sec=int(interval_sec),
@@ -431,6 +431,8 @@ def _build_scope_surface(
         candidate_item=candidate_item,
         allocation_item=allocation_item,
         latest_intent=latest_intent,
+        timezone=timezone,
+        now_utc=now,
     )
     effective_retrain = dict(effective_ops.get('retrain') or {})
     effective_anti = dict(effective_ops.get('anti_overfit') or {})

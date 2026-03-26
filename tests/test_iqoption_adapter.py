@@ -277,3 +277,26 @@ def test_iqoption_adapter_paper_mode_is_fail_closed(tmp_path: Path) -> None:
     submit = adapter.submit_order(_req(int((datetime.now(UTC) + timedelta(minutes=5)).timestamp())))
     assert submit.transport_status == 'reject'
     assert submit.error_code == 'iqoption_live_mode_required'
+
+
+def test_iqoption_adapter_real_mode_requires_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv('THALOR_EXECUTION_ALLOW_REAL', raising=False)
+    adapter = IQOptionAdapter(repo_root=tmp_path, account_mode='REAL', execution_mode='live', backend=StubIQClient())
+
+    health = adapter.healthcheck()
+    assert health.ready is False
+    assert health.reason == 'iqoption_real_account_blocked'
+
+    submit = adapter.submit_order(_req(int((datetime.now(UTC) + timedelta(minutes=5)).timestamp())))
+    assert submit.transport_status == 'reject'
+    assert submit.error_code == 'iqoption_real_account_blocked'
+
+
+def test_iqoption_adapter_real_mode_can_be_enabled_explicitly(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv('THALOR_EXECUTION_ALLOW_REAL', '1')
+    backend = StubIQClient()
+    adapter = IQOptionAdapter(repo_root=tmp_path, account_mode='REAL', execution_mode='live', backend=backend)
+
+    submit = adapter.submit_order(_req(int((datetime.now(UTC) + timedelta(minutes=5)).timestamp())))
+    assert submit.transport_status == 'ack'
+    assert submit.external_order_id is not None

@@ -31,6 +31,13 @@ Key goals:
 - `provider: fake` — deterministic local/CI path.
 - `provider: iqoption` — real binary/turbo bridge implemented in Package M2.
 
+### Practice alias (`execution.mode: practice`)
+
+- Safe alias for IQ submit on the `PRACTICE` balance.
+- Internally it is treated as a broker-submit mode (same submit/reconcile path as `live`),
+  but it never escalates into `REAL` implicitly.
+- When `mode: practice` is selected, the effective `execution.account_mode` stays `PRACTICE`.
+
 ## IQ Option live bridge (Package M2)
 
 The adapter `natbin.brokers.iqoption.IQOptionAdapter` now supports:
@@ -84,3 +91,24 @@ A lightweight smoke test validates the disabled + live (fake broker) paths:
 - `scripts/ci/smoke_execution_layer.py`
 - `scripts/tools/broker_adapter_contract_smoke.py`
 - `tests/test_iqoption_adapter.py`
+
+
+## Account protection (Package PROTECTION-1)
+
+Before broker submit, the execution process now evaluates a dedicated protection layer.
+
+This layer can:
+
+- block execution outside configured windows
+- recommend a bounded pre-submit delay
+- enforce global / per-asset pacing caps
+- block simultaneous submits inside the same `cluster_key`
+
+Artifacts and logs:
+
+- `runs/control/<scope>/protection.json`
+- `runs/logs/account_protection.jsonl`
+
+CLI:
+
+- `python -m natbin.runtime_app protection --config config/live_controlled_practice.yaml --json`

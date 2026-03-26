@@ -67,6 +67,44 @@ observability:
   incidents_enable: true
   decision_snapshots_enable: true
 
+production:
+  enabled: false
+  profile: local
+  backup:
+    enabled: true
+    output_dir: runs/backups
+    archive_prefix: thalor_backup
+    format: tar.gz
+    interval_minutes: 60
+    retention_days: 14
+    max_archives: 48
+    include_globs:
+      - runs/runtime_execution.sqlite3
+      - runs/runtime_control.sqlite3
+      - runs/control/**/*.json
+      - runs/logs/**/*.jsonl
+      - runs/logs/**/*.log
+      - runs/intelligence/**/*
+      - runs/reports/**/*
+      - data/**/*.sqlite3
+      - data/datasets/**/*
+    exclude_globs:
+      - "**/__pycache__/**"
+      - "**/*.tmp"
+      - "**/*.swp"
+      - "**/*.sqlite3-shm"
+      - "**/*.sqlite3-wal"
+    latest_manifest_path: runs/backups/latest.json
+  healthcheck:
+    enabled: true
+    require_loop_status: false
+    max_loop_status_age_sec: 1800
+    check_kill_switch: true
+    check_drain_mode: false
+    require_execution_repo: false
+    scope_sample_limit: 6
+
+
 failsafe:
   global_fail_closed: true
   market_context_fail_closed: true
@@ -179,6 +217,43 @@ security:
     allowed_end_local: "23:59"
     blocked_weekdays_local: []
     state_path: runs/security/broker_guard_state.json
+  protection:
+    enabled: true
+    live_submit_only: true
+    state_path: runs/security/account_protection_state.json
+    decision_log_path: runs/logs/account_protection.jsonl
+    sessions:
+      enabled: true
+      inherit_guard_window: true
+      blocked_weekdays_local: []
+      windows: []
+    cadence:
+      enabled: true
+      apply_delay_before_submit: true
+      min_delay_sec: 1.5
+      max_delay_sec: 6.0
+      early_morning_extra_sec: 1.0
+      midday_extra_sec: 0.25
+      evening_extra_sec: 0.5
+      overnight_extra_sec: 1.5
+      volatility_extra_sec: 1.5
+      recent_submit_weight_sec: 0.35
+      jitter_max_sec: 1.0
+    pacing:
+      enabled: true
+      min_spacing_global_sec: 45
+      min_spacing_asset_sec: 120
+      max_submit_15m_global: 2
+      max_submit_15m_asset: 1
+      max_submit_60m_global: 4
+      max_submit_60m_asset: 2
+      max_submit_day_global: 4
+      max_submit_day_asset: 2
+    correlation:
+      enabled: true
+      block_same_cluster_active: true
+      max_active_per_cluster: 1
+      max_pending_per_cluster: 1
 
 notifications:
   enabled: true

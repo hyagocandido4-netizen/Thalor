@@ -51,6 +51,29 @@ class ExecutionRepository:
         finally:
             con.close()
 
+    def get_intent_by_external_order_id(
+        self,
+        *,
+        external_order_id: str,
+        broker_name: str | None = None,
+        account_mode: str | None = None,
+    ) -> OrderIntent | None:
+        sql = 'SELECT * FROM order_intents WHERE external_order_id=?'
+        params: list[Any] = [str(external_order_id)]
+        if broker_name is not None:
+            sql += ' AND broker_name=?'
+            params.append(str(broker_name))
+        if account_mode is not None:
+            sql += ' AND account_mode=?'
+            params.append(str(account_mode))
+        sql += ' ORDER BY updated_at_utc DESC LIMIT 1'
+        con = self._connect()
+        try:
+            row = con.execute(sql, tuple(params)).fetchone()
+            return self._intent_from_row(row)
+        finally:
+            con.close()
+
     def get_intent_by_signal(self, *, broker_name: str, account_mode: str, asset: str, interval_sec: int, day: str, signal_ts: int) -> OrderIntent | None:
         con = self._connect()
         try:
@@ -244,6 +267,103 @@ class ExecutionRepository:
                 f'SELECT COUNT(*) FROM order_intents WHERE asset=? AND interval_sec=? AND day=? AND intent_state IN ({marks})',
                 (str(asset), int(interval_sec), str(day), *sorted(CONSUMES_QUOTA_STATES)),
             ).fetchone()
+            return int((row[0] if row else 0) or 0)
+        finally:
+            con.close()
+
+    def count_consuming_intents_global(self, *, day: str) -> int:
+        con = self._connect()
+        try:
+            marks = ','.join('?' for _ in CONSUMES_QUOTA_STATES)
+            row = con.execute(
+                f'SELECT COUNT(*) FROM order_intents WHERE day=? AND intent_state IN ({marks})',
+                (str(day), *sorted(CONSUMES_QUOTA_STATES)),
+            ).fetchone()
+            return int((row[0] if row else 0) or 0)
+        finally:
+            con.close()
+
+    def last_submit_attempt_utc(
+        self,
+        *,
+        asset: str | None = None,
+        scope_tag: str | None = None,
+        cluster_key: str | None = None,
+    ) -> str | None:
+        sql = (
+            'SELECT MAX(a.requested_at_utc) '
+            'FROM order_submit_attempts a '
+            'JOIN order_intents i ON i.intent_id=a.intent_id '
+            'WHERE 1=1'
+        )
+        params: list[Any] = []
+        if asset is not None:
+            sql += ' AND i.asset=?'
+            params.append(str(asset))
+        if scope_tag is not None:
+            sql += ' AND i.scope_tag=?'
+            params.append(str(scope_tag))
+        if cluster_key is not None:
+            sql += ' AND i.cluster_key=?'
+            params.append(str(cluster_key))
+        con = self._connect()
+        try:
+            row = con.execute(sql, tuple(params)).fetchone()
+            value = row[0] if row else None
+            return str(value) if value not in (None, '') else None
+        finally:
+            con.close()
+
+    def count_submit_attempts_since(
+        self,
+        *,
+        since_utc: str,
+        asset: str | None = None,
+        scope_tag: str | None = None,
+        cluster_key: str | None = None,
+    ) -> int:
+        sql = (
+            'SELECT COUNT(*) '
+            'FROM order_submit_attempts a '
+            'JOIN order_intents i ON i.intent_id=a.intent_id '
+            'WHERE a.requested_at_utc >= ?'
+        )
+        params: list[Any] = [str(since_utc)]
+        if asset is not None:
+            sql += ' AND i.asset=?'
+            params.append(str(asset))
+        if scope_tag is not None:
+            sql += ' AND i.scope_tag=?'
+            params.append(str(scope_tag))
+        if cluster_key is not None:
+            sql += ' AND i.cluster_key=?'
+            params.append(str(cluster_key))
+        con = self._connect()
+        try:
+            row = con.execute(sql, tuple(params)).fetchone()
+            return int((row[0] if row else 0) or 0)
+        finally:
+            con.close()
+
+    def count_active_intents_by_cluster(
+        self,
+        *,
+        cluster_key: str,
+        states: Sequence[str] | None = None,
+        exclude_scope_tag: str | None = None,
+    ) -> int:
+        active_states = list(states or ['submitted_unknown', 'accepted_open'])
+        sql = 'SELECT COUNT(*) FROM order_intents WHERE cluster_key=?'
+        params: list[Any] = [str(cluster_key)]
+        if active_states:
+            sql += ' AND intent_state IN (' + ','.join('?' for _ in active_states) + ')'
+            params.extend([str(s) for s in active_states])
+        if exclude_scope_tag is not None:
+            sql += ' AND scope_tag<>?'
+            params.append(str(exclude_scope_tag))
+        con = self._connect()
+        try:
+            row = con.execute(sql, tuple(params)).fetchone()
             return int((row[0] if row else 0) or 0)
         finally:
             con.close()

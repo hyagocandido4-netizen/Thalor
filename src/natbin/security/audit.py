@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..config.execution_mode import execution_mode_uses_broker_submit
+
 try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover
@@ -126,7 +128,7 @@ def audit_security_posture(
     observability = dict(cfg.get('observability') or {})
     execution = dict(cfg.get('execution') or {})
     broker = dict(cfg.get('broker') or {})
-    execution_live = bool(execution.get('enabled')) and str(execution.get('mode') or 'disabled') == 'live' and str(execution.get('provider') or 'fake') == 'iqoption'
+    execution_live = bool(execution.get('enabled')) and execution_mode_uses_broker_submit(execution.get('mode')) and str(execution.get('provider') or 'fake') == 'iqoption'
 
     embedded = _walk_embedded_credentials(_read_yaml(cfg_path))
     embedded_found = len(embedded) > 0

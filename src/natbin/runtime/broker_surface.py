@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..brokers import FakeBrokerAdapter, IQOptionAdapter
+from ..config.execution_mode import execution_mode_enabled, normalize_execution_mode
 from ..brokers.base import BrokerScope
 
 
@@ -48,7 +49,7 @@ def reconcile_cfg(ctx) -> dict[str, Any]:
 
 def execution_enabled(ctx) -> bool:
     cfg = execution_cfg(ctx)
-    return bool(cfg.get('enabled')) and str(cfg.get('mode') or 'disabled') != 'disabled'
+    return bool(cfg.get('enabled')) and execution_mode_enabled(cfg.get('mode'))
 
 
 
@@ -105,6 +106,7 @@ def adapter_from_context(ctx, *, repo_root: str | Path):
     cfg = execution_cfg(ctx)
     provider = str(cfg.get('provider') or 'fake').strip().lower()
     current_account_mode = account_mode(ctx)
+    execution_mode = normalize_execution_mode(cfg.get('mode'), default='disabled')
     if provider == 'fake':
         fake = dict(cfg.get('fake') or {})
         return FakeBrokerAdapter(
@@ -124,7 +126,7 @@ def adapter_from_context(ctx, *, repo_root: str | Path):
     return IQOptionAdapter(
         repo_root=repo_root,
         account_mode=current_account_mode,
-        execution_mode=str(cfg.get('mode') or 'disabled'),
+        execution_mode=execution_mode,
         broker_config=broker,
         settle_grace_sec=int(reconcile.get('settle_grace_sec') or 30),
         history_limit=max(10, int(reconcile.get('history_lookback_sec') or 3600) // max(60, int(ctx.config.interval_sec))),

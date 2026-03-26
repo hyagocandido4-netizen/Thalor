@@ -13,14 +13,19 @@ from .commands import (
     alerts_payload,
     alerts_release_payload,
     alerts_test_payload,
+    backup_payload,
+    check_order_status_payload,
     doctor_payload,
+    execute_order_payload,
     incidents_alert_payload,
     incidents_drill_payload,
     incidents_payload,
     incidents_report_payload,
     intelligence_payload,
     intelligence_refresh_payload,
+    monte_carlo_payload,
     health_payload,
+    healthcheck_payload,
     observe_payload,
     practice_payload,
     practice_bootstrap_payload,
@@ -33,6 +38,7 @@ from .commands import (
     portfolio_plan_payload,
     portfolio_status_payload,
     precheck_payload,
+    protection_payload,
     quota_payload,
     reconcile_payload,
     release_payload,
@@ -122,6 +128,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_pre.add_argument('--now-utc', default=None)
     sp_pre.add_argument('--enforce-market-context', action='store_true')
 
+    sp_healthcheck = sub.add_parser('healthcheck', help='Container/VPS healthcheck payload with Docker-friendly exit code')
+    _add_common(sp_healthcheck)
+    sp_healthcheck.add_argument('--json', action='store_true')
+
+    sp_backup = sub.add_parser('backup', help='Create a production backup archive for runs/logs/databases')
+    _add_common(sp_backup)
+    sp_backup.add_argument('--json', action='store_true')
+    sp_backup.add_argument('--dry-run', action='store_true')
+
     sp_health = sub.add_parser('health', help='Emit health payload')
     _add_common(sp_health)
     sp_health.add_argument('--json', action='store_true')
@@ -130,6 +145,18 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_security = sub.add_parser('security', help='Emit security / secret posture payload')
     _add_common(sp_security)
     sp_security.add_argument('--json', action='store_true')
+
+    sp_protection = sub.add_parser('protection', help='Emit account protection / responsible pacing payload')
+    _add_common(sp_protection)
+    sp_protection.add_argument('--json', action='store_true')
+
+    sp_monte_carlo = sub.add_parser('monte-carlo', aliases=['monte_carlo'], help='Run realistic Monte Carlo projection from historical realized trades')
+    _add_common(sp_monte_carlo)
+    sp_monte_carlo.add_argument('--json', action='store_true')
+    sp_monte_carlo.add_argument('--initial-capital-brl', type=float, default=None)
+    sp_monte_carlo.add_argument('--horizon-days', type=int, default=None)
+    sp_monte_carlo.add_argument('--trials', type=int, default=None)
+    sp_monte_carlo.add_argument('--rng-seed', type=int, default=None)
 
     sp_sync = sub.add_parser('sync', help='Canonicalize / compare the current repo workspace state (SYNC-1)')
     _add_common(sp_sync)
@@ -261,6 +288,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_orders.add_argument('--json', action='store_true')
     sp_orders.add_argument('--limit', type=int, default=20)
 
+    sp_execute_order = sub.add_parser('execute-order', aliases=['execute_order'], help='Create/submit one order from the latest trade signal (safe by default: PRACTICE unless explicitly configured otherwise)')
+    _add_common(sp_execute_order)
+    sp_execute_order.add_argument('--json', action='store_true')
+
+    sp_check_order_status = sub.add_parser('check-order-status', aliases=['check_order_status'], help='Refresh and inspect one broker order snapshot by external order id')
+    _add_common(sp_check_order_status)
+    sp_check_order_status.add_argument('--json', action='store_true')
+    sp_check_order_status.add_argument('--external-order-id', required=True)
+    sp_check_order_status.add_argument('--no-refresh', action='store_true')
+
     sp_reconcile = sub.add_parser('reconcile', help='Run Package N reconciliation now')
     _add_common(sp_reconcile)
     sp_reconcile.add_argument('--json', action='store_true')
@@ -365,7 +402,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    known = {'status', 'plan', 'quota', 'precheck', 'health', 'security', 'sync', 'intelligence', 'doctor', 'retention', 'release', 'practice', 'practice-bootstrap', 'practice-round', 'retrain', 'incidents', 'alerts', 'observe', 'orders', 'reconcile', 'portfolio', 'asset', 'ops'}
+    known = {'status', 'plan', 'quota', 'precheck', 'health', 'healthcheck', 'backup', 'security', 'protection', 'monte-carlo', 'monte_carlo', 'sync', 'intelligence', 'doctor', 'retention', 'release', 'practice', 'practice-bootstrap', 'practice-round', 'retrain', 'incidents', 'alerts', 'observe', 'orders', 'execute-order', 'execute_order', 'check-order-status', 'check_order_status', 'reconcile', 'portfolio', 'asset', 'ops'}
     raw = list(sys.argv[1:] if argv is None else argv)
     if not raw:
         raw = ['status']
@@ -424,6 +461,16 @@ def main(argv: list[str] | None = None) -> int:
         _print(payload, as_json=bool(ns.json))
         return 0 if not payload.get('blocked') else 2
 
+    if ns.command == 'healthcheck':
+        payload = healthcheck_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command == 'backup':
+        payload = backup_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), dry_run=bool(getattr(ns, 'dry_run', False)))
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
     if ns.command == 'health':
         payload = health_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), topk=ns.topk)
         _print(payload, as_json=bool(ns.json))
@@ -433,6 +480,23 @@ def main(argv: list[str] | None = None) -> int:
         payload = security_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
         _print(payload, as_json=bool(ns.json))
         return 0
+
+    if ns.command == 'protection':
+        payload = protection_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('allowed', True)) else 2
+
+    if ns.command == 'monte-carlo':
+        payload = monte_carlo_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            initial_capital_brl=getattr(ns, 'initial_capital_brl', None),
+            horizon_days=getattr(ns, 'horizon_days', None),
+            trials=getattr(ns, 'trials', None),
+            rng_seed=getattr(ns, 'rng_seed', None),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
 
     if ns.command == 'sync':
         legacy_sync_mode = (
@@ -639,6 +703,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if ns.command == 'orders':
         payload = orders_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns), limit=ns.limit)
+        _print(payload, as_json=bool(ns.json))
+        return 0
+
+    if ns.command in {'execute-order', 'execute_order'}:
+        payload = execute_order_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+        _print(payload, as_json=bool(ns.json))
+        return 0
+
+    if ns.command in {'check-order-status', 'check_order_status'}:
+        payload = check_order_status_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            external_order_id=ns.external_order_id,
+            refresh=not bool(ns.no_refresh),
+        )
         _print(payload, as_json=bool(ns.json))
         return 0
 

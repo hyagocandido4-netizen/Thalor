@@ -18,7 +18,7 @@ Modern env vars should use THALOR__ prefix.
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 try:
     import yaml  # type: ignore
@@ -190,37 +190,52 @@ def _compat_env_values(env_path: Path | None = None) -> dict[str, str]:
     return env
 
 
-def compat_env_source(env_path: Path | None = None) -> dict[str, Any]:
-    """Compatibility source for historical env vars (.env / IQ_* etc.)."""
-    env = _compat_env_values(env_path)
+def _compat_source_from_mapping(env: Mapping[str, str | None]) -> dict[str, Any]:
     out: dict[str, Any] = {}
 
-    # Broker legacy keys.
     broker: dict[str, Any] = {}
-    if env.get("IQ_EMAIL"):
-        broker["email"] = str(env.get("IQ_EMAIL"))
-    if env.get("IQ_PASSWORD"):
-        broker["password"] = str(env.get("IQ_PASSWORD"))
-    if env.get("IQ_BALANCE_MODE"):
-        broker["balance_mode"] = str(env.get("IQ_BALANCE_MODE")).upper()
+    if env.get('IQ_EMAIL'):
+        broker['email'] = str(env.get('IQ_EMAIL'))
+    if env.get('IQ_PASSWORD'):
+        broker['password'] = str(env.get('IQ_PASSWORD'))
+    if env.get('IQ_BALANCE_MODE'):
+        broker['balance_mode'] = str(env.get('IQ_BALANCE_MODE')).upper()
     if broker:
-        out["broker"] = broker
+        out['broker'] = broker
 
-    # Scope legacy keys.
-    asset = env.get("ASSET")
-    interval = env.get("INTERVAL_SEC")
-    tz = env.get("TIMEZONE")
+    asset = env.get('ASSET')
+    interval = env.get('INTERVAL_SEC')
+    tz = env.get('TIMEZONE')
     if asset or interval or tz:
-        out.setdefault("assets", [])
-        out["assets"].append(
+        out.setdefault('assets', [])
+        out['assets'].append(
             {
-                "asset": str(asset or "EURUSD-OTC"),
-                "interval_sec": int(float(str(interval or 300).replace(",", "."))),
-                "timezone": str(tz or "America/Sao_Paulo"),
+                'asset': str(asset or 'EURUSD-OTC'),
+                'interval_sec': int(float(str(interval or 300).replace(',', '.'))),
+                'timezone': str(tz or 'America/Sao_Paulo'),
             }
         )
-
     return out
+
+
+def compat_process_env_source() -> dict[str, Any]:
+    """Compatibility source backed only by the real process environment."""
+
+    return _compat_source_from_mapping(dict(os.environ))
+
+
+
+def compat_dotenv_source(env_path: Path | None = None) -> dict[str, Any]:
+    """Compatibility source backed only by the repo `.env` file."""
+
+    return _compat_source_from_mapping(_read_dotenv_values(env_path))
+
+
+
+def compat_env_source(env_path: Path | None = None) -> dict[str, Any]:
+    """Compatibility source for historical env vars (.env / IQ_* etc.)."""
+
+    return _compat_source_from_mapping(_compat_env_values(env_path))
 
 
 def build_source_trace(*, config_path: Path, env_path: Path | None = None) -> list[str]:

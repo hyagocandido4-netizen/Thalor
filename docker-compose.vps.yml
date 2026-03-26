@@ -1,0 +1,74 @@
+services:
+  thalor-runtime:
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "1"
+    env_file:
+      - .env
+    environment:
+      THALOR_REPO_ROOT: /app
+      THALOR_CONFIG: ${THALOR_CONFIG:-config/multi_asset.yaml}
+      THALOR_RUNTIME_INTERVAL_SEC: ${THALOR_RUNTIME_INTERVAL_SEC:-45}
+      THALOR_TOPK: ${THALOR_TOPK:-3}
+      THALOR_LOOKBACK_CANDLES: ${THALOR_LOOKBACK_CANDLES:-2000}
+      THALOR_RELEASE_ALERTS: ${THALOR_RELEASE_ALERTS:-1}
+      THALOR__PRODUCTION__ENABLED: 1
+      THALOR__PRODUCTION__PROFILE: vps
+      THALOR__PRODUCTION__HEALTHCHECK__REQUIRE_LOOP_STATUS: 1
+      THALOR__EXECUTION__ENABLED: ${THALOR__EXECUTION__ENABLED:-1}
+      THALOR__EXECUTION__MODE: ${THALOR__EXECUTION__MODE:-practice}
+      THALOR__SECURITY__DEPLOYMENT_PROFILE: ${THALOR__SECURITY__DEPLOYMENT_PROFILE:-live}
+      THALOR__SECURITY__LIVE_REQUIRE_EXTERNAL_CREDENTIALS: ${THALOR__SECURITY__LIVE_REQUIRE_EXTERNAL_CREDENTIALS:-1}
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    command: ["bash", "/app/scripts/docker/runtime_loop.sh"]
+    restart: always
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "bash", "/app/scripts/docker/healthcheck.sh"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 120s
+
+  thalor-backup:
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "0"
+    env_file:
+      - .env
+    environment:
+      THALOR_REPO_ROOT: /app
+      THALOR_CONFIG: ${THALOR_CONFIG:-config/multi_asset.yaml}
+      THALOR_BACKUP_INTERVAL_MINUTES: ${THALOR_BACKUP_INTERVAL_MINUTES:-60}
+      THALOR__PRODUCTION__ENABLED: 1
+      THALOR__PRODUCTION__PROFILE: vps
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    command: ["bash", "/app/scripts/docker/backup_loop.sh"]
+    restart: always
+
+  thalor-dashboard:
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "0"
+    env_file:
+      - .env
+    environment:
+      THALOR_REPO_ROOT: /app
+      THALOR_CONFIG: ${THALOR_DASHBOARD_CONFIG:-config/multi_asset.yaml}
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+    ports:
+      - "${THALOR_DASHBOARD_PORT:-8501}:8501"
+    command: >
+      bash -lc 'python -m natbin.dashboard --repo-root . --config "${THALOR_CONFIG}" --no-browser'
+    restart: always

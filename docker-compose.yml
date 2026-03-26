@@ -1,27 +1,5 @@
 services:
-  # Always available: no broker dependency; runs quick smoke checks in a loop.
-  thalor-paper:
-    build:
-      context: .
-      args:
-        INSTALL_IQ: "0"
-    environment:
-      THALOR__EXECUTION__ENABLED: "1"
-      THALOR__EXECUTION__MODE: "paper"
-    volumes:
-      - ./runs:/app/runs
-    command: >
-      sh -lc "while true; do
-        python scripts/ci/smoke_execution_layer.py &&
-        python scripts/ci/smoke_runtime_app.py &&
-        sleep 60;
-      done"
-    restart: unless-stopped
-
-  # Optional: requires IQ credentials and installs requirements.txt (includes iqoptionapi).
-  # Enable with: docker compose --profile iq up --build thalor-runtime
   thalor-runtime:
-    profiles: ["iq"]
     build:
       context: .
       args:
@@ -29,43 +7,79 @@ services:
     env_file:
       - .env
     environment:
-      THALOR__EXECUTION__ENABLED: "1"
-      THALOR__EXECUTION__MODE: "paper"
+      THALOR_REPO_ROOT: /app
+      THALOR_CONFIG: ${THALOR_CONFIG:-config/multi_asset.yaml}
+      THALOR_RUNTIME_INTERVAL_SEC: ${THALOR_RUNTIME_INTERVAL_SEC:-60}
+      THALOR_TOPK: ${THALOR_TOPK:-3}
+      THALOR_LOOKBACK_CANDLES: ${THALOR_LOOKBACK_CANDLES:-2000}
+      THALOR_RELEASE_ALERTS: ${THALOR_RELEASE_ALERTS:-1}
+      THALOR_MAX_FAILURES: ${THALOR_MAX_FAILURES:-5}
+      THALOR__PRODUCTION__ENABLED: ${THALOR__PRODUCTION__ENABLED:-1}
+      THALOR__PRODUCTION__PROFILE: ${THALOR__PRODUCTION__PROFILE:-docker}
+      THALOR__PRODUCTION__HEALTHCHECK__REQUIRE_LOOP_STATUS: ${THALOR__PRODUCTION__HEALTHCHECK__REQUIRE_LOOP_STATUS:-1}
+      THALOR__EXECUTION__ENABLED: ${THALOR__EXECUTION__ENABLED:-1}
+      THALOR__EXECUTION__MODE: ${THALOR__EXECUTION__MODE:-practice}
     volumes:
       - ./runs:/app/runs
       - ./data:/app/data
-    command: >
-      sh -lc "while true; do
-        python -m natbin.runtime_app portfolio observe
-          --repo-root .
-          --config config/multi_asset.yaml
-          --once
-          --topk 3
-          --lookback-candles 2000
-          --json;
-        sleep 60;
-      done"
+      - ./secrets:/app/secrets:ro
+    command: ["bash", "/app/scripts/docker/runtime_loop.sh"]
     restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "bash", "/app/scripts/docker/healthcheck.sh"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+      start_period: 120s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
 
+  thalor-backup:
+    build:
+      context: .
+      args:
+        INSTALL_IQ: "0"
+    env_file:
+      - .env
+    environment:
+      THALOR_REPO_ROOT: /app
+      THALOR_CONFIG: ${THALOR_CONFIG:-config/multi_asset.yaml}
+      THALOR_BACKUP_INTERVAL_MINUTES: ${THALOR_BACKUP_INTERVAL_MINUTES:-60}
+      THALOR__PRODUCTION__ENABLED: ${THALOR__PRODUCTION__ENABLED:-1}
+      THALOR__PRODUCTION__PROFILE: ${THALOR__PRODUCTION__PROFILE:-docker}
+    volumes:
+      - ./runs:/app/runs
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    command: ["bash", "/app/scripts/docker/backup_loop.sh"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      options:
+        max-size: "5m"
+        max-file: "3"
 
-  # Optional: local operational dashboard (read-only).
-  # Enable with: docker compose --profile dashboard up --build thalor-dashboard
   thalor-dashboard:
     profiles: ["dashboard"]
     build:
       context: .
       args:
         INSTALL_IQ: "0"
+    env_file:
+      - .env
     environment:
-      THALOR__EXECUTION__MODE: "paper"
+      THALOR_REPO_ROOT: /app
+      THALOR_CONFIG: ${THALOR_DASHBOARD_CONFIG:-config/multi_asset.yaml}
+      THALOR__EXECUTION__MODE: ${THALOR__EXECUTION__MODE:-practice}
     volumes:
       - ./runs:/app/runs
       - ./data:/app/data
     ports:
-      - "8501:8501"
+      - "${THALOR_DASHBOARD_PORT:-8501}:8501"
     command: >
-      sh -lc "streamlit run src/natbin/dashboard/app.py
-        --server.address 0.0.0.0
-        --server.port 8501
-        -- --repo-root . --config config/multi_asset.yaml"
+      bash -lc 'python -m natbin.dashboard --repo-root . --config "${THALOR_CONFIG}" --no-browser'
     restart: unless-stopped
+    stop_grace_period: 20s

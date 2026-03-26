@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,6 +13,20 @@ _TERMINAL_REVIEW_VERDICTS = {'promoted', 'rejected', 'cooldown', 'skipped'}
 
 def _now_iso() -> str:
     return datetime.now(tz=UTC).isoformat(timespec='seconds')
+
+
+def _resolve_now(*, timezone: str | None = None, now_utc: datetime | None = None) -> datetime:
+    if now_utc is not None:
+        dt = now_utc
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    tz_name = str(timezone or 'UTC').strip() or 'UTC'
+    try:
+        tzinfo = ZoneInfo(tz_name)
+    except Exception:
+        tzinfo = UTC
+    return datetime.now(tz=tzinfo).astimezone(UTC)
 
 
 def _parse_iso(raw: Any) -> datetime | None:
@@ -60,6 +75,12 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
 
 def _clone_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _recommended_post_cooldown_state(plan: Mapping[str, Any], status: Mapping[str, Any]) -> str:
+    queue_recommended = _safe_bool(_first_nonempty(plan.get('queue_recommended'), status.get('queue_recommended')), default=False)
+    watch_recommended = _safe_bool(_first_nonempty(plan.get('watch_recommended'), status.get('watch_recommended')), default=False)
+    return 'ready' if (queue_recommended or watch_recommended) else 'idle'
 
 
 def resolve_anti_overfit_tuning(
@@ -112,6 +133,8 @@ def build_intelligence_ops_state(
     candidate_item: Mapping[str, Any] | None = None,
     allocation_item: Mapping[str, Any] | None = None,
     latest_intent: Mapping[str, Any] | None = None,
+    timezone: str | None = None,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     pack = _clone_mapping(pack_payload)
     latest_eval = _clone_mapping(eval_payload)
@@ -123,6 +146,7 @@ def build_intelligence_ops_state(
     candidate = _clone_mapping(candidate_item)
     allocation = _clone_mapping(allocation_item)
     intent = _clone_mapping(latest_intent)
+    now_dt = _resolve_now(timezone=timezone, now_utc=now_utc)
     eval_retrain = _clone_mapping(latest_eval.get('retrain_orchestration'))
 
     tuning_info = resolve_anti_overfit_tuning(anti_overfit_tuning, anti_overfit_tuning_review)
@@ -155,13 +179,27 @@ def build_intelligence_ops_state(
     review_at = _first_nonempty(review.get('finished_at_utc'), review.get('generated_at_utc'))
 
     cooldown_until = _first_nonempty(plan.get('cooldown_until_utc'), status.get('cooldown_until_utc'))
-    cooldown_active = _safe_bool(
+    cooldown_flag = _safe_bool(
         _first_nonempty(plan.get('cooldown_active'), status.get('cooldown_active')),
         default=False,
     )
     cooldown_until_dt = _parse_iso(cooldown_until)
-    if not cooldown_active and cooldown_until_dt is not None:
-        cooldown_active = cooldown_until_dt > datetime.now(tz=UTC)
+    cooldown_active = bool(cooldown_until_dt is not None and cooldown_until_dt > now_dt)
+    cooldown_expired = bool(
+        cooldown_until_dt is not None
+        and cooldown_until_dt <= now_dt
+        and (
+            cooldown_flag
+            or str(plan_state or '').strip().lower() == 'cooldown'
+            or str(state or '').strip().lower() in {'cooldown', 'rejected'}
+        )
+    )
+    if cooldown_expired:
+        next_state = _recommended_post_cooldown_state(plan, status)
+        if str(plan_state or '').strip().lower() == 'cooldown':
+            plan_state = next_state
+        if str(state or '').strip().lower() in {'cooldown', 'rejected'}:
+            state = next_state
 
     restored_previous_artifacts = _safe_bool(review.get('restored_previous_artifacts'), default=False)
     review_executed = _safe_bool(review.get('executed'), default=bool(review))
@@ -183,10 +221,11 @@ def build_intelligence_ops_state(
         issues.append('status_plan_priority_mismatch')
 
     if verdict_txt == 'rejected':
-        if state_txt != 'rejected':
-            issues.append('rejected_review_without_rejected_status')
-        if plan_state_txt != 'cooldown':
-            issues.append('rejected_review_without_cooldown_plan')
+        if not cooldown_expired:
+            if state_txt != 'rejected':
+                issues.append('rejected_review_without_rejected_status')
+            if plan_state_txt != 'cooldown':
+                issues.append('rejected_review_without_cooldown_plan')
     elif verdict_txt == 'promoted':
         if state_txt != 'promoted':
             issues.append('promoted_review_without_promoted_status')
@@ -197,6 +236,7 @@ def build_intelligence_ops_state(
 
     expected_rejected_cooldown = bool(
         verdict_txt == 'rejected'
+        and not cooldown_expired
         and state_txt == 'rejected'
         and plan_state_txt == 'cooldown'
         and (cooldown_active or cooldown_until_dt is not None)
@@ -215,6 +255,7 @@ def build_intelligence_ops_state(
         'issues': issues,
         'expected_rejected_cooldown': expected_rejected_cooldown,
         'expected_review_only_tuning': expected_review_only_tuning,
+        'cooldown_expired': cooldown_expired,
         'terminal_review_present': verdict_txt in _TERMINAL_REVIEW_VERDICTS,
     }
 
@@ -238,6 +279,7 @@ def build_intelligence_ops_state(
             'restored_previous_artifacts': restored_previous_artifacts,
             'cooldown_active': cooldown_active,
             'cooldown_until_utc': cooldown_until,
+            'cooldown_expired': cooldown_expired,
             'status_reason': status.get('status_reason'),
         },
         'anti_overfit': {

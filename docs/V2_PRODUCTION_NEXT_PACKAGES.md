@@ -12,7 +12,11 @@ estado atual com o SYNC-1.
 - **RCF-3 — done**
 - **INT-OPS-2 — done**
 - **READY-2 — done**
-- **HANDOFF — next (Grok / phase 2+)**
+- **PROTECTION-1 — done**
+- **MULTI-ASSET-2 — done**
+- **PACKAGE-3 Dashboard Professional — done**
+- **PACKAGE-4 Monte Carlo Realista — done**
+- **PACKAGE-5 Preparação para Produção — next**
 
 ---
 
@@ -145,3 +149,69 @@ produção final com foco em:
 
 Esse handoff é o ponto natural para voltar ao Grok com um baseline já canonizado
 e com a trilha de PRACTICE auditável.
+
+
+## PROTECTION-1 — Account protection and responsible pacing
+
+Status: **done**
+
+Delivered:
+
+- typed `security.protection` config surface
+- pre-submit protection evaluation in execution flow
+- configurable cadence delay recommendation
+- global / per-asset pacing caps
+- same-cluster exposure blocking
+- control-plane `protection` command + artifacts + JSONL log
+
+## MULTI-ASSET-2 — Multi-asset completo
+
+Status: **done**
+
+Delivered:
+
+- staggered execution plan between selected assets
+- shared quota + per-asset quota surfaced in `portfolio status`
+- automatic correlation grouping when `cluster_key` is omitted
+- unified asset board for the dashboard
+- six-asset demo profile in `config/multi_asset.yaml`
+
+Next recommended package in the Phase 2 sequence:
+
+- **Package 3 – Dashboard Profissional Thalor**
+
+
+## DASHBOARD-3 — Dashboard Profissional Thalor
+
+Status: **done**
+
+Delivered:
+
+- professional dark-mode dashboard theme
+- real-time equity / drawdown / KPI deck
+- unified per-asset operational board
+- recent alerts + execution activity feed
+- HTML + JSON report export
+
+Next recommended package in the Phase 2 sequence:
+
+- **Package 4 – Simulação Monte Carlo Realista**
+
+
+## MONTE-CARLO-4 — Simulação Monte Carlo Realista
+
+Status: **done**
+
+Delivered:
+
+- command `runtime_app monte-carlo`
+- empirical bootstrap over realized execution history
+- three scenarios: Conservador / Médio / Agressivo
+- HTML + PDF + JSON reports under `runs/reports/monte_carlo`
+- smoke + unit tests for report generation and insufficient-history guard
+
+Next recommended package in the Phase 2 sequence:
+
+- **Package 5 – Preparação para Produção**
+
+- Package 5 — Production prep: DONE

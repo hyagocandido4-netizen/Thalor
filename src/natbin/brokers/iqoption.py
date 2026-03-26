@@ -27,7 +27,9 @@ from ..runtime.execution_contracts import (
     TRANSPORT_TIMEOUT,
 )
 from ..runtime.execution_models import BrokerOrderSnapshot, BrokerSessionStatus, SubmitOrderRequest, SubmitOrderResult
+from ..config.execution_mode import execution_mode_uses_broker_submit, execution_mode_is_practice, normalize_execution_mode
 from ..runtime.execution_policy import ensure_utc_iso, json_dumps, parse_utc_iso, utc_now, utc_now_iso
+from ..config.env import env_bool
 
 
 class IQExecutionClient(Protocol):
@@ -154,7 +156,7 @@ class IQOptionAdapter:
     ) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.account_mode = str(account_mode or 'PRACTICE').upper()
-        self.execution_mode = str(execution_mode or 'live').strip().lower()
+        self.execution_mode = normalize_execution_mode(execution_mode or 'live', default='live')
         self.broker_config = dict(broker_config or {})
         self.path = Path(state_path) if state_path is not None else (self.repo_root / 'runs' / 'iqoption_bridge_state.json')
         if not self.path.is_absolute():
@@ -168,7 +170,24 @@ class IQOptionAdapter:
         return 'iqoption'
 
     def _live_enabled(self) -> bool:
-        return self.execution_mode == 'live'
+        return execution_mode_uses_broker_submit(self.execution_mode)
+
+    def _real_account_guard_reason(self) -> str | None:
+        """Fail closed unless REAL mode was explicitly enabled.
+
+        Safety contract for Phase 2 package 2.1:
+        - PRACTICE remains the default and always works.
+        - REAL never activates implicitly; the operator must opt in via
+          ``THALOR_EXECUTION_ALLOW_REAL=1``.
+        """
+
+        if execution_mode_is_practice(self.execution_mode) and str(self.account_mode or 'PRACTICE').upper() != 'PRACTICE':
+            return 'iqoption_practice_mode_requires_practice_account'
+        if str(self.account_mode or 'PRACTICE').upper() != 'REAL':
+            return None
+        if env_bool('THALOR_EXECUTION_ALLOW_REAL', False):
+            return None
+        return 'iqoption_real_account_blocked'
 
     @staticmethod
     def _extract_secret(value: Any) -> str | None:
@@ -717,7 +736,17 @@ class IQOptionAdapter:
                 account_mode=self.account_mode,
                 ready=False,
                 healthy=True,
-                reason='iqoption_live_bridge_disabled_for_non_live_mode',
+                reason='iqoption_live_bridge_disabled_for_non_broker_mode',
+                checked_at_utc=utc_now_iso(),
+            )
+        real_guard = self._real_account_guard_reason()
+        if real_guard is not None:
+            return BrokerSessionStatus(
+                broker_name=self.broker_name(),
+                account_mode=self.account_mode,
+                ready=False,
+                healthy=False,
+                reason=real_guard,
                 checked_at_utc=utc_now_iso(),
             )
         if self._backend is None:
@@ -769,8 +798,22 @@ class IQOptionAdapter:
                 external_order_id=None,
                 broker_status=BROKER_REJECTED,
                 error_code='iqoption_live_mode_required',
-                error_message='execution.mode must be live for iqoption submits',
+                error_message='execution.mode must be live/practice for iqoption submits',
                 response={'mode': self.execution_mode},
+            )
+        real_guard = self._real_account_guard_reason()
+        if real_guard is not None:
+            return SubmitOrderResult(
+                transport_status=TRANSPORT_REJECT,
+                external_order_id=None,
+                broker_status=BROKER_REJECTED,
+                accepted_at_utc=None,
+                error_code=real_guard,
+                error_message='REAL account execution requires THALOR_EXECUTION_ALLOW_REAL=1',
+                response={
+                    'account_mode': self.account_mode,
+                    'required_env': 'THALOR_EXECUTION_ALLOW_REAL=1',
+                },
             )
         try:
             duration_min = self._duration_min(int(req.interval_sec))

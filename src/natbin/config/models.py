@@ -14,9 +14,11 @@ broker-facing behaviour can be configured without relying on ad-hoc env vars.
 
 from datetime import UTC, datetime
 from pathlib import Path
+
+from .execution_mode import MODE_DISABLED, MODE_PRACTICE, normalize_execution_mode
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SecretStr, computed_field, model_validator
+from pydantic import BaseModel, Field, SecretStr, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -209,6 +211,182 @@ class ObservabilitySettings(BaseModel):
     decision_snapshots_enable: bool = True
 
 
+class DashboardReportSettings(BaseModel):
+    output_dir: Path = Path("runs/reports/dashboard")
+    export_json: bool = True
+
+
+class DashboardSettings(BaseModel):
+    enabled: bool = True
+    title: str = "Thalor"
+    theme: Literal["cyber_dragon", "dark"] = "cyber_dragon"
+    default_refresh_sec: float = 3.0
+    default_equity_start: float = 1000.0
+    max_alerts: int = 50
+    max_equity_points: int = 500
+    report: DashboardReportSettings = Field(default_factory=DashboardReportSettings)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "DashboardSettings":
+        if not str(self.title).strip():
+            raise ValueError("dashboard.title must be non-empty")
+        if float(self.default_refresh_sec) < 0.0:
+            raise ValueError("dashboard.default_refresh_sec must be >= 0")
+        if float(self.default_equity_start) < 0.0:
+            raise ValueError("dashboard.default_equity_start must be >= 0")
+        if int(self.max_alerts) <= 0:
+            raise ValueError("dashboard.max_alerts must be > 0")
+        if int(self.max_equity_points) <= 0:
+            raise ValueError("dashboard.max_equity_points must be > 0")
+        return self
+
+
+class MonteCarloReportSettings(BaseModel):
+    output_dir: Path = Path("runs/reports/monte_carlo")
+    export_json: bool = True
+    export_html: bool = True
+    export_pdf: bool = True
+
+
+class MonteCarloScenarioSettings(BaseModel):
+    label: str = "Scenario"
+    trade_count_scale: float = 1.0
+    return_scale: float = 1.0
+    stake_scale: float = 1.0
+
+    @model_validator(mode="after")
+    def _validate(self) -> "MonteCarloScenarioSettings":
+        if not str(self.label).strip():
+            raise ValueError("monte_carlo scenario label must be non-empty")
+        for name in ('trade_count_scale', 'return_scale', 'stake_scale'):
+            if float(getattr(self, name)) <= 0.0:
+                raise ValueError(f"monte_carlo scenario {name} must be > 0")
+        return self
+
+
+class MonteCarloSettings(BaseModel):
+    enabled: bool = True
+    initial_capital_brl: float = 1000.0
+    horizon_days: int = 60
+    trials: int = 1000
+    rng_seed: int = 42
+    min_realized_trades: int = 20
+    max_stake_fraction_cap: float = 0.10
+    conservative: MonteCarloScenarioSettings = Field(
+        default_factory=lambda: MonteCarloScenarioSettings(
+            label="Conservador",
+            trade_count_scale=0.85,
+            return_scale=0.90,
+            stake_scale=0.90,
+        )
+    )
+    medium: MonteCarloScenarioSettings = Field(
+        default_factory=lambda: MonteCarloScenarioSettings(
+            label="Médio",
+            trade_count_scale=1.00,
+            return_scale=1.00,
+            stake_scale=1.00,
+        )
+    )
+    aggressive: MonteCarloScenarioSettings = Field(
+        default_factory=lambda: MonteCarloScenarioSettings(
+            label="Agressivo",
+            trade_count_scale=1.15,
+            return_scale=1.10,
+            stake_scale=1.10,
+        )
+    )
+    report: MonteCarloReportSettings = Field(default_factory=MonteCarloReportSettings)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "MonteCarloSettings":
+        if float(self.initial_capital_brl) <= 0.0:
+            raise ValueError("monte_carlo.initial_capital_brl must be > 0")
+        if int(self.horizon_days) < 5:
+            raise ValueError("monte_carlo.horizon_days must be >= 5")
+        if int(self.trials) < 100:
+            raise ValueError("monte_carlo.trials must be >= 100")
+        if int(self.min_realized_trades) < 5:
+            raise ValueError("monte_carlo.min_realized_trades must be >= 5")
+        if not (0.0 < float(self.max_stake_fraction_cap) <= 1.0):
+            raise ValueError("monte_carlo.max_stake_fraction_cap must be within (0,1]")
+        return self
+
+
+class ProductionBackupSettings(BaseModel):
+    enabled: bool = True
+    output_dir: Path = Path("runs/backups")
+    archive_prefix: str = "thalor_backup"
+    format: Literal["tar.gz", "zip"] = "tar.gz"
+    interval_minutes: int = 60
+    retention_days: int = 14
+    max_archives: int = 48
+    include_globs: list[str] = Field(
+        default_factory=lambda: [
+            "runs/runtime_execution.sqlite3",
+            "runs/runtime_control.sqlite3",
+            "runs/control/**/*.json",
+            "runs/logs/**/*.jsonl",
+            "runs/logs/**/*.log",
+            "runs/intelligence/**/*",
+            "runs/reports/**/*",
+            "data/**/*.sqlite3",
+            "data/datasets/**/*",
+        ]
+    )
+    exclude_globs: list[str] = Field(
+        default_factory=lambda: [
+            "**/__pycache__/**",
+            "**/*.tmp",
+            "**/*.swp",
+            "**/*.sqlite3-shm",
+            "**/*.sqlite3-wal",
+        ]
+    )
+    latest_manifest_path: Path = Path("runs/backups/latest.json")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProductionBackupSettings":
+        if not str(self.archive_prefix).strip():
+            raise ValueError("production.backup.archive_prefix must be non-empty")
+        if int(self.interval_minutes) <= 0:
+            raise ValueError("production.backup.interval_minutes must be > 0")
+        if int(self.retention_days) <= 0:
+            raise ValueError("production.backup.retention_days must be > 0")
+        if int(self.max_archives) <= 0:
+            raise ValueError("production.backup.max_archives must be > 0")
+        if not list(self.include_globs):
+            raise ValueError("production.backup.include_globs must be non-empty")
+        return self
+
+
+class ProductionHealthcheckSettings(BaseModel):
+    enabled: bool = True
+    require_loop_status: bool = False
+    max_loop_status_age_sec: int = 1800
+    check_kill_switch: bool = True
+    check_drain_mode: bool = False
+    require_execution_repo: bool = False
+    scope_sample_limit: int = 6
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProductionHealthcheckSettings":
+        if int(self.max_loop_status_age_sec) <= 0:
+            raise ValueError("production.healthcheck.max_loop_status_age_sec must be > 0")
+        if int(self.scope_sample_limit) <= 0:
+            raise ValueError("production.healthcheck.scope_sample_limit must be > 0")
+        return self
+
+
+class ProductionSettings(BaseModel):
+    enabled: bool = False
+    profile: Literal["local", "vps", "docker"] = "local"
+    backup: ProductionBackupSettings = Field(default_factory=ProductionBackupSettings)
+    healthcheck: ProductionHealthcheckSettings = Field(default_factory=ProductionHealthcheckSettings)
+
+
+
+
 class FailsafeSettings(BaseModel):
     global_fail_closed: bool = True
     market_context_fail_closed: bool = True
@@ -251,17 +429,27 @@ class MultiAssetSettings(BaseModel):
     # Useful to avoid bursty broker/API requests and reduce simultaneous file I/O.
     stagger_sec: float = Field(0.0, ge=0.0)
 
+    # Optional stagger specific to execution submits. When null/zero, the runtime
+    # falls back to ``stagger_sec``.
+    execution_stagger_sec: float = Field(0.0, ge=0.0)
+
     # Portfolio selection limits
     portfolio_topk_total: int = 6
     portfolio_hard_max_positions: int = 6
     portfolio_hard_max_trades_per_day: int | None = None
     portfolio_hard_max_pending_unknown_total: int | None = 1
 
+    # Shared quota defaults for assets that do not define an explicit override.
+    asset_quota_default_trades_per_day: int | None = None
+    asset_quota_default_max_open_positions: int | None = None
+    asset_quota_default_max_pending_unknown: int | None = None
+
     # Exposure caps (cross-asset / cross-interval)
     portfolio_hard_max_positions_per_asset: int | None = 1
     portfolio_hard_max_positions_per_cluster: int | None = 1
 
-    # Correlation-aware suppression uses cluster_key as the correlation group.
+    # Correlation-aware suppression uses explicit ``cluster_key`` when present
+    # and otherwise infers a deterministic quote-bucket group from the asset.
     correlation_filter_enable: bool = True
     max_trades_per_cluster_per_cycle: int = 1
 
@@ -535,6 +723,137 @@ class SecurityGuardSettings(BaseModel):
         return self
 
 
+class ProtectionWindowSettings(BaseModel):
+    name: str = "session"
+    start_local: str = "00:00"
+    end_local: str = "23:59"
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProtectionWindowSettings":
+        if not str(self.name).strip():
+            raise ValueError("security.protection.sessions.windows[].name must be non-empty")
+        for raw in [self.start_local, self.end_local]:
+            parts = str(raw or '').split(':')
+            if len(parts) != 2:
+                raise ValueError("security.protection.sessions.windows start/end must be HH:MM")
+            hh, mm = int(parts[0]), int(parts[1])
+            if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                raise ValueError("security.protection.sessions.windows start/end must be HH:MM")
+        return self
+
+
+class ProtectionSessionsSettings(BaseModel):
+    enabled: bool = True
+    inherit_guard_window: bool = True
+    blocked_weekdays_local: list[int] = Field(default_factory=list)
+    windows: list[ProtectionWindowSettings] = Field(default_factory=lambda: [ProtectionWindowSettings()])
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProtectionSessionsSettings":
+        cleaned: list[int] = []
+        for item in list(self.blocked_weekdays_local or []):
+            value = int(item)
+            if value < 0 or value > 6:
+                raise ValueError("security.protection.sessions.blocked_weekdays_local must be in [0,6]")
+            if value not in cleaned:
+                cleaned.append(value)
+        self.blocked_weekdays_local = cleaned
+        if not list(self.windows or []):
+            self.windows = [ProtectionWindowSettings()]
+        return self
+
+
+class ProtectionCadenceSettings(BaseModel):
+    enabled: bool = True
+    apply_delay_before_submit: bool = True
+    min_delay_sec: float = 0.25
+    max_delay_sec: float = 1.50
+    early_morning_extra_sec: float = 0.20
+    midday_extra_sec: float = 0.10
+    evening_extra_sec: float = 0.15
+    overnight_extra_sec: float = 0.25
+    volatility_extra_sec: float = 0.25
+    recent_submit_weight_sec: float = 0.10
+    jitter_max_sec: float = 0.25
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProtectionCadenceSettings":
+        for field_name in [
+            'min_delay_sec',
+            'max_delay_sec',
+            'early_morning_extra_sec',
+            'midday_extra_sec',
+            'evening_extra_sec',
+            'overnight_extra_sec',
+            'volatility_extra_sec',
+            'recent_submit_weight_sec',
+            'jitter_max_sec',
+        ]:
+            value = float(getattr(self, field_name) or 0.0)
+            if value < 0:
+                raise ValueError(f"security.protection.cadence.{field_name} must be >= 0")
+        if float(self.max_delay_sec) < float(self.min_delay_sec):
+            raise ValueError("security.protection.cadence.max_delay_sec must be >= min_delay_sec")
+        return self
+
+
+class ProtectionPacingSettings(BaseModel):
+    enabled: bool = True
+    min_spacing_global_sec: int = 12
+    min_spacing_asset_sec: int = 20
+    max_submit_15m_global: int = 2
+    max_submit_15m_asset: int = 1
+    max_submit_60m_global: int = 4
+    max_submit_60m_asset: int = 2
+    max_submit_day_global: int = 6
+    max_submit_day_asset: int = 3
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProtectionPacingSettings":
+        for field_name in [
+            'min_spacing_global_sec',
+            'min_spacing_asset_sec',
+            'max_submit_15m_global',
+            'max_submit_15m_asset',
+            'max_submit_60m_global',
+            'max_submit_60m_asset',
+            'max_submit_day_global',
+            'max_submit_day_asset',
+        ]:
+            value = int(getattr(self, field_name) or 0)
+            minimum = 0 if field_name.startswith('min_spacing') else 1
+            if value < minimum:
+                raise ValueError(f"security.protection.pacing.{field_name} must be >= {minimum}")
+        return self
+
+
+class ProtectionCorrelationSettings(BaseModel):
+    enabled: bool = True
+    block_same_cluster_active: bool = True
+    max_active_per_cluster: int = 1
+    max_pending_per_cluster: int = 1
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ProtectionCorrelationSettings":
+        if int(self.max_active_per_cluster) < 1:
+            raise ValueError("security.protection.correlation.max_active_per_cluster must be >= 1")
+        if int(self.max_pending_per_cluster) < 1:
+            raise ValueError("security.protection.correlation.max_pending_per_cluster must be >= 1")
+        return self
+
+
+class ProtectionSettings(BaseModel):
+    enabled: bool = False
+    live_submit_only: bool = True
+    state_path: Path = Path("runs/security/account_protection_state.json")
+    decision_log_path: Path = Path("runs/logs/account_protection.jsonl")
+
+    sessions: ProtectionSessionsSettings = Field(default_factory=ProtectionSessionsSettings)
+    cadence: ProtectionCadenceSettings = Field(default_factory=ProtectionCadenceSettings)
+    pacing: ProtectionPacingSettings = Field(default_factory=ProtectionPacingSettings)
+    correlation: ProtectionCorrelationSettings = Field(default_factory=ProtectionCorrelationSettings)
+
+
 class SecuritySettings(BaseModel):
     enabled: bool = True
     deployment_profile: Literal["local", "ci", "live"] = "local"
@@ -554,6 +873,7 @@ class SecuritySettings(BaseModel):
     audit_on_context_build: bool = True
 
     guard: SecurityGuardSettings = Field(default_factory=SecurityGuardSettings)
+    protection: ProtectionSettings = Field(default_factory=ProtectionSettings)
 
     @model_validator(mode="after")
     def _validate(self) -> "SecuritySettings":
@@ -676,7 +996,7 @@ class FakeBrokerSettings(BaseModel):
 
 class ExecutionSettings(BaseModel):
     enabled: bool = False
-    mode: Literal["disabled", "paper", "live"] = "disabled"
+    mode: Literal["disabled", "paper", "live", "practice"] = "disabled"
     provider: Literal["fake", "iqoption"] = "fake"
     account_mode: Literal["PRACTICE", "REAL"] = "PRACTICE"
     fail_closed: bool = True
@@ -688,12 +1008,22 @@ class ExecutionSettings(BaseModel):
     limits: ExecutionLimitsSettings = Field(default_factory=ExecutionLimitsSettings)
     fake: FakeBrokerSettings = Field(default_factory=FakeBrokerSettings)
 
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, value: object) -> str:
+        return normalize_execution_mode(value, default=MODE_DISABLED)
+
     @model_validator(mode="after")
     def _validate(self) -> "ExecutionSettings":
-        if self.enabled and self.mode == "disabled":
+        self.mode = normalize_execution_mode(self.mode, default=MODE_DISABLED)
+        if self.enabled and self.mode == MODE_DISABLED:
             self.mode = "paper"
         if not self.enabled:
-            self.mode = "disabled"
+            self.mode = MODE_DISABLED
+        # `practice` is a safe explicit alias for IQ submit on the PRACTICE
+        # balance; never let it drift into REAL implicitly.
+        if self.mode == MODE_PRACTICE:
+            self.account_mode = "PRACTICE"
         if not str(self.client_order_prefix).strip():
             raise ValueError("execution.client_order_prefix must be non-empty")
         return self
@@ -726,6 +1056,9 @@ class ThalorConfig(BaseSettings):
     quota: QuotaSettings = Field(default_factory=QuotaSettings)
     autos: AutosSettings = Field(default_factory=AutosSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
+    monte_carlo: MonteCarloSettings = Field(default_factory=MonteCarloSettings)
+    production: ProductionSettings = Field(default_factory=ProductionSettings)
     failsafe: FailsafeSettings = Field(default_factory=FailsafeSettings)
     multi_asset: MultiAssetSettings = Field(default_factory=MultiAssetSettings)
     intelligence: IntelligenceSettings = Field(default_factory=IntelligenceSettings)
@@ -765,6 +1098,9 @@ class ResolvedConfig(BaseModel):
     quota: QuotaSettings
     autos: AutosSettings
     observability: ObservabilitySettings
+    dashboard: DashboardSettings
+    monte_carlo: MonteCarloSettings
+    production: ProductionSettings
     failsafe: FailsafeSettings
     runtime: RuntimeSettings
     multi_asset: MultiAssetSettings

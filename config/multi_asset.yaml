@@ -74,6 +74,74 @@ observability:
   incidents_enable: true
   decision_snapshots_enable: true
 
+
+monte_carlo:
+  enabled: true
+  initial_capital_brl: 1000.0
+  horizon_days: 60
+  trials: 1000
+  rng_seed: 42
+  min_realized_trades: 20
+  max_stake_fraction_cap: 0.10
+  conservative:
+    label: Conservador
+    trade_count_scale: 0.85
+    return_scale: 0.90
+    stake_scale: 0.90
+  medium:
+    label: Médio
+    trade_count_scale: 1.00
+    return_scale: 1.00
+    stake_scale: 1.00
+  aggressive:
+    label: Agressivo
+    trade_count_scale: 1.15
+    return_scale: 1.10
+    stake_scale: 1.10
+  report:
+    output_dir: runs/reports/monte_carlo
+    export_json: true
+    export_html: true
+    export_pdf: true
+
+production:
+  enabled: false
+  profile: local
+  backup:
+    enabled: true
+    output_dir: runs/backups
+    archive_prefix: thalor_backup
+    format: tar.gz
+    interval_minutes: 60
+    retention_days: 14
+    max_archives: 48
+    include_globs:
+      - runs/runtime_execution.sqlite3
+      - runs/runtime_control.sqlite3
+      - runs/control/**/*.json
+      - runs/logs/**/*.jsonl
+      - runs/logs/**/*.log
+      - runs/intelligence/**/*
+      - runs/reports/**/*
+      - data/**/*.sqlite3
+      - data/datasets/**/*
+    exclude_globs:
+      - "**/__pycache__/**"
+      - "**/*.tmp"
+      - "**/*.swp"
+      - "**/*.sqlite3-shm"
+      - "**/*.sqlite3-wal"
+    latest_manifest_path: runs/backups/latest.json
+  healthcheck:
+    enabled: true
+    require_loop_status: false
+    max_loop_status_age_sec: 1800
+    check_kill_switch: true
+    check_drain_mode: false
+    require_execution_repo: false
+    scope_sample_limit: 6
+
+
 failsafe:
   global_fail_closed: true
   market_context_fail_closed: true
@@ -90,17 +158,24 @@ failsafe:
 multi_asset:
   enabled: true
   # Set to 1 to keep sequential; set to 2+ to validate parallel-safe partitioning.
-  max_parallel_assets: 2
+  max_parallel_assets: 3
 
-  # Optional staggering (seconds) between scopes when running parallel phases.
-  # Each scope starts at i*stagger_sec (i is its index in the config).
-  stagger_sec: 0.0
+  # Prepare/candidate staggering (seconds) between scopes when running parallel phases.
+  stagger_sec: 1.0
+
+  # Submit staggering between selected assets in the execution phase.
+  execution_stagger_sec: 2.0
 
   # Portfolio selection limits
   portfolio_topk_total: 3
-  portfolio_hard_max_positions: 1
-  portfolio_hard_max_trades_per_day: null
-  portfolio_hard_max_pending_unknown_total: 1
+  portfolio_hard_max_positions: 2
+  portfolio_hard_max_trades_per_day: 4
+  portfolio_hard_max_pending_unknown_total: 2
+
+  # Shared quota defaults for assets that do not define an explicit override.
+  asset_quota_default_trades_per_day: 2
+  asset_quota_default_max_open_positions: 1
+  asset_quota_default_max_pending_unknown: 1
 
   # Exposure caps / correlation policy
   portfolio_hard_max_positions_per_asset: 1
@@ -244,13 +319,13 @@ execution:
 
 assets:
   # NOTE: adjust assets to the ones you actually trade (and that exist in your broker).
+  # Assets without cluster_key use the automatic correlation quote-bucket.
   - asset: EURUSD-OTC
     interval_sec: 300
     timezone: America/Sao_Paulo
     payout_default: 0.80
     topk_k: 3
     weight: 1.0
-    cluster_key: fx
 
   - asset: GBPUSD-OTC
     interval_sec: 300
@@ -258,6 +333,36 @@ assets:
     payout_default: 0.80
     topk_k: 3
     weight: 1.0
+
+  - asset: AUDUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+
+  - asset: USDJPY-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+
+  - asset: BTCUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+    cluster_key: crypto
+
+  - asset: XAUUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+    cluster_key: metal
     cluster_key: fx
 
 runtime_overrides: {}

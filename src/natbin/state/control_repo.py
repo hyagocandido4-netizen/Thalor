@@ -132,6 +132,8 @@ def repo_control_artifact_paths(*, repo_root: str | Path) -> dict[str, str]:
     return {
         'repo_control_dir': str(base),
         'sync': str(base / 'sync.json'),
+        'backup': str(base / 'backup.json'),
+        'healthcheck': str(base / 'healthcheck.json'),
     }
 
 
@@ -172,6 +174,7 @@ def control_artifact_paths(*, repo_root: str | Path, asset: str, interval_sec: i
         'orders': str(base / 'orders.json'),
         'reconcile': str(base / 'reconcile.json'),
         'guard': str(base / 'guard.json'),
+        'protection': str(base / 'protection.json'),
         'lifecycle': str(base / 'lifecycle.json'),
         'security': str(base / 'security.json'),
         'intelligence': str(base / 'intelligence.json'),

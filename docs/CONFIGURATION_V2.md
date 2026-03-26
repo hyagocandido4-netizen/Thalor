@@ -23,12 +23,17 @@ When `repo_root` is provided, config resolution is anchored to that root for:
 
 ## Precedence
 
-Base settings resolution still follows:
+Base settings resolution now follows:
 
 1. process `THALOR__*` / init overrides
-2. `.env` `THALOR__*`
-3. compatibility keys (`IQ_*`, `ASSET`, `INTERVAL_SEC`, `TIMEZONE`)
-4. YAML (`config/base.yaml` preferred, `config.yaml` fallback)
+2. process compatibility keys (`IQ_*`, `ASSET`, `INTERVAL_SEC`, `TIMEZONE`)
+3. YAML (`config/base.yaml` preferred, `config.yaml` fallback, including explicit profile files)
+4. repo-local `.env` `THALOR__*`
+5. repo-local `.env` compatibility keys (`IQ_*`, `ASSET`, `INTERVAL_SEC`, `TIMEZONE`)
+
+This means an explicit profile file such as `config/live_controlled_practice.yaml`
+can define its own `execution:` block without being silently shadowed by a stale
+`.env` toggle like `THALOR__EXECUTION__ENABLED=0`.
 
 ### External secrets overlay (Package M6)
 
@@ -222,3 +227,194 @@ broker:
 
 They are mapped into the compatibility env expected by the existing IQ client
 only while the adapter is performing its connect/call flow.
+
+
+## Account protection section (Package PROTECTION-1)
+
+Package PROTECTION-1 adds a second typed safety layer under `security:`:
+
+```yaml
+security:
+  protection:
+    enabled: true
+    live_submit_only: true
+    state_path: runs/security/account_protection_state.json
+    decision_log_path: runs/logs/account_protection.jsonl
+    sessions:
+      enabled: true
+      inherit_guard_window: true
+      blocked_weekdays_local: []
+      windows: []
+    cadence:
+      enabled: true
+      apply_delay_before_submit: true
+      min_delay_sec: 0.5
+      max_delay_sec: 2.5
+      early_morning_extra_sec: 0.5
+      midday_extra_sec: 0.0
+      evening_extra_sec: 0.25
+      overnight_extra_sec: 0.75
+      volatility_extra_sec: 0.75
+      recent_submit_weight_sec: 0.15
+      jitter_max_sec: 0.5
+    pacing:
+      enabled: true
+      min_spacing_global_sec: 20
+      min_spacing_asset_sec: 60
+      max_submit_15m_global: 3
+      max_submit_15m_asset: 1
+      max_submit_60m_global: 6
+      max_submit_60m_asset: 2
+      max_submit_day_global: 6
+      max_submit_day_asset: 2
+    correlation:
+      enabled: true
+      block_same_cluster_active: true
+      max_active_per_cluster: 1
+      max_pending_per_cluster: 1
+```
+
+Main intents:
+
+- keep submit cadence sustainable
+- centralize session-window evaluation for execution
+- block simultaneous exposure inside the same configured `cluster_key`
+- emit explicit protection artifacts/logs for audit and debugging
+
+The control plane now exposes:
+
+- `runtime_app protection`
+- `runs/control/<scope>/protection.json`
+- `runs/logs/account_protection.jsonl`
+
+## Multi-asset complete (Package MULTI-ASSET-2)
+
+The typed config now carries explicit knobs for the complete multi-asset layer:
+
+```yaml
+multi_asset:
+  enabled: true
+  max_parallel_assets: 3
+  stagger_sec: 1.0
+  execution_stagger_sec: 2.0
+  portfolio_topk_total: 3
+  portfolio_hard_max_positions: 2
+  portfolio_hard_max_trades_per_day: 4
+  portfolio_hard_max_pending_unknown_total: 2
+  asset_quota_default_trades_per_day: 2
+  asset_quota_default_max_open_positions: 1
+  asset_quota_default_max_pending_unknown: 1
+  portfolio_hard_max_positions_per_asset: 1
+  portfolio_hard_max_positions_per_cluster: 1
+  correlation_filter_enable: true
+  max_trades_per_cluster_per_cycle: 1
+```
+
+`execution_stagger_sec` is used only for broker submit ordering in portfolio mode.
+When it is zero, the runtime falls back to `stagger_sec`.
+
+Automatic correlation behavior is intentionally conservative:
+
+- explicit `cluster_key` wins
+- missing / `default` `cluster_key` falls back to an inferred correlation group
+- the inferred group is currently derived from the asset symbol, e.g. `EURUSD-OTC -> pair_quote:USD`
+
+This keeps the runtime deterministic while still allowing per-asset overrides.
+
+
+## Dashboard (Package 3)
+
+A new optional top-level `dashboard:` section controls the professional local dashboard.
+
+```yaml
+dashboard:
+  enabled: true
+  title: Thalor
+  theme: cyber_dragon
+  default_refresh_sec: 3.0
+  default_equity_start: 1000.0
+  max_alerts: 50
+  max_equity_points: 500
+  report:
+    output_dir: runs/reports/dashboard
+    export_json: true
+```
+
+Notes:
+
+- `default_equity_start` is used as the baseline for the equity curve visualization.
+- `max_alerts` and `max_equity_points` keep the dashboard responsive for long-running repos.
+- `report.output_dir` is used by `python -m natbin.dashboard.report` and by the export button inside the dashboard.
+
+
+## monte_carlo
+
+Package 4 introduz a surface `monte_carlo` para projeção realista baseada no
+ledger histórico do projeto.
+
+Exemplo:
+
+```yaml
+monte_carlo:
+  enabled: true
+  initial_capital_brl: 1000.0
+  horizon_days: 60
+  trials: 1000
+  rng_seed: 42
+  min_realized_trades: 20
+  max_stake_fraction_cap: 0.10
+  conservative:
+    label: Conservador
+    trade_count_scale: 0.85
+    return_scale: 0.90
+    stake_scale: 0.90
+  medium:
+    label: Médio
+    trade_count_scale: 1.00
+    return_scale: 1.00
+    stake_scale: 1.00
+  aggressive:
+    label: Agressivo
+    trade_count_scale: 1.15
+    return_scale: 1.10
+    stake_scale: 1.10
+  report:
+    output_dir: runs/reports/monte_carlo
+    export_json: true
+    export_html: true
+    export_pdf: true
+```
+
+Comando principal:
+
+```powershell
+.\.venv\Scripts\python.exe -m natbin.runtime_app monte-carlo --repo-root . --config config/multi_asset.yaml --json
+```
+
+## Production (Package 5)
+
+O bloco `production` formaliza backup e healthcheck para Docker/VPS.
+
+```yaml
+production:
+  enabled: false
+  profile: local
+  backup:
+    enabled: true
+    output_dir: runs/backups
+    archive_prefix: thalor_backup
+    format: tar.gz
+    interval_minutes: 60
+    retention_days: 14
+    max_archives: 48
+  healthcheck:
+    enabled: true
+    require_loop_status: false
+    max_loop_status_age_sec: 1800
+    check_kill_switch: true
+    check_drain_mode: false
+    require_execution_repo: false
+    scope_sample_limit: 6
+```
+
+Os comandos associados são `runtime_app backup` e `runtime_app healthcheck`.

@@ -21,7 +21,13 @@ from pydantic_settings.sources.providers.env import parse_env_vars
 
 from .models import ResolvedConfig, ThalorConfig
 from .paths import resolve_config_path, resolve_env_path, resolve_repo_root
-from .sources import build_source_trace, compat_env_source, legacy_yaml_to_model_dict, modern_dotenv_env_map
+from .sources import (
+    build_source_trace,
+    compat_dotenv_source,
+    compat_process_env_source,
+    legacy_yaml_to_model_dict,
+    modern_dotenv_env_map,
+)
 
 
 class MappingEnvSettingsSource(EnvSettingsSource):
@@ -70,17 +76,24 @@ def load_thalor_config(
             file_secret_settings,
         ):
             yaml_src = _ThalorYamlSource(settings_cls, yaml_file=path, yaml_file_encoding="utf-8")
-            compat_src = InitSettingsSource(settings_cls, init_kwargs=compat_env_source(env_path=env_file))
+            compat_process_src = InitSettingsSource(settings_cls, init_kwargs=compat_process_env_source())
             dotenv_env_src = MappingEnvSettingsSource(settings_cls, env_mapping=modern_dotenv_env_map(env_path=env_file))
-            # Precedence is left-to-right in pydantic-settings. Keep runtime
-            # overrides ahead of compatibility sources so THALOR__ wins over
-            # IQ_*/ASSET legacy keys, and both win over YAML defaults.
+            compat_dotenv_src = InitSettingsSource(settings_cls, init_kwargs=compat_dotenv_source(env_path=env_file))
+            # Precedence is left-to-right in pydantic-settings.
+            #
+            # Keep explicit process-level overrides above YAML, but treat the
+            # repo-local `.env` as a defaults layer below the selected config
+            # file. This allows profile YAMLs like
+            # `config/live_controlled_practice.yaml` to express the effective
+            # execution block without being silently shadowed by a stale
+            # `.env` toggle such as `THALOR__EXECUTION__ENABLED=0`.
             return (
                 init_settings,
                 env_settings,
-                dotenv_env_src,
-                compat_src,
+                compat_process_src,
                 yaml_src,
+                dotenv_env_src,
+                compat_dotenv_src,
                 file_secret_settings,
             )
 
@@ -160,6 +173,9 @@ def load_resolved_config(
         quota=cfg.quota,
         autos=cfg.autos,
         observability=cfg.observability,
+        dashboard=cfg.dashboard,
+        monte_carlo=cfg.monte_carlo,
+        production=cfg.production,
         failsafe=cfg.failsafe,
         runtime=cfg.runtime,
         multi_asset=cfg.multi_asset,

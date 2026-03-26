@@ -9,6 +9,7 @@ from ..portfolio.latest import load_portfolio_latest_payload
 from ..state.repos import SignalsRepository
 from .broker_surface import execution_cfg, signals_repo_db_path
 from .execution_contracts import INTENT_PLANNED
+from ..portfolio.correlation import resolve_correlation_group
 from .execution_models import OrderIntent
 from .execution_policy import (
     compute_entry_deadline_utc,
@@ -149,6 +150,8 @@ def intent_from_signal_row(*, row: dict[str, Any], ctx, repo_root: str | Path | 
     cluster_key = str(row.get('cluster_key') or '').strip() or None
     if cluster_key is None and isinstance(allocation_item, dict) and allocation_item.get('cluster_key') is not None:
         cluster_key = str(allocation_item.get('cluster_key') or '').strip() or None
+    if cluster_key is None:
+        cluster_key = resolve_correlation_group(str(ctx.config.asset), 'default')
 
     allocation_batch_id = str(row.get('allocation_batch_id') or '').strip() or None
     if allocation_batch_id is None and isinstance(allocation_payload, dict) and allocation_payload.get('allocation_id') is not None:

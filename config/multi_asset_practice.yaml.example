@@ -1,0 +1,136 @@
+version: "2.0"
+
+runtime:
+  profile: multi_asset_practice
+  quota_aware_sleep: true
+  legacy_runtime_cleanup_enable: true
+
+broker:
+  provider: iqoption
+  balance_mode: PRACTICE
+  api_throttle_min_interval_s: 0.20
+  api_throttle_jitter_s: 0.05
+
+data:
+  db_path: data/market_otc.sqlite3
+  dataset_path: data/dataset_phase2.csv
+  lookback_candles: 2000
+  max_batch: 1000
+
+multi_asset:
+  enabled: true
+  max_parallel_assets: 3
+  stagger_sec: 1.0
+  execution_stagger_sec: 2.0
+  portfolio_topk_total: 3
+  portfolio_hard_max_positions: 2
+  portfolio_hard_max_trades_per_day: 4
+  portfolio_hard_max_pending_unknown_total: 2
+  asset_quota_default_trades_per_day: 2
+  asset_quota_default_max_open_positions: 1
+  asset_quota_default_max_pending_unknown: 1
+  portfolio_hard_max_positions_per_asset: 1
+  portfolio_hard_max_positions_per_cluster: 1
+  correlation_filter_enable: true
+  max_trades_per_cluster_per_cycle: 1
+  partition_data_paths: true
+  data_db_template: data/market_{scope_tag}.sqlite3
+  dataset_path_template: data/datasets/{scope_tag}/dataset.csv
+
+security:
+  enabled: true
+  deployment_profile: live
+  audit_on_context_build: true
+  guard:
+    enabled: true
+    live_only: true
+    min_submit_spacing_sec: 10
+    max_submit_per_minute: 2
+    time_filter_enable: true
+    allowed_start_local: "00:00"
+    allowed_end_local: "23:59"
+    blocked_weekdays_local: []
+  protection:
+    enabled: true
+    live_submit_only: true
+    pacing:
+      enabled: true
+      min_spacing_global_sec: 20
+      min_spacing_asset_sec: 60
+      max_submit_15m_global: 3
+      max_submit_15m_asset: 1
+      max_submit_60m_global: 6
+      max_submit_60m_asset: 2
+      max_submit_day_global: 6
+      max_submit_day_asset: 2
+    correlation:
+      enabled: true
+      block_same_cluster_active: true
+      max_active_per_cluster: 1
+      max_pending_per_cluster: 1
+
+execution:
+  enabled: true
+  mode: practice
+  provider: iqoption
+  account_mode: PRACTICE
+  fail_closed: true
+  client_order_prefix: thalor
+  stake:
+    amount: 2.0
+    currency: BRL
+  submit:
+    grace_sec: 2
+    max_latency_ms: 1500
+    retry_on_reject: false
+    retry_on_timeout: false
+  reconcile:
+    poll_interval_sec: 5
+    history_lookback_sec: 3600
+    orphan_lookback_sec: 7200
+    not_found_grace_sec: 20
+    settle_grace_sec: 30
+    scan_without_pending: false
+  limits:
+    max_pending_unknown: 1
+    max_open_positions: 1
+
+assets:
+  - asset: EURUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+  - asset: GBPUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+  - asset: AUDUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+  - asset: USDJPY-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+  - asset: BTCUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+    cluster_key: crypto
+  - asset: XAUUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    payout_default: 0.80
+    topk_k: 3
+    weight: 1.0
+    cluster_key: metal

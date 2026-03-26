@@ -27,7 +27,9 @@ from ..intelligence.runtime import enrich_candidate as enrich_candidate_intellig
 
 from . import allocator as _allocator
 from .models import CandidateDecision, PortfolioCycleReport, PortfolioScope
+from .board import build_execution_plan
 from .candidate_utils import candidate_from_decision_payload
+from .correlation import resolve_correlation_group
 from .latest import write_portfolio_latest_payload
 from .paths import (
     ScopeDataPaths,
@@ -91,6 +93,7 @@ def load_scopes(*, repo_root: str | Path, config_path: str | Path | None = None)
         interval_sec = int(getattr(a, 'interval_sec', 300))
         tz = str(getattr(a, 'timezone', 'UTC'))
         tag = compute_scope_tag(asset, interval_sec)
+        cluster_key = str(getattr(a, 'cluster_key', 'default') or 'default')
         scopes.append(
             PortfolioScope(
                 asset=asset,
@@ -98,7 +101,8 @@ def load_scopes(*, repo_root: str | Path, config_path: str | Path | None = None)
                 timezone=tz,
                 scope_tag=tag,
                 weight=float(getattr(a, 'weight', 1.0) or 1.0),
-                cluster_key=str(getattr(a, 'cluster_key', 'default') or 'default'),
+                cluster_key=cluster_key,
+                correlation_group=resolve_correlation_group(asset=asset, cluster_key=cluster_key),
                 topk_k=int(getattr(a, 'topk_k', 3) or 3),
                 hard_max_trades_per_day=getattr(a, 'hard_max_trades_per_day', None),
                 max_open_positions=getattr(a, 'max_open_positions', None),
@@ -647,6 +651,7 @@ def run_portfolio_cycle(
         errors.append(f'allocation_failed:{type(exc).__name__}:{exc}')
 
     # --- Execution phase (only selected) ---
+    execution_plan: list[dict[str, Any]] = []
     if allocation_payload is not None:
         if kill_active or drain_active:
             errors.append('execution_skipped:kill_or_drain')
@@ -654,16 +659,33 @@ def run_portfolio_cycle(
             selected = allocation_payload.get('selected') or []
             selected_tags = [str(i.get('scope_tag')) for i in selected if isinstance(i, dict)]
             exec_disabled = bool(selected_tags) and not bool(getattr(cfg.execution, 'enabled', False))
+            try:
+                execution_stagger_sec = float(getattr(cfg.multi_asset, 'execution_stagger_sec', 0.0) or 0.0)
+            except Exception:
+                execution_stagger_sec = 0.0
+            if execution_stagger_sec <= 0.0:
+                try:
+                    execution_stagger_sec = float(getattr(cfg.multi_asset, 'stagger_sec', 0.0) or 0.0)
+                except Exception:
+                    execution_stagger_sec = 0.0
+            execution_plan = build_execution_plan(
+                selected=selected,
+                scopes=scopes,
+                stagger_sec=execution_stagger_sec,
+            )
             if exec_disabled:
                 errors.append('execution_skipped:execution_disabled')
-            for tag in selected_tags:
+            for idx, tag in enumerate(selected_tags):
                 s = next((x for x in scopes if x.scope_tag == tag), None)
                 if s is None:
                     continue
                 try:
+                    if idx > 0 and execution_stagger_sec > 0.0:
+                        time.sleep(float(execution_stagger_sec))
                     dp = data_paths_by_tag.get(s.scope_tag)
                     if dp is None:
                         continue
+                    plan_item = next((item for item in execution_plan if str(item.get('scope_tag')) == str(s.scope_tag)), None)
                     outcome, payload = execute_scope(
                         repo_root=root,
                         config_path=cfg_path,
@@ -676,6 +698,9 @@ def run_portfolio_cycle(
                             'scope_tag': s.scope_tag,
                             'asset': s.asset,
                             'interval_sec': s.interval_sec,
+                            'correlation_group': str(getattr(s, 'correlation_group', None) or resolve_correlation_group(s.asset, s.cluster_key)),
+                            'stagger_delay_sec': (plan_item or {}).get('stagger_delay_sec'),
+                            'scheduled_at_utc': (plan_item or {}).get('scheduled_at_utc'),
                             'outcome': outcome.as_dict(),
                             'payload': payload,
                         }
@@ -723,6 +748,7 @@ def run_portfolio_cycle(
         allocation=allocation_payload,
         execution=execution_results,
         errors=errors,
+        execution_plan=execution_plan,
         gates=gates,
         failsafe_blocks=failsafe_blocks,
     )

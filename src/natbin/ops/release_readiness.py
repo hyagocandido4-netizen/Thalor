@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ..config.execution_mode import execution_mode_uses_broker_submit
+
 from ..alerting.telegram import alerts_status_payload
 from ..control.ops import gate_status
 from ..control.plan import build_context
@@ -174,7 +176,7 @@ def build_release_readiness_payload(
     broker = dict(ctx.resolved_config.get('broker') or {})
     execution_account_mode = str(execution.get('account_mode') or 'PRACTICE').upper()
     broker_balance_mode = str(broker.get('balance_mode') or execution_account_mode or 'PRACTICE').upper()
-    live_mode = bool(execution.get('enabled')) and str(execution.get('mode') or 'disabled') == 'live' and str(execution.get('provider') or 'fake') == 'iqoption'
+    live_mode = bool(execution.get('enabled')) and execution_mode_uses_broker_submit(execution.get('mode')) and str(execution.get('provider') or 'fake') == 'iqoption'
     if live_mode:
         checks.append(_check('execution_mode', 'ok', 'Execução live IQ habilitada'))
     elif bool(execution.get('enabled')):

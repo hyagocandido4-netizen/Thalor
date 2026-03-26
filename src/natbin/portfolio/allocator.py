@@ -7,6 +7,7 @@ from typing import Any, Mapping
 
 from ..config.loader import load_thalor_config
 
+from .correlation import resolve_correlation_group
 from .models import AllocationItem, AssetQuota, CandidateDecision, PortfolioAllocation, PortfolioQuota, PortfolioScope
 
 
@@ -32,7 +33,9 @@ def _scope_weight(scope_by_tag: Mapping[str, PortfolioScope], scope_tag: str) ->
 
 def _scope_cluster(scope_by_tag: Mapping[str, PortfolioScope], scope_tag: str) -> str:
     s = scope_by_tag.get(scope_tag)
-    return str(getattr(s, 'cluster_key', 'default') or 'default')
+    if s is None:
+        return 'default'
+    return resolve_correlation_group(str(getattr(s, 'asset', '') or ''), str(getattr(s, 'cluster_key', 'default') or 'default'))
 
 
 def _item(
@@ -45,6 +48,7 @@ def _item(
     rank: int | None = None,
     risk_context: dict[str, Any] | None = None,
 ) -> AllocationItem:
+    correlation_group = _scope_cluster(scope_by_tag, candidate.scope_tag)
     return AllocationItem(
         scope_tag=candidate.scope_tag,
         asset=candidate.asset,
@@ -67,7 +71,8 @@ def _item(
         selected=bool(selected),
         reason=str(reason),
         rank=int(rank) if rank is not None else None,
-        cluster_key=_scope_cluster(scope_by_tag, candidate.scope_tag),
+        cluster_key=correlation_group,
+        correlation_group=correlation_group,
         risk_context=dict(risk_context or {}) or None,
         intelligence=dict(candidate.intelligence or {}) or None,
         portfolio_feedback=dict(candidate.portfolio_feedback or {}) or None,

@@ -1,36 +1,35 @@
 # syntax=docker/dockerfile:1
-#
-# Thalor (NatBin) — container image
-#
-# Default build is "paper/CI mode" (no broker client).
-# For runtime with IQ data collection, build with:
-#   docker build --build-arg INSTALL_IQ=1 -t thalor:iq .
-#
+
 FROM python:3.12-slim
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app/src
 
-# Minimal system deps (TLS certs). If you build with INSTALL_IQ=1 and wheels are missing,
-# you may need to extend this with build-essential / gcc.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends bash ca-certificates tini tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-ARG INSTALL_IQ=0
+ARG INSTALL_IQ=1
 
 COPY requirements-ci.txt requirements.txt ./
 
 RUN python -m pip install --upgrade pip \
-    && pip install -r requirements-ci.txt \
-    && if [ "$INSTALL_IQ" = "1" ]; then pip install -r requirements.txt; fi
+    && pip install --no-cache-dir -r requirements-ci.txt \
+    && if [ "$INSTALL_IQ" = "1" ]; then pip install --no-cache-dir -r requirements.txt; fi
 
 COPY . .
 
-RUN pip install -e .
+RUN pip install --no-cache-dir -e . \
+    && chmod +x /app/scripts/docker/*.sh \
+    && useradd --create-home --home-dir /home/thalor --shell /bin/bash --uid 1000 thalor \
+    && mkdir -p /app/runs /app/data /app/secrets /app/runs/backups /app/runs/logs /app/runs/control /app/runs/reports \
+    && chown -R thalor:thalor /app /home/thalor
 
-# Default: prints the portfolio plan (no broker creds required).
-CMD ["python","-m","natbin.runtime_app","portfolio","plan","--repo-root",".","--config","config/multi_asset.yaml","--json"]
+USER thalor
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker/entrypoint.sh"]
+CMD ["python", "-m", "natbin.runtime_app", "status", "--repo-root", ".", "--config", "config/multi_asset.yaml", "--json"]

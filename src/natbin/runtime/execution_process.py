@@ -25,6 +25,7 @@ from .execution_contracts import (
 )
 from .execution_policy import parse_utc_iso, signal_day_from_ts, utc_now, utc_now_iso
 from .execution_signal import intent_from_signal_row, latest_trade_row
+from .execution_status import check_order_status_payload
 from .execution_submit import submit_intent
 from .reconciliation_flow import reconcile_scope
 
@@ -181,6 +182,7 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
     latest_intent = None
     blocked_reason = None
     security_guard = None
+    account_protection = None
     if latest is not None and str(latest.get('action') or '').upper() in {'CALL', 'PUT'}:
         planned = intent_from_signal_row(row=latest, ctx=ctx, repo_root=repo_root)
         latest_intent, created = repo.ensure_intent(planned)
@@ -267,13 +269,53 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                                 event_payload={'reason': blocked_reason, 'health': health.as_dict(), 'security_guard': sg_payload},
                             )
                         else:
-                            latest_intent, submitted = submit_intent(
-                                repo_root=repo_root,
-                                ctx=ctx,
-                                repo=repo,
-                                adapter=adapter,
-                                intent=latest_intent,
-                            )
+                            try:
+                                from ..security.account_protection import apply_recommended_delay, evaluate_account_protection
+
+                                account_protection = evaluate_account_protection(
+                                    repo_root=repo_root,
+                                    ctx=ctx,
+                                    latest_trade=latest,
+                                    write_artifact=True,
+                                )
+                            except Exception as exc:
+                                account_protection = {'allowed': False, 'reason': f'account_protection_error:{type(exc).__name__}'}
+                            if isinstance(account_protection, dict):
+                                ap_allowed = bool(account_protection.get('allowed'))
+                                ap_reason = str(account_protection.get('reason') or 'account_protection_blocked')
+                                ap_payload = dict(account_protection)
+                                ap_apply_delay = bool((account_protection.get('details') or {}).get('enabled', True))
+                                ap_delay = float(account_protection.get('recommended_delay_sec') or 0.0)
+                            else:
+                                ap_allowed = bool(getattr(account_protection, 'allowed', False))
+                                ap_reason = str(getattr(account_protection, 'reason', None) or 'account_protection_blocked')
+                                ap_payload = account_protection.as_dict() if hasattr(account_protection, 'as_dict') else {'reason': ap_reason}
+                                ap_apply_delay = True
+                                ap_delay = float(getattr(account_protection, 'recommended_delay_sec', 0.0) or 0.0)
+                            if not ap_allowed:
+                                blocked_reason = ap_reason
+                                latest_intent = _save_blocked_intent(
+                                    repo,
+                                    latest_intent,
+                                    reason=blocked_reason,
+                                    error_code='account_protection',
+                                    event_payload={
+                                        'reason': blocked_reason,
+                                        'health': health.as_dict(),
+                                        'security_guard': sg_payload,
+                                        'account_protection': ap_payload,
+                                    },
+                                )
+                            else:
+                                if not isinstance(account_protection, dict) and ap_apply_delay and ap_delay > 0:
+                                    account_protection = apply_recommended_delay(account_protection)
+                                latest_intent, submitted = submit_intent(
+                                    repo_root=repo_root,
+                                    ctx=ctx,
+                                    repo=repo,
+                                    adapter=adapter,
+                                    intent=latest_intent,
+                                )
 
     post_result, post_detail = _run_reconcile_phase(repo_root=repo_root, ctx=ctx, adapter=adapter, phase='post')
     if latest_intent is not None:
@@ -293,6 +335,7 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
         'submit_attempt': submitted.as_dict() if submitted is not None else None,
         'blocked_reason': blocked_reason,
         'security_guard': security_guard.as_dict() if hasattr(security_guard, 'as_dict') else security_guard,
+        'account_protection': account_protection.as_dict() if hasattr(account_protection, 'as_dict') else account_protection,
         'pre_reconcile': {'summary': pre_result.as_dict() if pre_result is not None else None, 'detail': pre_detail},
         'post_reconcile': {'summary': post_result.as_dict() if post_result is not None else None, 'detail': post_detail},
         'execution_summary': summary,
@@ -339,9 +382,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--json', action='store_true')
     sub = parser.add_subparsers(dest='command', required=False)
     sub.add_parser('process')
+    sub.add_parser('execute-order', aliases=['execute_order'])
     sp_orders = sub.add_parser('orders')
     sp_orders.add_argument('--limit', type=int, default=20)
     sub.add_parser('reconcile')
+    sp_status = sub.add_parser('check-order-status', aliases=['check_order_status'])
+    sp_status.add_argument('--external-order-id', required=True)
+    sp_status.add_argument('--no-refresh', action='store_true')
     return parser
 
 
@@ -353,6 +400,13 @@ def main(argv: list[str] | None = None) -> int:
         payload = orders_payload(repo_root=ns.repo_root, config_path=ns.config, limit=int(ns.limit))
     elif cmd == 'reconcile':
         payload = reconcile_payload(repo_root=ns.repo_root, config_path=ns.config)
+    elif cmd in {'check-order-status', 'check_order_status'}:
+        payload = check_order_status_payload(
+            repo_root=ns.repo_root,
+            config_path=ns.config,
+            external_order_id=ns.external_order_id,
+            refresh=not bool(ns.no_refresh),
+        )
     else:
         payload = process_latest_signal(repo_root=ns.repo_root, config_path=ns.config)
     print(json.dumps(payload, indent=2, ensure_ascii=False, default=str) if ns.json else json.dumps(payload, ensure_ascii=False, default=str))
@@ -361,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
 
 __all__ = [
     'build_parser',
+    'check_order_status_payload',
     'main',
     'orders_payload',
     'precheck_reconcile_if_enabled',

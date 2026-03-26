@@ -7,6 +7,7 @@ from typing import Any, Iterable
 
 from ..config.loader import load_thalor_config
 from ..config.paths import resolve_config_path, resolve_repo_root
+from .correlation import resolve_correlation_group
 from .latest import write_portfolio_latest_payload
 from .models import CandidateDecision, PortfolioScope
 from .quota import compute_asset_quotas, compute_portfolio_quota
@@ -63,7 +64,8 @@ def _allocation_item(scope: PortfolioScope, candidate: CandidateDecision, *, sel
         'retrain_state': candidate.retrain_state,
         'retrain_priority': candidate.retrain_priority,
         'rank': rank,
-        'cluster_key': str(scope.cluster_key or 'default'),
+        'cluster_key': resolve_correlation_group(str(scope.asset), str(scope.cluster_key or 'default')),
+        'correlation_group': resolve_correlation_group(str(scope.asset), str(scope.cluster_key or 'default')),
         'risk_context': None,
         'intelligence': dict(candidate.intelligence or {}),
         'portfolio_feedback': dict(candidate.portfolio_feedback or {}),

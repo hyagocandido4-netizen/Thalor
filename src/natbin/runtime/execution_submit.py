@@ -156,6 +156,17 @@ def submit_intent(*, repo_root: str | Path, ctx, repo: ExecutionRepository, adap
         note_submit_attempt(repo_root=repo_root, ctx=ctx, transport_status=transport_status)
     except Exception:
         pass
+    try:
+        from ..security.account_protection import note_protection_submit_attempt
+
+        note_protection_submit_attempt(
+            repo_root=repo_root,
+            ctx=ctx,
+            cluster_key=updated.cluster_key,
+            transport_status=transport_status,
+        )
+    except Exception:
+        pass
     return updated, attempt
 
 

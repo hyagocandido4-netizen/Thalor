@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..config.execution_mode import execution_mode_uses_broker_submit
+
 from ..control.plan import build_context
 from ..runtime.failsafe import CircuitBreakerPolicy, RuntimeFailsafe
 from ..runtime.broker_surface import adapter_from_context
@@ -146,7 +148,7 @@ def build_production_doctor_payload(
     now_utc = _now_utc()
     exec_cfg = dict(ctx.resolved_config.get('execution') or {})
     broker_cfg = dict(ctx.resolved_config.get('broker') or {})
-    execution_live = bool(exec_cfg.get('enabled')) and str(exec_cfg.get('mode') or 'disabled') == 'live' and str(exec_cfg.get('provider') or 'fake') == 'iqoption'
+    execution_live = bool(exec_cfg.get('enabled')) and execution_mode_uses_broker_submit(exec_cfg.get('mode')) and str(exec_cfg.get('provider') or 'fake') == 'iqoption'
     execution_account_mode = str(exec_cfg.get('account_mode') or 'PRACTICE').upper()
     broker_balance_mode = str(broker_cfg.get('balance_mode') or execution_account_mode or 'PRACTICE').upper()
 

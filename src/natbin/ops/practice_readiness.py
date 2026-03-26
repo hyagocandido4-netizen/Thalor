@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..config.execution_mode import execution_mode_uses_broker_submit
+
 from ..alerting.telegram import alerts_status_payload
 from ..config.loader import load_thalor_config
 from ..control.ops import gate_status
@@ -149,7 +151,7 @@ def build_practice_readiness_payload(
     thalor_cfg = load_thalor_config(config_path=ctx.config.config_path, repo_root=repo)
     assets = list(getattr(thalor_cfg, 'assets', []) or [])
 
-    execution_live = bool(exec_cfg.get('enabled')) and str(exec_cfg.get('mode') or 'disabled') == 'live' and str(exec_cfg.get('provider') or 'fake') == 'iqoption'
+    execution_live = bool(exec_cfg.get('enabled')) and execution_mode_uses_broker_submit(exec_cfg.get('mode')) and str(exec_cfg.get('provider') or 'fake') == 'iqoption'
     execution_account_mode = str(exec_cfg.get('account_mode') or 'PRACTICE').upper()
     broker_balance_mode = str(broker_cfg.get('balance_mode') or execution_account_mode or 'PRACTICE').upper()
     stake = dict(exec_cfg.get('stake') or {})

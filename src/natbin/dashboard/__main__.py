@@ -69,7 +69,12 @@ def main(argv: list[str] | None = None) -> int:
     cmd += unknown
 
     # Let Streamlit own stdout/stderr (useful for troubleshooting).
-    return subprocess.call(cmd)
+    try:
+        return subprocess.call(cmd)
+    except KeyboardInterrupt:
+        # Normal interactive shutdown path when the operator presses Ctrl+C.
+        print("Dashboard stopped by user.", file=sys.stderr)
+        return 0
 
 
 if __name__ == "__main__":
