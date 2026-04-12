@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from zoneinfo import ZoneInfo
 
+from ...state.migrations import ensure_signals_v2
 from ...state.summary_paths import daily_summary_path
 
 
@@ -59,6 +60,7 @@ def write_daily_summary(
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     try:
+        ensure_signals_v2(con, default_interval=int(interval_sec))
         if str(asset or '').strip():
             try:
                 rows = con.execute(

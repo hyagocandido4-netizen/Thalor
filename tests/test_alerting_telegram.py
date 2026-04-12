@@ -7,24 +7,30 @@ from natbin.alerting.telegram import alerts_status_payload, dispatch_telegram_al
 from natbin.control.plan import build_context
 
 
-def _write_repo(repo: Path, *, send_enabled: bool = False) -> Path:
+def _write_repo(
+    repo: Path,
+    *,
+    telegram_enabled: bool = True,
+    send_enabled: bool = False,
+    include_telegram_credentials: bool = True,
+) -> Path:
     (repo / 'config').mkdir(parents=True, exist_ok=True)
     (repo / 'secrets').mkdir(parents=True, exist_ok=True)
-    (repo / 'secrets' / 'bundle.yaml').write_text(
-        '\n'.join(
+    bundle_lines = [
+        'broker:',
+        '  email: trader@example.com',
+        '  password: trader-secret',
+        '  balance_mode: PRACTICE',
+    ]
+    if include_telegram_credentials:
+        bundle_lines.extend(
             [
-                'broker:',
-                '  email: trader@example.com',
-                '  password: trader-secret',
-                '  balance_mode: PRACTICE',
                 'telegram:',
                 '  bot_token: 123456:ABCDEF',
                 '  chat_id: "999888777"',
-                '',
             ]
-        ),
-        encoding='utf-8',
-    )
+        )
+    (repo / 'secrets' / 'bundle.yaml').write_text('\n'.join([*bundle_lines, '']), encoding='utf-8')
     cfg = repo / 'config' / 'base.yaml'
     cfg.write_text(
         '\n'.join(
@@ -37,7 +43,7 @@ def _write_repo(repo: Path, *, send_enabled: bool = False) -> Path:
                 'notifications:',
                 '  enabled: true',
                 '  telegram:',
-                '    enabled: true',
+                f'    enabled: {str(bool(telegram_enabled)).lower()}',
                 f'    send_enabled: {str(bool(send_enabled)).lower()}',
                 'execution:',
                 '  enabled: true',
@@ -103,3 +109,27 @@ def test_dispatch_telegram_alert_sends_when_enabled(tmp_path: Path, monkeypatch)
     assert payload['delivery']['status'] == 'sent'
     state = json.loads((tmp_path / 'runs' / 'alerts' / 'telegram_state.json').read_text(encoding='utf-8'))
     assert payload['alert_id'] in state['sent_ids']
+
+
+def test_alerts_status_exposes_local_durable_contract_for_practice_when_telegram_is_disabled(tmp_path: Path) -> None:
+    cfg_path = _write_repo(tmp_path, telegram_enabled=False, send_enabled=False, include_telegram_credentials=False)
+    ctx = build_context(repo_root=tmp_path, config_path=cfg_path)
+
+    payload = dispatch_telegram_alert(
+        repo_root=tmp_path,
+        resolved_config=ctx.resolved_config,
+        title='Local fallback alert',
+        lines=['practice-only contract'],
+        severity='info',
+        source='pytest.local_contract',
+    )
+    assert payload['delivery']['status'] == 'disabled'
+
+    status = alerts_status_payload(repo_root=tmp_path, resolved_config=ctx.resolved_config, limit=20)
+    readiness = status['readiness']
+    assert readiness['practice_ready'] is True
+    assert readiness['real_ready'] is False
+    assert readiness['selected_contract'] == 'local_durable'
+    assert readiness['local_durable_ready'] is True
+    assert status['telegram']['enabled'] is False
+    assert status['telegram']['credentials_present'] is False

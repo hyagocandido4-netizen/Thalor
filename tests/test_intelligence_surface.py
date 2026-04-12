@@ -207,3 +207,104 @@ def test_intelligence_surface_writes_scope_artifact_and_rollup(tmp_path: Path) -
     assert len(portfolio['items']) == 2
     assert portfolio['summary']['pack_available'] == 1
     assert portfolio['summary']['selected_scopes'] == 1
+
+
+def test_portfolio_intelligence_accepts_legacy_payload_without_context_metadata(tmp_path: Path) -> None:
+    cfg = _write_repo(tmp_path)
+    scope_tag = 'EURUSD-OTC_300s'
+    now = datetime.now(tz=UTC).isoformat(timespec='seconds')
+
+    intel_dir = tmp_path / 'runs' / 'intelligence' / scope_tag
+    _write_json(intel_dir / 'pack.json', {'kind': 'intelligence_pack', 'generated_at_utc': now, 'metadata': {'training_rows': 240}})
+    _write_json(
+        intel_dir / 'latest_eval.json',
+        {
+            'kind': 'intelligence_eval',
+            'evaluated_at_utc': now,
+            'allow_trade': True,
+            'intelligence_score': 0.70,
+            'portfolio_score': 0.74,
+            'portfolio_feedback': {'allocator_blocked': False, 'portfolio_score': 0.74},
+            'retrain_orchestration': {'state': 'idle', 'priority': 'low'},
+        },
+    )
+    _write_json(tmp_path / 'runs' / 'portfolio' / 'portfolio_allocation_latest.json', {
+        'allocation_id': 'alloc_legacy_001',
+        'at_utc': now,
+        'selected': [{
+            'scope_tag': scope_tag,
+            'asset': 'EURUSD-OTC',
+            'interval_sec': 300,
+            'reason': 'selected_topk',
+            'rank': 1,
+            'cluster_key': 'fx',
+            'portfolio_score': 0.74,
+            'intelligence_score': 0.70,
+            'retrain_state': 'idle',
+            'retrain_priority': 'low',
+            'portfolio_feedback': {'allocator_blocked': False, 'portfolio_score': 0.74},
+        }],
+        'suppressed': [],
+    })
+
+    portfolio = build_portfolio_intelligence_payload(repo_root=tmp_path, config_path=cfg)
+    assert portfolio['summary']['selected_scopes'] == 1
+    item = next(row for row in portfolio['items'] if row['scope_tag'] == scope_tag)
+    assert item['selected'] is True
+    assert item['allocation_reason'] == 'selected_topk'
+
+
+def test_intelligence_surface_treats_regime_block_feedback_as_operational_no_trade(tmp_path: Path) -> None:
+    cfg = _write_repo(tmp_path)
+    scope_tag = 'EURUSD-OTC_300s'
+    now = datetime.now(tz=UTC).isoformat(timespec='seconds')
+    intel_dir = tmp_path / 'runs' / 'intelligence' / scope_tag
+    _write_json(
+        intel_dir / 'pack.json',
+        {
+            'kind': 'intelligence_pack',
+            'generated_at_utc': now,
+            'metadata': {'training_rows': 256},
+        },
+    )
+    _write_json(
+        intel_dir / 'latest_eval.json',
+        {
+            'kind': 'intelligence_eval',
+            'evaluated_at_utc': now,
+            'allow_trade': True,
+            'intelligence_score': -1.18,
+            'portfolio_score': -1.33,
+            'portfolio_feedback': {
+                'allocator_blocked': True,
+                'portfolio_score': -1.33,
+                'block_reason': 'regime_block',
+            },
+            'retrain_orchestration': {'state': 'cooldown', 'priority': 'high'},
+            'coverage': {'bias': 0.03},
+        },
+    )
+    _write_json(
+        intel_dir / 'retrain_plan.json',
+        {
+            'kind': 'retrain_plan',
+            'at_utc': now,
+            'state': 'cooldown',
+            'priority': 'high',
+        },
+    )
+    _write_json(
+        intel_dir / 'retrain_status.json',
+        {
+            'kind': 'retrain_status',
+            'updated_at_utc': now,
+            'state': 'cooldown',
+            'priority': 'high',
+        },
+    )
+
+    payload = build_intelligence_surface_payload(repo_root=tmp_path, config_path=cfg, write_artifact=False)
+    feedback = next(item for item in payload['checks'] if item['name'] == 'portfolio_feedback')
+    assert feedback['status'] == 'ok'
+    assert payload['severity'] == 'ok'
+    assert 'portfolio_feedback' not in payload['warnings']

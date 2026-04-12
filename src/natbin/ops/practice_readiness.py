@@ -138,6 +138,8 @@ def build_practice_readiness_payload(
     config_path: str | Path | None = None,
     max_stake_amount: float = DEFAULT_MAX_STAKE,
     soak_stale_after_sec: int | None = None,
+    heal_market_context: bool = True,
+    heal_control_freshness: bool = True,
     write_artifact: bool = True,
 ) -> dict[str, Any]:
     ctx = build_context(repo_root=repo_root, config_path=config_path, dump_snapshot=False)
@@ -233,15 +235,19 @@ def build_practice_readiness_payload(
         probe_broker=False,
         strict_runtime_artifacts=True,
         enforce_live_broker_prereqs=True,
+        heal_market_context=bool(heal_market_context),
+        heal_control_freshness=bool(heal_control_freshness),
         write_artifact=True,
     )
     doctor_sev = str(doctor.get('severity') or 'ok')
-    if doctor_sev == 'error':
-        checks.append(_check('production_doctor', 'error', 'Production doctor encontrou blockers para practice', blockers=doctor.get('blockers') or [], warnings=doctor.get('warnings') or []))
+    doctor_blockers = list(doctor.get('blockers') or [])
+    doctor_warnings = list(doctor.get('warnings') or [])
+    if doctor_sev == 'error' or doctor_blockers:
+        checks.append(_check('production_doctor', 'error', 'Production doctor encontrou blockers para practice', blockers=doctor_blockers, warnings=doctor_warnings))
     elif doctor_sev == 'warn':
-        checks.append(_check('production_doctor', 'warn', 'Production doctor com avisos antes do practice', blockers=doctor.get('blockers') or [], warnings=doctor.get('warnings') or []))
+        checks.append(_check('production_doctor', 'ok', 'Production doctor sem blockers; avisos operacionais serão tratados pelo preflight', blockers=doctor_blockers, warnings=doctor_warnings, advisory_only=True))
     else:
-        checks.append(_check('production_doctor', 'ok', 'Production doctor sem blockers para practice', warnings=doctor.get('warnings') or []))
+        checks.append(_check('production_doctor', 'ok', 'Production doctor sem blockers para practice', warnings=doctor_warnings))
 
     from .intelligence_surface import build_intelligence_surface_payload
 
@@ -263,12 +269,27 @@ def build_practice_readiness_payload(
 
     alerts = alerts_status_payload(repo_root=repo, resolved_config=ctx.resolved_config, limit=20)
     tg = dict(alerts.get('telegram') or {})
-    if bool(tg.get('enabled')) and bool(tg.get('send_enabled')) and bool(tg.get('credentials_present')):
-        checks.append(_check('telegram_alerting', 'ok', 'Telegram pronto para practice', credential_trace=tg.get('credential_trace')))
+    alerting = dict(alerts.get('readiness') or {})
+    external_ready = bool(alerting.get('external_ready'))
+    practice_alerts_ready = bool(alerting.get('practice_ready'))
+    selected_contract = str(alerting.get('selected_contract') or 'disabled')
+
+    if execution_live and execution_account_mode == 'REAL':
+        if external_ready:
+            checks.append(_check('telegram_alerting', 'ok', 'Canal externo de alertas pronto para conta REAL', credential_trace=tg.get('credential_trace'), contract='external_realtime'))
+        else:
+            checks.append(_check('telegram_alerting', 'error', 'Conta REAL exige canal externo de alertas pronto', enabled=bool(tg.get('enabled')), send_enabled=bool(tg.get('send_enabled')), credentials_present=bool(tg.get('credentials_present')), credential_trace=tg.get('credential_trace'), alerting_contract=selected_contract, readiness=alerting))
+    elif execution_live:
+        if external_ready:
+            checks.append(_check('telegram_alerting', 'ok', 'Telegram pronto para practice', credential_trace=tg.get('credential_trace'), contract='external_realtime'))
+        elif practice_alerts_ready:
+            checks.append(_check('telegram_alerting', 'ok', 'Pipeline de alertas pronto para practice via sink local durável', contract=selected_contract, readiness=alerting))
+        else:
+            checks.append(_check('telegram_alerting', 'error', 'Pipeline de alertas obrigatório para PRACTICE/REAL e não está pronto', enabled=bool(tg.get('enabled')), send_enabled=bool(tg.get('send_enabled')), credentials_present=bool(tg.get('credentials_present')), credential_trace=tg.get('credential_trace'), alerting_contract=selected_contract, readiness=alerting))
     elif bool(tg.get('enabled')):
         checks.append(_check('telegram_alerting', 'warn', 'Telegram configurado sem envio ativo ou sem credenciais', credential_trace=tg.get('credential_trace')))
     else:
-        checks.append(_check('telegram_alerting', 'ok', 'Telegram desabilitado neste profile', send_enabled=telegram_cfg.get('send_enabled')))
+        checks.append(_check('telegram_alerting', 'ok', 'Alerting não é obrigatório neste profile', send_enabled=telegram_cfg.get('send_enabled'), contract=selected_contract))
 
     soak = _soak_summary(repo=repo, scope_tag=str(ctx.scope.scope_tag), stale_after_sec=stale_after)
     checks.append(_check('runtime_soak', str(soak.get('status') or 'warn'), str(soak.get('message') or 'Nenhum soak recente'), path=soak.get('path'), age_sec=soak.get('age_sec'), cycles_completed=soak.get('cycles_completed'), cycles_requested=soak.get('cycles_requested'), exit_code=soak.get('exit_code')))
@@ -361,7 +382,7 @@ def build_practice_readiness_payload(
             'specs': [
                 {
                     'name': item.name,
-                    'required': bool(item.required),
+                    'required': bool(item.required) or (bool(execution_live) and str(item.name) == 'alerts_test'),
                     'note': item.note,
                     'potentially_submits': bool(item.potentially_submits),
                     'cmd': list(item.cmd),

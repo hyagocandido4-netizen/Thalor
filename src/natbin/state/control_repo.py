@@ -19,6 +19,16 @@ def control_db_path(path: str | Path | None = None) -> Path:
     return Path(path) if path is not None else Path('runs/runtime_control.sqlite3')
 
 
+def _ensure_column(con: sqlite3.Connection, *, table: str, name: str, ddl_type: str, default_sql: str | None = None) -> None:
+    columns = {str(row[1]) for row in con.execute(f'PRAGMA table_info({table})').fetchall()}
+    if name in columns:
+        return
+    sql = f'ALTER TABLE {table} ADD COLUMN {name} {ddl_type}'
+    if default_sql is not None:
+        sql += f' DEFAULT {default_sql}'
+    con.execute(sql)
+
+
 def ensure_runtime_control_db(con: sqlite3.Connection) -> None:
     con.execute(
         """
@@ -31,10 +41,25 @@ def ensure_runtime_control_db(con: sqlite3.Connection) -> None:
             opened_until_utc TEXT NULL,
             half_open_trials_used INTEGER NOT NULL DEFAULT 0,
             reason TEXT NULL,
+            primary_cause TEXT NULL,
+            failure_domain TEXT NULL,
+            failure_step TEXT NULL,
+            last_transport_error TEXT NULL,
+            last_transport_failure_utc TEXT NULL,
+            half_open_trial_in_flight INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (asset, interval_sec)
         )
         """
     )
+    for name, ddl_type, default_sql in (
+        ('primary_cause', 'TEXT', None),
+        ('failure_domain', 'TEXT', None),
+        ('failure_step', 'TEXT', None),
+        ('last_transport_error', 'TEXT', None),
+        ('last_transport_failure_utc', 'TEXT', None),
+        ('half_open_trial_in_flight', 'INTEGER NOT NULL', '0'),
+    ):
+        _ensure_column(con, table='circuit_breakers', name=name, ddl_type=ddl_type, default_sql=default_sql)
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS cycle_health (
@@ -66,7 +91,8 @@ class RuntimeControlRepository:
             row = con.execute(
                 """
                 SELECT asset, interval_sec, state, failures, last_failure_utc, opened_until_utc,
-                       half_open_trials_used, reason
+                       half_open_trials_used, reason, primary_cause, failure_domain, failure_step,
+                       last_transport_error, last_transport_failure_utc, half_open_trial_in_flight
                 FROM circuit_breakers
                 WHERE asset=? AND interval_sec=?
                 """,
@@ -74,15 +100,23 @@ class RuntimeControlRepository:
             ).fetchone()
             if not row:
                 return CircuitBreakerSnapshot(asset=asset, interval_sec=int(interval_sec))
-            return CircuitBreakerSnapshot(
-                asset=row[0],
-                interval_sec=int(row[1]),
-                state=row[2],
-                failures=int(row[3]),
-                last_failure_utc=datetime.fromisoformat(row[4]) if row[4] else None,
-                opened_until_utc=datetime.fromisoformat(row[5]) if row[5] else None,
-                half_open_trials_used=int(row[6]),
-                reason=row[7],
+            return CircuitBreakerSnapshot.from_mapping(
+                {
+                    'asset': row[0],
+                    'interval_sec': int(row[1]),
+                    'state': row[2],
+                    'failures': int(row[3]),
+                    'last_failure_utc': datetime.fromisoformat(row[4]) if row[4] else None,
+                    'opened_until_utc': datetime.fromisoformat(row[5]) if row[5] else None,
+                    'half_open_trials_used': int(row[6]),
+                    'reason': row[7],
+                    'primary_cause': row[8],
+                    'failure_domain': row[9],
+                    'failure_step': row[10],
+                    'last_transport_error': row[11],
+                    'last_transport_failure_utc': datetime.fromisoformat(row[12]) if row[12] else None,
+                    'half_open_trial_in_flight': bool(int(row[13] or 0)),
+                }
             )
         finally:
             con.close()
@@ -94,15 +128,22 @@ class RuntimeControlRepository:
                 """
                 INSERT INTO circuit_breakers (
                     asset, interval_sec, state, failures, last_failure_utc, opened_until_utc,
-                    half_open_trials_used, reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    half_open_trials_used, reason, primary_cause, failure_domain, failure_step,
+                    last_transport_error, last_transport_failure_utc, half_open_trial_in_flight
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(asset, interval_sec) DO UPDATE SET
                     state=excluded.state,
                     failures=excluded.failures,
                     last_failure_utc=excluded.last_failure_utc,
                     opened_until_utc=excluded.opened_until_utc,
                     half_open_trials_used=excluded.half_open_trials_used,
-                    reason=excluded.reason
+                    reason=excluded.reason,
+                    primary_cause=excluded.primary_cause,
+                    failure_domain=excluded.failure_domain,
+                    failure_step=excluded.failure_step,
+                    last_transport_error=excluded.last_transport_error,
+                    last_transport_failure_utc=excluded.last_transport_failure_utc,
+                    half_open_trial_in_flight=excluded.half_open_trial_in_flight
                 """,
                 (
                     snap.asset,
@@ -113,12 +154,17 @@ class RuntimeControlRepository:
                     snap.opened_until_utc.isoformat() if snap.opened_until_utc else None,
                     int(snap.half_open_trials_used),
                     snap.reason,
+                    snap.primary_cause,
+                    snap.failure_domain,
+                    snap.failure_step,
+                    snap.last_transport_error,
+                    snap.last_transport_failure_utc.isoformat() if snap.last_transport_failure_utc else None,
+                    1 if snap.half_open_trial_in_flight else 0,
                 ),
             )
             con.commit()
         finally:
             con.close()
-
 
 
 
@@ -134,6 +180,16 @@ def repo_control_artifact_paths(*, repo_root: str | Path) -> dict[str, str]:
         'sync': str(base / 'sync.json'),
         'backup': str(base / 'backup.json'),
         'healthcheck': str(base / 'healthcheck.json'),
+        'provider_probe': str(base / 'provider_probe.json'),
+        'production_gate': str(base / 'production_gate.json'),
+        'config_provenance': str(base / 'config_provenance.json'),
+        'support_bundle': str(base / 'support_bundle.json'),
+        'runtime_artifact_audit': str(base / 'runtime_artifact_audit.json'),
+        'guardrail_audit': str(base / 'guardrail_audit.json'),
+        'dependency_audit': str(base / 'dependency_audit.json'),
+        'state_db_audit': str(base / 'state_db_audit.json'),
+        'workspace_hygiene': str(base / 'workspace_hygiene.json'),
+        'repo_sync': str(base / 'repo_sync.json'),
     }
 
 
@@ -154,6 +210,7 @@ def read_repo_control_artifact(*, repo_root: str | Path, name: str) -> dict[str,
     obj = load_json_cached(path_raw)
     return obj if isinstance(obj, dict) else None
 
+
 def control_scope_dir(*, repo_root: str | Path, asset: str, interval_sec: int) -> Path:
     root = Path(repo_root).resolve()
     scope = build_scope(asset, interval_sec)
@@ -170,7 +227,9 @@ def control_artifact_paths(*, repo_root: str | Path, asset: str, interval_sec: i
         'health': str(base / 'health.json'),
         'loop_status': str(base / 'loop_status.json'),
         'effective_config': str(base / 'effective_config.json'),
+        'connectivity': str(base / 'connectivity.json'),
         'execution': str(base / 'execution.json'),
+        'execution_hardening': str(base / 'execution_hardening.json'),
         'orders': str(base / 'orders.json'),
         'reconcile': str(base / 'reconcile.json'),
         'guard': str(base / 'guard.json'),
@@ -184,9 +243,19 @@ def control_artifact_paths(*, repo_root: str | Path, asset: str, interval_sec: i
         'retrain': str(base / 'retrain.json'),
         'release': str(base / 'release.json'),
         'doctor': str(base / 'doctor.json'),
+        'provider_probe': str(base / 'provider_probe.json'),
+        'production_gate': str(base / 'production_gate.json'),
+        'config_provenance': str(base / 'config_provenance.json'),
+        'support_bundle': str(base / 'support_bundle.json'),
+        'runtime_artifact_audit': str(base / 'runtime_artifact_audit.json'),
+        'guardrail_audit': str(base / 'guardrail_audit.json'),
+        'dependency_audit': str(base / 'dependency_audit.json'),
+        'state_db_audit': str(base / 'state_db_audit.json'),
         'retention': str(base / 'retention.json'),
         'alerts': str(base / 'alerts.json'),
         'incidents': str(base / 'incidents.json'),
+        'breaker': str(base / 'breaker.json'),
+        'triage': str(base / 'triage.json'),
     }
 
 

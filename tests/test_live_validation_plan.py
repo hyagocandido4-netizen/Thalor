@@ -25,6 +25,9 @@ def test_build_baseline_plan(tmp_path: Path) -> None:
     assert plan.stage == "baseline"
     assert "selfcheck_repo" in names
     assert "runtime_release" in names
+    assert "runtime_doctor" in names
+    release = next(spec for spec in plan.specs if spec.name == 'runtime_release')
+    assert release.required is False
     assert plan.dangerous_stage is False
 
 

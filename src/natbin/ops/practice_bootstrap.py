@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..control.commands import alerts_test_payload
+from ..control.ops import breaker_reset, drain_mode_off, gate_status
 from ..control.plan import build_context
 from ..intelligence.refresh import refresh_config_intelligence
 from ..runtime.soak import build_runtime_soak_summary
@@ -22,7 +24,6 @@ PRACTICE_BOOTSTRAP_CRITICAL_CHECKS = {
     'execution_limits',
     'broker_guard',
     'kill_switch',
-    'drain_mode',
 }
 
 
@@ -138,6 +139,55 @@ def _refresh_intelligence_state(*, repo_root: Path, config_path: str | Path | No
         }
 
 
+def _reset_breaker_action(*, repo_root: Path, config_path: str | Path | None, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {'action': 'skipped', 'payload': None}
+    try:
+        payload = breaker_reset(repo_root=repo_root, config_path=config_path, reason='practice_bootstrap_reset_breaker')
+        return {'action': 'ran', 'payload': payload}
+    except Exception as exc:
+        return {'action': 'error', 'payload': {'ok': False, 'message': 'breaker_reset_exception', 'error': f'{type(exc).__name__}:{exc}'}}
+
+
+def _clear_drain_action(*, repo_root: Path, config_path: str | Path | None, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {'action': 'skipped', 'payload': None}
+    try:
+        payload = drain_mode_off(repo_root=repo_root, config_path=config_path, reason='practice_bootstrap_clear_drain')
+        return {'action': 'ran', 'payload': payload}
+    except Exception as exc:
+        return {'action': 'error', 'payload': {'ok': False, 'message': 'drain_clear_exception', 'error': f'{type(exc).__name__}:{exc}'}}
+
+
+def _materialize_runtime_refresh(*, repo_root: Path, config_path: str | Path | None, asset: str, interval_sec: int, lookback_candles: int) -> dict[str, Any]:
+    from ..runtime.daemon import run_once
+    try:
+        gates_before = gate_status(repo_root=repo_root, config_path=config_path, asset=asset, interval_sec=interval_sec)
+        payload = run_once(
+            repo_root=repo_root,
+            config_path=config_path,
+            asset=asset,
+            interval_sec=interval_sec,
+            topk=3,
+            lookback_candles=int(lookback_candles),
+            stop_on_failure=True,
+            precheck_market_context=False,
+        )
+        return {'action': 'ran', 'payload': payload, 'gates_before': gates_before}
+    except Exception as exc:
+        return {'action': 'error', 'payload': {'ok': False, 'message': 'runtime_refresh_exception', 'error': f'{type(exc).__name__}:{exc}'}}
+
+
+def _alerts_test_action(*, repo_root: Path, config_path: str | Path | None, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {'action': 'skipped', 'payload': None}
+    try:
+        payload = alerts_test_payload(repo_root=repo_root, config_path=config_path, force_send=False)
+        return {'action': 'ran', 'payload': payload}
+    except Exception as exc:
+        return {'action': 'error', 'payload': {'ok': False, 'message': 'alerts_test_exception', 'error': f'{type(exc).__name__}:{exc}'}}
+
+
 def _needs_asset_prepare(practice: dict[str, Any], *, force_prepare: bool) -> bool:
     if force_prepare:
         return True
@@ -173,12 +223,15 @@ def build_practice_bootstrap_payload(
     repo_root: str | Path = '.',
     config_path: str | Path | None = None,
     lookback_candles: int = 2000,
-    soak_cycles: int = 3,
+    soak_cycles: int = 6,
     force_prepare: bool = False,
     force_soak: bool = False,
     skip_soak: bool = False,
     max_stake_amount: float = DEFAULT_MAX_STAKE,
     soak_stale_after_sec: int | None = None,
+    clear_drain: bool = False,
+    reset_breaker: bool = False,
+    alerts_test: bool = False,
     write_artifact: bool = True,
 ) -> dict[str, Any]:
     ctx = build_context(repo_root=repo_root, config_path=config_path, dump_snapshot=False)
@@ -206,11 +259,20 @@ def build_practice_bootstrap_payload(
     post_practice = pre_practice
     post_critical_issues = list(critical_issues)
     post_round_eligible = pre_round_eligible
+    breaker_reset_result: dict[str, Any] | None = None
+    drain_clear_result: dict[str, Any] | None = None
+    runtime_refresh_result: dict[str, Any] | None = None
+    alerts_test_result: dict[str, Any] | None = None
 
     if critical_issues:
         phase = 'blocked_preflight'
         blocked_reason = 'critical_preflight_blockers'
     else:
+        breaker_reset_result = _reset_breaker_action(repo_root=repo, config_path=ctx.config.config_path, enabled=bool(reset_breaker))
+        if breaker_reset_result.get('action') == 'error':
+            blocked_reason = 'breaker_reset_failed'
+            phase = 'blocked_breaker_reset'
+
         need_prepare = _needs_asset_prepare(pre_practice, force_prepare=bool(force_prepare))
         if need_prepare:
             phase = 'asset_prepare'
@@ -228,6 +290,24 @@ def build_practice_bootstrap_payload(
             asset_prepare_action = 'reused_existing_artifacts'
 
         if blocked_reason is None:
+            phase = 'runtime_refresh'
+            runtime_refresh_result = _materialize_runtime_refresh(
+                repo_root=repo,
+                config_path=ctx.config.config_path,
+                asset=ctx.config.asset,
+                interval_sec=int(ctx.config.interval_sec),
+                lookback_candles=int(lookback_candles),
+            )
+            if runtime_refresh_result.get('action') == 'error':
+                blocked_reason = 'runtime_refresh_failed'
+
+        if blocked_reason is None:
+            drain_clear_result = _clear_drain_action(repo_root=repo, config_path=ctx.config.config_path, enabled=bool(clear_drain))
+            if drain_clear_result.get('action') == 'error':
+                blocked_reason = 'drain_clear_failed'
+                phase = 'blocked_drain_clear'
+
+        if blocked_reason is None:
             phase = 'intelligence_refresh_prepare'
             intelligence_refresh_after_prepare = _refresh_intelligence_state(
                 repo_root=repo,
@@ -236,6 +316,10 @@ def build_practice_bootstrap_payload(
                 interval_sec=int(ctx.config.interval_sec),
                 rebuild_pack=_needs_pack_rebuild(pre_practice, asset_prepare_ran=(asset_prepare_action == 'ran')),
             )
+
+            alerts_test_result = _alerts_test_action(repo_root=repo, config_path=ctx.config.config_path, enabled=bool(alerts_test))
+            if alerts_test_result.get('action') == 'error':
+                blocked_reason = 'alerts_test_failed'
 
             need_soak = _needs_soak(
                 pre_practice,
@@ -302,8 +386,12 @@ def build_practice_bootstrap_payload(
         recommended_next_steps.append('Corrigir os blockers estruturais do profile de practice antes de tentar bootstrap (conta PRACTICE, stake, limites, guard e escopo controlado).')
     elif blocked_reason == 'asset_prepare_failed':
         recommended_next_steps.append('Revisar o step asset_prepare; sem dataset/market_context frescos o doctor e o practice continuam bloqueados.')
+    elif blocked_reason == 'runtime_refresh_failed':
+        recommended_next_steps.append('Revisar o observe/state refresh; loop_status e health precisam ser materializados sem erro antes do preflight final.')
     elif blocked_reason == 'runtime_soak_failed':
         recommended_next_steps.append('Revisar o soak e os artifacts de loop/health antes de insistir na prática controlada.')
+    elif blocked_reason == 'alerts_test_failed':
+        recommended_next_steps.append('Corrija Telegram/alerting antes de insistir no practice bootstrap; alertas são mandatórios.')
     elif blocked_reason in {'practice_not_ready_after_bootstrap', 'critical_post_bootstrap_blockers'}:
         recommended_next_steps.append('Abrir practice.json e doctor.json gerados após o bootstrap para entender por que o scope ainda não ficou pronto.')
     elif 'intelligence_surface' in post_warn_names:
@@ -334,15 +422,21 @@ def build_practice_bootstrap_payload(
             'critical_issues': critical_issues,
             'payload': pre_practice,
         },
+        'remediation': {
+            'breaker_reset': breaker_reset_result,
+            'drain_clear': drain_clear_result,
+        },
         'asset_prepare': {
             'action': asset_prepare_action,
             'payload': asset_prepare_payload,
             'lookback_candles': int(lookback_candles),
         },
+        'runtime_refresh': runtime_refresh_result,
         'intelligence_refresh': {
             'after_prepare': intelligence_refresh_after_prepare,
             'after_soak': intelligence_refresh_after_soak,
         },
+        'alerts_test': alerts_test_result,
         'soak': {
             'action': soak_action,
             'requested_cycles': None if skip_soak else max(1, int(soak_cycles)),
@@ -385,12 +479,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--repo-root', default='.')
     parser.add_argument('--config', required=True)
     parser.add_argument('--lookback-candles', type=int, default=2000)
-    parser.add_argument('--soak-cycles', type=int, default=3)
+    parser.add_argument('--soak-cycles', type=int, default=6)
     parser.add_argument('--force-prepare', action='store_true')
     parser.add_argument('--force-soak', action='store_true')
     parser.add_argument('--skip-soak', action='store_true')
     parser.add_argument('--max-stake-amount', type=float, default=DEFAULT_MAX_STAKE)
     parser.add_argument('--soak-stale-after-sec', type=int, default=None)
+    parser.add_argument('--clear-drain', action='store_true')
+    parser.add_argument('--reset-breaker', action='store_true')
+    parser.add_argument('--alerts-test', action='store_true')
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args(argv)
 
@@ -404,6 +501,9 @@ def main(argv: list[str] | None = None) -> int:
         skip_soak=bool(args.skip_soak),
         max_stake_amount=float(args.max_stake_amount),
         soak_stale_after_sec=args.soak_stale_after_sec,
+        clear_drain=bool(args.clear_drain),
+        reset_breaker=bool(args.reset_breaker),
+        alerts_test=bool(args.alerts_test),
         write_artifact=True,
     )
     text = json.dumps(payload, indent=2, ensure_ascii=False, default=str) if args.json else json.dumps(payload, ensure_ascii=False, default=str)

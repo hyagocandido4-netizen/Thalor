@@ -48,6 +48,8 @@ ROOT_EXCLUDED_DIRS = {
     "dist",
     "htmlcov",
     "artifacts",
+    "test_battery",
+    "diag_zips",
 }
 
 ROOT_EXCLUDED_PREFIXES = (
@@ -100,6 +102,8 @@ EXCLUDED_FILE_GLOBS = (
     "*.orig",
     "*.rej",
     "*.whl",
+    "coverage.xml",
+    "diag_bundle_*.zip",
 )
 
 REQUIRED_RELEASE_FILES = (
@@ -139,6 +143,10 @@ SAFE_PRUNE_GLOBS = (
     "*.swp",
     "*.tmp",
     "*.egg-info",
+    "test_battery",
+    "diag_zips",
+    "coverage.xml",
+    "diag_bundle_*.zip",
 )
 
 
@@ -323,15 +331,20 @@ def _build_warnings(repo_root: Path) -> list[str]:
         "runs": "artefatos locais presentes em runs/ — o bundle exclui essa pasta",
         "runs_smoke": "artefatos de smoke presentes em runs_smoke/ — o bundle exclui essa pasta",
         "runs_smoke_daemon_fs": "artefatos de smoke presentes em runs_smoke_daemon_fs/ — o bundle exclui essa pasta",
+        "test_battery": "artefatos históricos presentes em test_battery/ — o bundle exclui essa pasta",
+        "diag_zips": "bundles de diagnóstico presentes em diag_zips/ — o bundle exclui essa pasta",
         ".pytest_cache": "cache local presente (.pytest_cache) — o bundle exclui essa pasta",
         "configs/variants": "configs locais em configs/variants/ — o bundle exclui essa pasta",
         "secrets": "secret bundles locais presentes em secrets/ — o bundle exclui essa pasta",
         "config/broker_secrets.yaml": "bundle local de credenciais presente em config/broker_secrets.yaml — o bundle exclui esse arquivo",
         "src/natbin.egg-info": "metadata gerada de empacotamento presente em src/natbin.egg-info/ — o bundle exclui essa pasta",
+        "coverage.xml": "relatório local coverage.xml presente — o bundle exclui esse arquivo",
     }
     for rel, msg in mapping.items():
         if (repo_root / rel).exists():
             warnings.append(msg)
+    for path in sorted(repo_root.glob('diag_bundle_*.zip')):
+        warnings.append(f'bundle de diagnóstico local presente em {path.name} — o bundle exclui esse arquivo')
     return warnings
 
 

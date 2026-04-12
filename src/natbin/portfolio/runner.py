@@ -16,6 +16,7 @@ from ..runtime.scope import market_context_path as scope_market_context_path
 from ..runtime.failsafe import CircuitBreakerPolicy, RuntimeFailsafe
 from ..runtime.precheck import run_precheck
 from ..runtime.perf import load_json_cached
+from ..runtime.broker_dependency import candle_db_snapshot
 from ..state.control_repo import RuntimeControlRepository
 from ..state.portfolio_repo import PortfolioRepository
 from ..telemetry import TelemetryServer, TelemetryState
@@ -23,6 +24,7 @@ from ..telemetry.metrics import REGISTRY
 from ..ops.lockfile import acquire_lock as acquire_lockfile
 from ..ops.lockfile import release_lock as release_lockfile
 from ..ops.structured_log import append_jsonl
+from ..ops.safe_refresh import refresh_market_context_safe
 from ..intelligence.runtime import enrich_candidate as enrich_candidate_intelligence
 
 from . import allocator as _allocator
@@ -41,6 +43,7 @@ from .paths import (
 )
 from .quota import compute_asset_quotas, compute_portfolio_quota
 from .subprocess import SubprocessOutcome, run_python_module
+from .runtime_budget import decide_prepare_strategy, select_governed_items
 
 
 def _utc_now_iso() -> str:
@@ -166,6 +169,297 @@ def _scope_runtime_paths(root: Path, cfg: Any, scope: PortfolioScope) -> ScopeRu
     return resolve_scope_runtime_paths(root, scope_tag=str(scope.scope_tag), partition_enable=partition)
 
 
+
+def _parse_iso(raw: Any) -> datetime | None:
+    if raw in (None, ''):
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _artifact_age_sec(raw: Any) -> float | None:
+    stamp = _parse_iso(raw)
+    if stamp is None:
+        return None
+    return max(0.0, (datetime.now(tz=UTC) - stamp).total_seconds())
+
+
+def _market_context_state(root: Path, scope: PortfolioScope) -> dict[str, Any]:
+    path = root / scope_market_context_path(asset=scope.asset, interval_sec=int(scope.interval_sec))
+    payload = load_json_cached(str(path)) if path.exists() else None
+    max_age_sec = max(int(scope.interval_sec) * 3, 900)
+    age_sec = None
+    fresh = False
+    if isinstance(payload, dict):
+        age_sec = _artifact_age_sec(payload.get('at_utc'))
+        fresh = bool(age_sec is not None and age_sec <= max_age_sec)
+    return {
+        'path': str(path),
+        'exists': path.exists(),
+        'fresh': fresh,
+        'age_sec': None if age_sec is None else round(age_sec, 3),
+        'max_age_sec': int(max_age_sec),
+        'dependency_available': payload.get('dependency_available') if isinstance(payload, dict) else None,
+        'dependency_reason': payload.get('dependency_reason') if isinstance(payload, dict) else None,
+        'market_open': payload.get('market_open') if isinstance(payload, dict) else None,
+        'open_source': payload.get('open_source') if isinstance(payload, dict) else None,
+        'payout': payload.get('payout') if isinstance(payload, dict) else None,
+        'payout_source': payload.get('payout_source') if isinstance(payload, dict) else None,
+        'last_candle_ts': payload.get('last_candle_ts') if isinstance(payload, dict) else None,
+    }
+
+
+def _candle_db_state(data_paths: ScopeDataPaths, scope: PortfolioScope) -> dict[str, Any]:
+    db_path = Path(str(data_paths.db_path))
+    state: dict[str, Any] = {
+        'path': str(db_path),
+        'exists': db_path.exists(),
+        'db_rows': 0,
+        'last_candle_ts': None,
+        'last_candle_age_sec': None,
+        'fresh': False,
+        'max_age_sec': max(int(scope.interval_sec) * 2 + 90, int(scope.interval_sec) + 90),
+    }
+    if not db_path.exists():
+        return state
+    try:
+        snap = candle_db_snapshot(str(db_path), scope.asset, int(scope.interval_sec))
+    except Exception as exc:
+        state['error'] = f'{type(exc).__name__}:{exc}'
+        return state
+    rows = int(snap.get('db_rows') or 0)
+    last_ts = snap.get('last_candle_ts')
+    state['db_rows'] = rows
+    state['last_candle_ts'] = int(last_ts) if last_ts is not None else None
+    if last_ts is not None:
+        try:
+            age_sec = max(0.0, datetime.now(tz=UTC).timestamp() - int(last_ts))
+            state['last_candle_age_sec'] = round(age_sec, 3)
+            state['fresh'] = bool(rows > 0 and age_sec <= int(state['max_age_sec']))
+        except Exception:
+            state['fresh'] = False
+    return state
+
+
+def _load_runtime_governor(*, root: Path, cfg: Any, scopes: list[PortfolioScope]) -> dict[str, Any]:
+    multi = getattr(cfg, 'multi_asset', None)
+    artifact_path = root / 'runs' / 'control' / '_repo' / 'provider_session_governor.json'
+    payload = _read_json(artifact_path)
+    interval = min((int(s.interval_sec) for s in scopes), default=300)
+    max_age_sec = max(600, int(interval) * 2)
+    artifact_age = None
+    artifact_fresh = False
+    if isinstance(payload, dict):
+        artifact_age = _artifact_age_sec(payload.get('at_utc'))
+        artifact_fresh = bool(artifact_age is not None and artifact_age <= max_age_sec)
+    governor = dict(payload.get('governor') or {}) if artifact_fresh and isinstance(payload, dict) else {}
+    if not governor:
+        governor = {
+            'mode': 'runtime_default',
+            'sleep_between_scopes_ms': int(max(0.0, float(getattr(multi, 'stagger_sec', 0.0) or 0.0)) * 1000),
+            'sleep_between_candidate_scopes_ms': int(max(0.0, float(getattr(multi, 'stagger_sec', 0.0) or 0.0)) * 1000),
+            'refresh_market_context_timeout_sec': _env_int('REFRESH_MARKET_CONTEXT_TIMEOUT_SEC', 120),
+            'asset_prepare_timeout_sec': _env_int('COLLECT_RECENT_TIMEOUT_SEC', 300),
+            'max_asset_prepare_fallback_scopes': len(scopes),
+            'max_candidate_scopes_per_run': len(scopes),
+            'prefer_cached_provider_artifacts': True,
+            'skip_fresh_market_context_scopes': True,
+            'scope_order': 'best_first_round_robin',
+            'allow_parallel_execution': False,
+        }
+    return {
+        'artifact_path': str(artifact_path),
+        'artifact_present': artifact_path.exists(),
+        'artifact_age_sec': None if artifact_age is None else round(artifact_age, 3),
+        'artifact_fresh': bool(artifact_fresh),
+        'governor': governor,
+    }
+
+
+def _refresh_only_step(*, repo_root: Path, config_path: Path | None, scope: PortfolioScope, timeout_sec: int) -> SubprocessOutcome:
+    step = refresh_market_context_safe(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=scope.asset,
+        interval_sec=int(scope.interval_sec),
+        timeout_sec=int(timeout_sec),
+    )
+    return SubprocessOutcome(
+        name=f'refresh_market_context_safe:{scope.scope_tag}',
+        argv=[str(x) for x in list(step.get('command') or [])],
+        cwd=str(step.get('cwd') or str(repo_root)),
+        returncode=int(step.get('returncode') or 0) if step.get('returncode') not in (None, '') else 1,
+        duration_sec=float(step.get('duration_sec') or 0.0),
+        stdout_tail=str(step.get('stdout_tail') or ''),
+        stderr_tail=str(step.get('stderr_tail') or ''),
+    )
+
+
+def _prepare_scope_runtime(
+    *,
+    repo_root: str | Path,
+    config_path: str | Path | None,
+    cfg: Any,
+    scope: PortfolioScope,
+    data_paths: ScopeDataPaths,
+    lookback_candles: int,
+    stagger_delay_sec: float = 0.0,
+    refresh_timeout_sec: int | None = None,
+    allow_prepare_fallback: bool = True,
+) -> dict[str, Any]:
+    root = Path(repo_root).resolve()
+    multi = getattr(cfg, 'multi_asset', None)
+    adaptive_prepare_enable = bool(getattr(multi, 'adaptive_prepare_enable', True))
+    incremental_lookback = getattr(multi, 'prepare_incremental_lookback_candles', 256)
+    before_market = _market_context_state(root, scope)
+    before_db = _candle_db_state(data_paths, scope)
+    strategy_meta = decide_prepare_strategy(
+        adaptive_prepare_enable=adaptive_prepare_enable,
+        db_exists=bool(before_db.get('exists')),
+        db_rows=int(before_db.get('db_rows') or 0),
+        db_fresh=bool(before_db.get('fresh')),
+        market_context_exists=bool(before_market.get('exists')),
+        market_context_fresh=bool(before_market.get('fresh')),
+        market_context_dependency_available=before_market.get('dependency_available'),
+        full_lookback_candles=int(lookback_candles),
+        incremental_lookback_candles=None if incremental_lookback in (None, '') else int(incremental_lookback),
+    )
+
+    steps: list[SubprocessOutcome] = []
+    fallback_used = False
+    if bool(strategy_meta.get('skip_prepare')):
+        after_market = before_market
+        after_db = before_db
+    else:
+        if float(stagger_delay_sec or 0.0) > 0:
+            time.sleep(float(stagger_delay_sec))
+        if bool(strategy_meta.get('refresh_only')):
+            refresh_timeout = int(refresh_timeout_sec or _env_int('REFRESH_MARKET_CONTEXT_TIMEOUT_SEC', 120))
+            steps.append(_refresh_only_step(repo_root=root, config_path=Path(config_path) if config_path is not None else None, scope=scope, timeout_sec=refresh_timeout))
+            refresh_ok = all(int(step.returncode) == 0 for step in steps)
+            if (not refresh_ok) and bool(allow_prepare_fallback):
+                fallback_used = True
+                fallback_lookback = int(min(int(lookback_candles), max(32, int(incremental_lookback or 256))))
+                steps.extend(
+                    prepare_scope(
+                        repo_root=root,
+                        config_path=config_path,
+                        scope=scope,
+                        data_paths=data_paths,
+                        lookback_candles=fallback_lookback,
+                        stagger_delay_sec=0.0,
+                    )
+                )
+                strategy_meta['strategy'] = 'refresh_only_fallback_incremental'
+                strategy_meta['effective_lookback_candles'] = fallback_lookback
+                strategy_meta['uses_incremental_lookback'] = True
+        else:
+            steps.extend(
+                prepare_scope(
+                    repo_root=root,
+                    config_path=config_path,
+                    scope=scope,
+                    data_paths=data_paths,
+                    lookback_candles=int(strategy_meta.get('effective_lookback_candles') or int(lookback_candles)),
+                    stagger_delay_sec=0.0,
+                )
+            )
+        after_market = _market_context_state(root, scope)
+        after_db = _candle_db_state(data_paths, scope)
+
+    return {
+        'scope_tag': scope.scope_tag,
+        'asset': scope.asset,
+        'interval_sec': scope.interval_sec,
+        'strategy': str(strategy_meta.get('strategy') or 'full_prepare'),
+        'effective_lookback_candles': strategy_meta.get('effective_lookback_candles'),
+        'uses_incremental_lookback': bool(strategy_meta.get('uses_incremental_lookback', False)),
+        'fallback_used': bool(fallback_used),
+        'market_context_before': before_market,
+        'market_context_after': after_market,
+        'candle_db_before': before_db,
+        'candle_db_after': after_db,
+        'steps': [step.as_dict() for step in steps],
+    }
+
+
+def _latest_allocation_score_map(root: Path) -> dict[str, float]:
+    payload = _read_json(root / 'runs' / 'portfolio_allocation_latest.json') or {}
+    items: list[dict[str, Any]] = []
+    for key in ('selected', 'suppressed'):
+        value = payload.get(key)
+        if isinstance(value, list):
+            items.extend(item for item in value if isinstance(item, dict))
+    scores: dict[str, float] = {}
+    for item in items:
+        tag = str(item.get('scope_tag') or '').strip()
+        if not tag:
+            continue
+        score = item.get('portfolio_score')
+        if score in (None, ''):
+            score = item.get('rank_value')
+        if score in (None, ''):
+            score = item.get('score')
+        if score in (None, ''):
+            score = item.get('conf')
+        try:
+            value = float(score)
+        except Exception:
+            continue
+        if tag not in scores or value > scores[tag]:
+            scores[tag] = value
+    return scores
+
+
+def _ordered_scopes_for_candidate_budget(root: Path, scopes: list[PortfolioScope]) -> list[PortfolioScope]:
+    if len(scopes) <= 1:
+        return list(scopes)
+    scores = _latest_allocation_score_map(root)
+    indexed = {scope.scope_tag: idx for idx, scope in enumerate(scopes)}
+    return sorted(
+        scopes,
+        key=lambda scope: (
+            -float(scores.get(scope.scope_tag, float('-inf'))),
+            indexed.get(scope.scope_tag, 0),
+        ),
+    )
+
+
+def _budget_skipped_candidate(*, root: Path, scope: PortfolioScope, reason: str, governor_mode: str) -> tuple[SubprocessOutcome, CandidateDecision]:
+    decision_path = scope_decision_latest_path(asset=scope.asset, interval_sec=scope.interval_sec, out_dir=root / 'runs')
+    outcome = SubprocessOutcome(
+        name=f'observe_once:{scope.scope_tag}',
+        argv=[],
+        cwd=str(root),
+        returncode=0,
+        duration_sec=0.0,
+        stdout_tail='',
+        stderr_tail=f'skipped:{reason}',
+    )
+    candidate = CandidateDecision(
+        scope_tag=scope.scope_tag,
+        asset=scope.asset,
+        interval_sec=scope.interval_sec,
+        day=None,
+        ts=None,
+        action='HOLD',
+        score=0.0,
+        conf=0.0,
+        ev=-1.0,
+        reason='candidate_budget_skip',
+        blockers='candidate_budget_skip',
+        decision_path=str(decision_path),
+        raw={'kind': 'candidate_budget_skip', 'reason': str(reason), 'governor_mode': str(governor_mode)},
+    )
+    return outcome, candidate
+
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -216,7 +510,7 @@ def prepare_scope(
             module='natbin.collect_recent',
             args=(),
             env=env,
-            timeout_sec=_env_int('COLLECT_RECENT_TIMEOUT_SEC', 180),
+            timeout_sec=_env_int('COLLECT_RECENT_TIMEOUT_SEC', 300),
         )
     )
 
@@ -480,38 +774,82 @@ def run_portfolio_cycle(
             )
 
 
+    # Runtime governor / cycle budget metadata.
+    runtime_governor_meta = _load_runtime_governor(root=Path(root), cfg=cfg, scopes=scopes)
+    runtime_governor = dict(runtime_governor_meta.get('governor') or {})
+    governor_mode = str(runtime_governor.get('mode') or 'runtime_default')
+    governor_prepare_sleep_sec = max(
+        float(stagger_sec or 0.0),
+        max(0.0, float(runtime_governor.get('sleep_between_scopes_ms') or 0) / 1000.0),
+    )
+    governor_candidate_sleep_sec = max(
+        float(stagger_sec or 0.0),
+        max(0.0, float(runtime_governor.get('sleep_between_candidate_scopes_ms') or 0) / 1000.0),
+    )
+    refresh_timeout_sec = int(runtime_governor.get('refresh_market_context_timeout_sec') or _env_int('REFRESH_MARKET_CONTEXT_TIMEOUT_SEC', 120))
+    candidate_budget = max(1, min(len(scopes) if scopes else 1, int(runtime_governor.get('max_candidate_scopes_per_run') or (len(scopes) if scopes else 1))))
+    scope_order = str(runtime_governor.get('scope_order') or 'best_first_round_robin')
+    allow_budget_rotation = bool(getattr(getattr(cfg, 'multi_asset', None), 'candidate_budget_rotation_enable', True))
+    prepare_fallback_budget = max(0, int(runtime_governor.get('max_asset_prepare_fallback_scopes') or len(scopes or [])))
+    prepare_strategy_counts: dict[str, int] = {}
+
     # --- Prepare phase (market DB + dataset files) ---
     if scopes:
-        with ThreadPoolExecutor(max_workers=workers_prepare) as pool:
-            futs: dict[Any, PortfolioScope] = {}
+        if workers_prepare > 1:
+            with ThreadPoolExecutor(max_workers=workers_prepare) as pool:
+                futs: dict[Any, PortfolioScope] = {}
+                for idx, s in enumerate(scopes):
+                    if s.scope_tag not in data_paths_by_tag:
+                        continue
+                    fut = pool.submit(
+                        _prepare_scope_runtime,
+                        repo_root=root,
+                        config_path=cfg_path,
+                        cfg=cfg,
+                        scope=s,
+                        data_paths=data_paths_by_tag[s.scope_tag],
+                        lookback_candles=lookback_candles,
+                        stagger_delay_sec=compute_stagger_delay(idx, stagger_sec=governor_prepare_sleep_sec, workers=workers_prepare),
+                        refresh_timeout_sec=refresh_timeout_sec,
+                        allow_prepare_fallback=True,
+                    )
+                    futs[fut] = s
+                for fut in as_completed(futs):
+                    s = futs[fut]
+                    try:
+                        item = fut.result()
+                        prepare_results.append(item)
+                        prepare_strategy = str(item.get('strategy') or 'unknown')
+                        prepare_strategy_counts[prepare_strategy] = int(prepare_strategy_counts.get(prepare_strategy, 0)) + 1
+                        for o in list(item.get('steps') or []):
+                            if int(o.get('returncode') or 0) != 0:
+                                errors.append(f'prepare_step_failed:{s.scope_tag}:{o.get("name")}:rc={o.get("returncode")}')
+                    except Exception as exc:
+                        errors.append(f'prepare_failed:{s.scope_tag}:{type(exc).__name__}:{exc}')
+        else:
             for idx, s in enumerate(scopes):
                 if s.scope_tag not in data_paths_by_tag:
                     continue
-                fut = pool.submit(
-                    prepare_scope,
-                    repo_root=root,
-                    config_path=cfg_path,
-                    scope=s,
-                    data_paths=data_paths_by_tag[s.scope_tag],
-                    lookback_candles=lookback_candles,
-                    stagger_delay_sec=compute_stagger_delay(idx, stagger_sec=stagger_sec, workers=workers_prepare),
-                )
-                futs[fut] = s
-            for fut in as_completed(futs):
-                s = futs[fut]
                 try:
-                    outcomes = fut.result()
-                    prepare_results.append(
-                        {
-                            'scope_tag': s.scope_tag,
-                            'asset': s.asset,
-                            'interval_sec': s.interval_sec,
-                            'steps': [o.as_dict() for o in outcomes],
-                        }
+                    item = _prepare_scope_runtime(
+                        repo_root=root,
+                        config_path=cfg_path,
+                        cfg=cfg,
+                        scope=s,
+                        data_paths=data_paths_by_tag[s.scope_tag],
+                        lookback_candles=lookback_candles,
+                        stagger_delay_sec=compute_stagger_delay(idx, stagger_sec=governor_prepare_sleep_sec, workers=workers_prepare),
+                        refresh_timeout_sec=refresh_timeout_sec,
+                        allow_prepare_fallback=prepare_fallback_budget > 0,
                     )
-                    for o in outcomes:
-                        if int(o.returncode) != 0:
-                            errors.append(f'prepare_step_failed:{s.scope_tag}:{o.name}:rc={o.returncode}')
+                    if bool(item.get('fallback_used')):
+                        prepare_fallback_budget = max(0, prepare_fallback_budget - 1)
+                    prepare_results.append(item)
+                    prepare_strategy = str(item.get('strategy') or 'unknown')
+                    prepare_strategy_counts[prepare_strategy] = int(prepare_strategy_counts.get(prepare_strategy, 0)) + 1
+                    for o in list(item.get('steps') or []):
+                        if int(o.get('returncode') or 0) != 0:
+                            errors.append(f'prepare_step_failed:{s.scope_tag}:{o.get("name")}:rc={o.get("returncode")}')
                 except Exception as exc:
                     errors.append(f'prepare_failed:{s.scope_tag}:{type(exc).__name__}:{exc}')
 
@@ -519,7 +857,7 @@ def run_portfolio_cycle(
     # When multi-asset is enabled we partition runtime sqlite DBs per scope_tag
     # (signals/state) so candidate observation can run in parallel without
     # SQLite locking.
-    candidate_parallel = (multi_enabled and partition_data_paths and len(scopes) > 1 and workers > 1)
+    candidate_parallel = (multi_enabled and partition_data_paths and len(scopes) > 1 and workers > 1 and candidate_budget >= len(scopes))
 
     def _run_candidate(s: PortfolioScope, idx: int) -> tuple[SubprocessOutcome, CandidateDecision, str | None]:
         try:
@@ -532,7 +870,7 @@ def run_portfolio_cycle(
                 topk=topk,
                 lookback_candles=lookback_candles,
                 stagger_delay_sec=compute_stagger_delay(
-                    idx, stagger_sec=stagger_sec, workers=(workers if candidate_parallel else 1)
+                    idx, stagger_sec=governor_candidate_sleep_sec, workers=(workers if candidate_parallel else 1)
                 ),
                 cfg=cfg,
             )
@@ -569,19 +907,31 @@ def run_portfolio_cycle(
             )
             return outcome, cand, f"candidate_failed:{s.scope_tag}:exc={type(e).__name__}"
 
+    ordered_candidate_scopes = _ordered_scopes_for_candidate_budget(Path(root), scopes)
+    budget_scope_order = scope_order if allow_budget_rotation else 'best_first'
+    budgeted_candidate_scopes, candidate_budget_meta = select_governed_items(
+        ordered_candidate_scopes,
+        repo_root=Path(root),
+        budget=candidate_budget,
+        scope_order=budget_scope_order,
+    )
+    budgeted_scope_tags = {scope.scope_tag for scope in budgeted_candidate_scopes}
+
     results_by_tag: dict[str, tuple[SubprocessOutcome, CandidateDecision, str | None]] = {}
 
     if candidate_parallel:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(_run_candidate, s, idx): s for idx, s in enumerate(scopes)}
+            futs = {pool.submit(_run_candidate, s, idx): s for idx, s in enumerate(budgeted_candidate_scopes)}
             for fut in as_completed(futs):
                 s = futs[fut]
                 results_by_tag[s.scope_tag] = fut.result()
     else:
-        for idx, s in enumerate(scopes):
+        for idx, s in enumerate(budgeted_candidate_scopes):
             results_by_tag[s.scope_tag] = _run_candidate(s, idx)
 
     for s in scopes:
+        if s.scope_tag not in budgeted_scope_tags:
+            results_by_tag[s.scope_tag] = (*_budget_skipped_candidate(root=Path(root), scope=s, reason='governed_scope_rotation', governor_mode=governor_mode), None)
         outcome, cand, err = results_by_tag[s.scope_tag]
         candidate_results.append(
             {
@@ -590,6 +940,7 @@ def run_portfolio_cycle(
                 'interval_sec': s.interval_sec,
                 'runtime_paths': runtime_paths_by_tag[s.scope_tag].as_dict(),
                 'outcome': outcome.as_dict(),
+                'budget_skipped': bool(str(cand.reason or '') == 'candidate_budget_skip'),
             }
         )
         candidates.append(cand)
@@ -755,6 +1106,18 @@ def run_portfolio_cycle(
 
     # Persist latest cycle
     report_payload = report.as_dict()
+    report_payload['runtime_governor'] = runtime_governor_meta
+    report_payload['candidate_budget'] = {
+        **candidate_budget_meta,
+        'ordered_scope_tags': [scope.scope_tag for scope in ordered_candidate_scopes],
+        'selected_scope_tags': [scope.scope_tag for scope in budgeted_candidate_scopes],
+        'rotation_enabled': bool(allow_budget_rotation),
+        'governor_mode': governor_mode,
+    }
+    report_payload['prepare_summary'] = {
+        'strategy_counts': prepare_strategy_counts,
+        'refresh_timeout_sec': int(refresh_timeout_sec),
+    }
     report_payload['persisted_paths'] = write_portfolio_latest_payload(
         root,
         name='portfolio_cycle_latest.json',

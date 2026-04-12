@@ -52,6 +52,9 @@ def ensure_signals_v2(con: sqlite3.Connection, *, default_interval: int = 300) -
           meta_model TEXT,
           market_context_stale INTEGER,
           market_context_fail_closed INTEGER,
+          cp_bootstrap_fallback TEXT,
+          cp_bootstrap_fallback_active INTEGER,
+          cp_available INTEGER,
           PRIMARY KEY(day, asset, interval_sec, ts)
         )
         """

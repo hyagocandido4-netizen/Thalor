@@ -146,7 +146,9 @@ def build_observer_environment(
     updates: dict[str, str | None] = dict(surface.legacy_env)
     updates.update(
         {
-            'GATE_FAIL_CLOSED': os.getenv('GATE_FAIL_CLOSED', '1') or '1',
+            # Respect the profile-resolved gate semantics first; env can still
+            # override upstream when explicitly injected into legacy_env.
+            'GATE_FAIL_CLOSED': str(surface.legacy_env.get('GATE_FAIL_CLOSED', os.getenv('GATE_FAIL_CLOSED', '1') or '1')),
             'LOOKBACK_CANDLES': str(int(lookback_candles)),
             'THALOR_CONFIG_PATH': str(surface.config_path),
             'MARKET_CONTEXT_PATH': str(

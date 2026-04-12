@@ -21,17 +21,20 @@ def _resolved_stub() -> SimpleNamespace:
         broker=SimpleNamespace(balance_mode='PRACTICE', email='bot@example.com', password='secret'),
         decision=SimpleNamespace(
             gate_mode='cp',
+            cp_bootstrap_fallback='auto',
             meta_model='hgb',
             thresh_on='ev',
             threshold=0.11,
             tune_dir=PureWindowsPath(r'runs\from_base'),
             bounds=SimpleNamespace(vol_lo=0.1, vol_hi=0.2, bb_lo=0.3, bb_hi=0.4, atr_lo=0.5, atr_hi=0.6),
             cp_alpha=0.05,
+            fail_closed=True,
             cpreg=SimpleNamespace(enabled=True, alpha_start=0.12, alpha_end=0.18, slot2_mult=0.77),
         ),
         runtime_overrides=SimpleNamespace(
             threshold=0.22,
             cp_alpha=0.07,
+            cp_bootstrap_fallback='auto',
             cpreg_alpha_start=0.15,
             cpreg_alpha_end=0.25,
             cpreg_slot2_mult=0.66,
@@ -55,3 +58,5 @@ def test_resolved_to_legacy_payload_normalizes_pathlike_fields() -> None:
     assert payload['db_path'] == 'data/market.sqlite3'
     assert payload['market_db_path'] == 'data/market.sqlite3'
     assert payload['tune_dir'] == 'runs/from_base'
+    assert payload['cp_bootstrap_fallback'] == 'auto'
+    assert payload['fail_closed'] is True

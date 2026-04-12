@@ -17,7 +17,7 @@ from typing import Mapping
 import sqlite3
 
 RUNTIME_CONTRACTS_VERSION = "packageB-v1"
-SIGNALS_V2_SCHEMA_VERSION = 2
+SIGNALS_V2_SCHEMA_VERSION = 3
 EXECUTED_STATE_SCHEMA_VERSION = 2
 
 
@@ -72,6 +72,9 @@ SIGNALS_V2_CONTRACT = TableContract(
         "meta_model": "TEXT",
         "market_context_stale": "INTEGER",
         "market_context_fail_closed": "INTEGER",
+        "cp_bootstrap_fallback": "TEXT",
+        "cp_bootstrap_fallback_active": "INTEGER",
+        "cp_available": "INTEGER",
     },
     primary_key=("day", "asset", "interval_sec", "ts"),
     indexes=(("idx_signals_v2_ts", "CREATE INDEX IF NOT EXISTS idx_signals_v2_ts ON signals_v2(ts)"),),

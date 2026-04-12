@@ -216,6 +216,31 @@ def _loop_summary(repo_root: str | Path, asset: str, interval_sec: int) -> dict[
     return payload if isinstance(payload, dict) else None
 
 
+def _breaker_summary(repo_root: str | Path, asset: str, interval_sec: int) -> dict[str, Any]:
+    payload = read_control_artifact(repo_root=repo_root, asset=asset, interval_sec=interval_sec, name='breaker')
+    if not isinstance(payload, dict):
+        return {
+            'present': False,
+            'primary_cause': {'code': 'none', 'category': 'none', 'detail': None},
+            'symptom': {'code': 'none', 'detail': None},
+            'connectivity': {},
+            'last_transport_error': None,
+        }
+    primary_cause = payload.get('primary_cause') if isinstance(payload.get('primary_cause'), dict) else {'code': 'none', 'category': 'none', 'detail': None}
+    symptom = payload.get('symptom') if isinstance(payload.get('symptom'), dict) else {'code': 'none', 'detail': None}
+    connectivity = payload.get('connectivity') if isinstance(payload.get('connectivity'), dict) else {}
+    last_transport_error = payload.get('last_transport_error')
+    if last_transport_error in (None, ''):
+        last_transport_error = connectivity.get('last_transport_error')
+    return {
+        'present': True,
+        'primary_cause': primary_cause,
+        'symptom': symptom,
+        'connectivity': connectivity,
+        'last_transport_error': last_transport_error,
+    }
+
+
 def _recommended_actions(*, repo_root: Path, config_path: str, asset: str, interval_sec: int, issues: list[dict[str, Any]], recent_incidents: list[dict[str, Any]], stage: str | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -305,6 +330,7 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
     freshness = inspect_runtime_freshness(repo_root=repo, ctx=ctx, now_utc=now)
     health = _health_summary(repo, ctx.config.asset, int(ctx.config.interval_sec))
     loop_status = _loop_summary(repo, ctx.config.asset, int(ctx.config.interval_sec))
+    breaker = _breaker_summary(repo, ctx.config.asset, int(ctx.config.interval_sec))
     recent_incidents = load_recent_scope_incidents(repo_root=repo, scope_tag=ctx.scope.scope_tag, limit=limit, window_hours=window_hours)
     incident_summary = _summarize_incidents(recent_incidents)
 
@@ -342,6 +368,17 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
     if bool((gates.get('drain_mode') or {}).get('active')):
         issues.append(_issue('drain_mode_active', 'warn', 'Drain mode ativo.', reason=(gates.get('drain_mode') or {}).get('reason')))
 
+    breaker_primary = dict(breaker.get('primary_cause') or {})
+    breaker_primary_code = str(breaker_primary.get('code') or 'none')
+    breaker_transport_error = breaker.get('last_transport_error')
+    breaker_issue_extra = {}
+    if breaker_primary_code not in {'', 'none'}:
+        breaker_issue_extra = {
+            'primary_cause_code': breaker_primary_code,
+            'last_transport_error': breaker_transport_error,
+        }
+        issues.append(_issue('breaker_primary_cause', 'warn', 'Breaker surface indica causa primária operacional.', **breaker_issue_extra))
+
     if freshness.stale_artifacts:
         issues.append(_issue('runtime_stale_artifacts', 'error', 'Há artefatos stale no scope.', stale_artifacts=[a.name for a in freshness.stale_artifacts]))
 
@@ -358,12 +395,12 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
 
     health_state = str((health or {}).get('state') or 'unknown')
     if health_state not in {'healthy', 'ok', 'unknown'}:
-        issues.append(_issue('health_not_ok', 'warn', f'Health do scope não está saudável: {health_state}.', state=health_state, message=(health or {}).get('message')))
+        issues.append(_issue('health_not_ok', 'warn', f'Health do scope não está saudável: {health_state}.', state=health_state, health_message=(health or {}).get('message'), **breaker_issue_extra))
 
     loop_message = str((loop_status or {}).get('message') or '')
     loop_phase = str((loop_status or {}).get('phase') or '')
     if loop_phase.lower() in {'error', 'failed'} or 'failure' in loop_message.lower():
-        issues.append(_issue('loop_failure_recent', 'warn', 'Loop status recente aponta falha operacional.', phase=loop_phase, message=loop_message))
+        issues.append(_issue('loop_failure_recent', 'warn', 'Loop status recente aponta falha operacional.', phase=loop_phase, loop_message=loop_message, **breaker_issue_extra))
 
     severity = _overall_severity(issues)
     recommended = _recommended_actions(
@@ -421,6 +458,7 @@ def incident_status_payload(*, repo_root: str | Path = '.', config_path: str | P
         },
         'health': health,
         'loop_status': loop_status,
+        'breaker': breaker,
         'runtime_freshness': freshness.as_dict(),
         'incidents': {
             **incident_summary,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import fnmatch
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -10,7 +11,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from .release_hygiene import build_release_report
+from .release_hygiene import SAFE_PRUNE_GLOBS, build_release_report, should_include_path
 
 
 TOOL_VERSION = 1
@@ -201,6 +202,26 @@ def _parse_name_status(text: str) -> dict[str, Any]:
     }
 
 
+def _is_noise_path(path: str) -> bool:
+    rel = str(path).replace('\\', '/').strip('/')
+    if not rel:
+        return False
+    name = Path(rel).name
+    for pattern in SAFE_PRUNE_GLOBS:
+        if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(rel, pattern):
+            return True
+    return not should_include_path(rel, is_dir=False)
+
+
+def _noise_summary(paths: list[str]) -> dict[str, Any]:
+    unique = sorted(dict.fromkeys(paths))
+    return {
+        'count': len(unique),
+        'paths': unique,
+        'by_area': dict(sorted(Counter(_area_for_path(path) for path in unique).items())),
+    }
+
+
 def _build_inventory(repo_root: Path, *, changed_paths: list[str]) -> dict[str, Any]:
     append_readmes = sorted(path.name for path in repo_root.glob('README_PACKAGE_*_APPEND.md'))
     docs_markdown = sorted(path.relative_to(repo_root).as_posix() for path in (repo_root / 'docs').glob('*.md')) if (repo_root / 'docs').exists() else []
@@ -238,7 +259,9 @@ def _build_recommendations(payload: dict[str, Any]) -> list[str]:
 
     if status == 'conflicted':
         recommendations.append('Resolva conflitos git antes de iniciar o próximo package.')
-    if bool(worktree.get('dirty')):
+    if bool(worktree.get('noise_only_dirty')):
+        recommendations.append('Workspace dirty apenas com ruído safe-prune; rode workspace-hygiene/release-hygiene cleanup antes do próximo commit.')
+    elif bool(worktree.get('dirty')):
         recommendations.append('Congele o working tree atual com manifest + commit/tag local antes de continuar a refatoração.')
     if int(divergence.get('ahead') or 0) > 0 or int(divergence.get('behind') or 0) > 0:
         recommendations.append(f"Revise a divergência entre HEAD e {divergence.get('base_ref') or DEFAULT_BASE_REF} antes do próximo merge/publish.")
@@ -476,6 +499,9 @@ def build_repo_sync_payload(
 
         porcelain = _git_stdout(['status', '--short', '--branch', '--porcelain=v1', '-uall'], root) or ''
         parsed = _parse_porcelain(porcelain)
+        dirty_paths = sorted(dict.fromkeys([*parsed['tracked_modified'], *parsed['untracked']]))
+        noise_paths = [path for path in dirty_paths if _is_noise_path(path)]
+        meaningful_paths = [path for path in dirty_paths if path not in set(noise_paths)]
         payload['worktree'] = {
             **parsed['summary'],
             'tracked_modified': parsed['tracked_modified'],
@@ -489,6 +515,10 @@ def build_repo_sync_payload(
             'by_kind': parsed['by_kind'],
             'branch_header': parsed['branch_header'],
             'entries': parsed['entries'],
+            'noise': _noise_summary(noise_paths),
+            'meaningful_paths': sorted(meaningful_paths),
+            'noise_only_dirty': bool(parsed['summary'].get('dirty')) and not meaningful_paths,
+            'meaningful_dirty': bool(meaningful_paths),
         }
 
         base_sha = _git_stdout(['rev-parse', str(base_ref)], root)

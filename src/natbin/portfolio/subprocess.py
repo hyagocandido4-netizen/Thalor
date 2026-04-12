@@ -46,21 +46,29 @@ def run_python_module(
     merged_env = dict(**{k: v for k, v in (env or {}).items()})
 
     t0 = time.perf_counter()
-    cp = subprocess.run(
-        argv,
-        cwd=str(root),
-        capture_output=True,
-        text=True,
-        timeout=int(timeout_sec),
-        env={**dict(os.environ), **merged_env} if merged_env else None,
-    )
+    try:
+        cp = subprocess.run(
+            argv,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=int(timeout_sec),
+            env={**dict(os.environ), **merged_env} if merged_env else None,
+        )
+        returncode = int(cp.returncode or 0)
+        stdout_tail = _tail(cp.stdout)
+        stderr_tail = _tail(cp.stderr)
+    except subprocess.TimeoutExpired as exc:
+        returncode = 124
+        stdout_tail = _tail(exc.stdout)
+        stderr_tail = _tail((exc.stderr or '') + f'\nTimeoutExpired: {type(exc).__name__}: timeout={int(timeout_sec)}s module={module}')
     dur = round(time.perf_counter() - t0, 3)
     return SubprocessOutcome(
         name=str(name),
         argv=[str(x) for x in argv],
         cwd=str(root),
-        returncode=int(cp.returncode or 0),
+        returncode=returncode,
         duration_sec=float(dur),
-        stdout_tail=_tail(cp.stdout),
-        stderr_tail=_tail(cp.stderr),
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
     )

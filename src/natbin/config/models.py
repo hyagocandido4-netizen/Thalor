@@ -165,11 +165,29 @@ class DecisionSettings(BaseModel):
     pacing_enable: bool = True
 
     fail_closed: bool = True
+    # Practice/canary bootstrap escape hatch for CP-gated profiles.
+    #
+    # When gate_mode=cp and the observer cache has a meta-model but still lacks
+    # a fitted conformal gate, older behavior was to fail-closed forever with
+    # ``cp_fail_closed_missing_cp_meta``. That is appropriate for strict live
+    # envelopes, but it blocks canary/practice recovery even when the provider,
+    # market context and meta score are otherwise healthy.
+    #
+    # Supported values:
+    #   - off/none/fail_closed: preserve strict CP fail-closed semantics
+    #   - auto/meta/meta_iso: reuse the available meta score as a temporary
+    #     bootstrap fallback until CP metadata becomes available
+    cp_bootstrap_fallback: str = "off"
 
     @model_validator(mode="after")
     def _validate(self) -> "DecisionSettings":
         if self.cp_alpha is not None and not 0.0 <= float(self.cp_alpha) <= 1.0:
             raise ValueError("decision.cp_alpha must be between 0 and 1")
+        fallback = str(self.cp_bootstrap_fallback or 'off').strip().lower()
+        allowed = {'off', 'none', 'fail_closed', 'auto', 'meta', 'meta_iso'}
+        if fallback not in allowed:
+            raise ValueError('decision.cp_bootstrap_fallback must be one of off, none, fail_closed, auto, meta, meta_iso')
+        self.cp_bootstrap_fallback = fallback
         return self
 
 
@@ -194,10 +212,104 @@ class AutosSettings(BaseModel):
     hourthr_enabled: bool = True
 
 
+class RequestMetricsSettings(BaseModel):
+    enabled: bool = False
+    timezone: str | None = None
+    structured_log_path: Path | None = None
+    summary_log_level: int | str = 'INFO'
+    emit_summary_on_rollover: bool = True
+    emit_summary_on_close: bool = True
+    emit_request_events: bool = True
+    emit_summary_every_requests: int = 25
+
+    @field_validator('timezone', mode='before')
+    @classmethod
+    def _normalize_timezone(cls, value: object) -> str | None:
+        if value in (None, ''):
+            return None
+        text = str(value).strip()
+        return text or None
+
+
+class NetworkTransportSettings(BaseModel):
+    enabled: bool = False
+    endpoint: str | None = None
+    endpoints: list[Any] = Field(default_factory=list)
+    endpoint_file: Path | None = None
+    endpoints_file: Path | None = None
+    no_proxy: list[str] = Field(default_factory=list)
+    max_retries: int = 3
+    backoff_base_s: float = 0.5
+    backoff_max_s: float = 8.0
+    jitter_ratio: float = 0.2
+    failure_threshold: int = 3
+    quarantine_base_s: float = 30.0
+    quarantine_max_s: float = 300.0
+    healthcheck_interval_s: float = 60.0
+    healthcheck_timeout_s: float = 3.0
+    healthcheck_mode: Literal['tcp', 'http'] = 'tcp'
+    healthcheck_url: str | None = None
+    fail_open_when_exhausted: bool = True
+    structured_log_path: Path | None = None
+
+    @field_validator('no_proxy', mode='before')
+    @classmethod
+    def _normalize_no_proxy(cls, value: object) -> list[str]:
+        if value in (None, ''):
+            return []
+        if isinstance(value, str):
+            parts = [item.strip() for item in value.split(',')]
+            return [item for item in parts if item]
+        if isinstance(value, (list, tuple, set)):
+            out: list[str] = []
+            for item in value:
+                text = str(item or '').strip()
+                if text:
+                    out.append(text)
+            return out
+        text = str(value).strip()
+        return [text] if text else []
+
+    @field_validator('healthcheck_mode', mode='before')
+    @classmethod
+    def _normalize_healthcheck_mode(cls, value: object) -> str:
+        text = str(value or 'tcp').strip().lower()
+        if text not in {'tcp', 'http'}:
+            raise ValueError('network.transport.healthcheck_mode must be tcp or http')
+        return text
+
+    @model_validator(mode='after')
+    def _validate(self) -> 'NetworkTransportSettings':
+        if int(self.max_retries) < 1:
+            raise ValueError('network.transport.max_retries must be >= 1')
+        if float(self.backoff_base_s) <= 0:
+            raise ValueError('network.transport.backoff_base_s must be > 0')
+        if float(self.backoff_max_s) < float(self.backoff_base_s):
+            raise ValueError('network.transport.backoff_max_s must be >= network.transport.backoff_base_s')
+        if float(self.jitter_ratio) < 0 or float(self.jitter_ratio) > 1:
+            raise ValueError('network.transport.jitter_ratio must be between 0 and 1')
+        if int(self.failure_threshold) < 1:
+            raise ValueError('network.transport.failure_threshold must be >= 1')
+        if float(self.quarantine_base_s) <= 0:
+            raise ValueError('network.transport.quarantine_base_s must be > 0')
+        if float(self.quarantine_max_s) < float(self.quarantine_base_s):
+            raise ValueError('network.transport.quarantine_max_s must be >= network.transport.quarantine_base_s')
+        if float(self.healthcheck_interval_s) < 0:
+            raise ValueError('network.transport.healthcheck_interval_s must be >= 0')
+        if float(self.healthcheck_timeout_s) <= 0:
+            raise ValueError('network.transport.healthcheck_timeout_s must be > 0')
+        return self
+
+
+class NetworkSettings(BaseModel):
+    transport: NetworkTransportSettings = Field(default_factory=NetworkTransportSettings)
+
+
 class ObservabilitySettings(BaseModel):
     status_enable: bool = True
     metrics_enable: bool = False
     metrics_bind: str = "127.0.0.1:9108"
+    request_metrics: RequestMetricsSettings = Field(default_factory=RequestMetricsSettings)
 
     # Package P: structured JSONL logs (append-only) for ingestion.
     structured_logs_enable: bool = True
@@ -457,6 +569,20 @@ class MultiAssetSettings(BaseModel):
     partition_data_paths: bool = True
     data_db_template: str = "data/market_{scope_tag}.sqlite3"
     dataset_path_template: str = "data/datasets/{scope_tag}/dataset.csv"
+
+    # Runtime headroom hardening for long multi-asset observe loops.
+    # ``adaptive_prepare_enable`` avoids re-running the full prepare pipeline
+    # when the local candle DB + market context are already fresh.
+    adaptive_prepare_enable: bool = True
+
+    # When the local DB already exists, only a shorter collect window is needed
+    # to converge the newest candles. The full decision lookback remains
+    # unchanged for the candidate phase.
+    prepare_incremental_lookback_candles: int | None = Field(256, ge=32)
+
+    # Rotate governed candidate scans when the provider governor enforces a
+    # budget smaller than the full scope count.
+    candidate_budget_rotation_enable: bool = True
 
 
 
@@ -944,6 +1070,7 @@ class RuntimeOverrides(BaseModel):
     cpreg_alpha_end: float | None = None
     cpreg_slot2_mult: float | None = None
     cp_alpha: float | None = None
+    cp_bootstrap_fallback: str | None = None
     meta_iso_blend: float | None = None
     regime_mode: Literal["hard", "soft"] | None = None
     payout: float | None = None
@@ -984,6 +1111,40 @@ class ExecutionLimitsSettings(BaseModel):
     max_open_positions: int = 1
 
 
+class ExecutionRealGuardSettings(BaseModel):
+    enabled: bool = True
+    require_env_allow_real: bool = True
+    allow_multi_asset_live: bool = False
+    serialize_submits: bool = True
+    submit_lock_path: Path = Path("runs/runtime_execution.submit.lock")
+    min_submit_spacing_sec: int = 20
+    max_pending_unknown_total: int | None = 1
+    max_open_positions_total: int | None = 1
+    recent_failure_window_sec: int = 300
+    max_recent_transport_failures: int = 2
+    post_submit_verify_enable: bool = True
+    post_submit_verify_timeout_sec: int = 8
+    post_submit_verify_poll_sec: float = 0.5
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ExecutionRealGuardSettings":
+        if int(self.min_submit_spacing_sec) < 0:
+            raise ValueError("execution.real_guard.min_submit_spacing_sec must be >= 0")
+        if self.max_pending_unknown_total is not None and int(self.max_pending_unknown_total) < 0:
+            raise ValueError("execution.real_guard.max_pending_unknown_total must be >= 0 or null")
+        if self.max_open_positions_total is not None and int(self.max_open_positions_total) < 0:
+            raise ValueError("execution.real_guard.max_open_positions_total must be >= 0 or null")
+        if int(self.recent_failure_window_sec) < 0:
+            raise ValueError("execution.real_guard.recent_failure_window_sec must be >= 0")
+        if int(self.max_recent_transport_failures) < 0:
+            raise ValueError("execution.real_guard.max_recent_transport_failures must be >= 0")
+        if int(self.post_submit_verify_timeout_sec) < 1:
+            raise ValueError("execution.real_guard.post_submit_verify_timeout_sec must be >= 1")
+        if float(self.post_submit_verify_poll_sec) <= 0:
+            raise ValueError("execution.real_guard.post_submit_verify_poll_sec must be > 0")
+        return self
+
+
 class FakeBrokerSettings(BaseModel):
     state_path: Path = Path("runs/fake_broker_state.json")
     submit_behavior: Literal["ack", "reject", "timeout", "exception"] = "ack"
@@ -1006,6 +1167,7 @@ class ExecutionSettings(BaseModel):
     submit: ExecutionSubmitSettings = Field(default_factory=ExecutionSubmitSettings)
     reconcile: ExecutionReconcileSettings = Field(default_factory=ExecutionReconcileSettings)
     limits: ExecutionLimitsSettings = Field(default_factory=ExecutionLimitsSettings)
+    real_guard: ExecutionRealGuardSettings = Field(default_factory=ExecutionRealGuardSettings)
     fake: FakeBrokerSettings = Field(default_factory=FakeBrokerSettings)
 
     @field_validator("mode", mode="before")
@@ -1055,6 +1217,7 @@ class ThalorConfig(BaseSettings):
     decision: DecisionSettings = Field(default_factory=DecisionSettings)
     quota: QuotaSettings = Field(default_factory=QuotaSettings)
     autos: AutosSettings = Field(default_factory=AutosSettings)
+    network: NetworkSettings = Field(default_factory=NetworkSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
     monte_carlo: MonteCarloSettings = Field(default_factory=MonteCarloSettings)
@@ -1097,6 +1260,7 @@ class ResolvedConfig(BaseModel):
     decision: DecisionSettings
     quota: QuotaSettings
     autos: AutosSettings
+    network: NetworkSettings
     observability: ObservabilitySettings
     dashboard: DashboardSettings
     monte_carlo: MonteCarloSettings

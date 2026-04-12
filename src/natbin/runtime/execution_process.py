@@ -24,6 +24,12 @@ from .execution_contracts import (
     INTENT_PLANNED,
 )
 from .execution_policy import parse_utc_iso, signal_day_from_ts, utc_now, utc_now_iso
+from .execution_hardening import (
+    evaluate_execution_hardening,
+    execution_hardening_payload as _execution_hardening_payload,
+    live_submit_guard,
+    verify_live_submit,
+)
 from .execution_signal import intent_from_signal_row, latest_trade_row
 from .execution_status import check_order_status_payload
 from .execution_submit import submit_intent
@@ -183,6 +189,8 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
     blocked_reason = None
     security_guard = None
     account_protection = None
+    execution_hardening = None
+    post_submit_verification = None
     if latest is not None and str(latest.get('action') or '').upper() in {'CALL', 'PUT'}:
         planned = intent_from_signal_row(row=latest, ctx=ctx, repo_root=repo_root)
         latest_intent, created = repo.ensure_intent(planned)
@@ -309,13 +317,44 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
                             else:
                                 if not isinstance(account_protection, dict) and ap_apply_delay and ap_delay > 0:
                                     account_protection = apply_recommended_delay(account_protection)
-                                latest_intent, submitted = submit_intent(
+                                execution_hardening = evaluate_execution_hardening(
                                     repo_root=repo_root,
                                     ctx=ctx,
-                                    repo=repo,
-                                    adapter=adapter,
-                                    intent=latest_intent,
+                                    write_artifact=True,
                                 )
+                                if not bool(execution_hardening.allowed):
+                                    blocked_reason = str(execution_hardening.reason or 'execution_hardening_blocked')
+                                    latest_intent = _save_blocked_intent(
+                                        repo,
+                                        latest_intent,
+                                        reason=blocked_reason,
+                                        error_code='execution_hardening',
+                                        event_payload={
+                                            'reason': blocked_reason,
+                                            'health': health.as_dict(),
+                                            'security_guard': sg_payload,
+                                            'account_protection': ap_payload,
+                                            'execution_hardening': execution_hardening.as_dict(),
+                                        },
+                                    )
+                                else:
+                                    with live_submit_guard(repo_root=repo_root, ctx=ctx):
+                                        latest_intent, submitted = submit_intent(
+                                            repo_root=repo_root,
+                                            ctx=ctx,
+                                            repo=repo,
+                                            adapter=adapter,
+                                            intent=latest_intent,
+                                        )
+                                        if submitted is not None and str(submitted.transport_status) == 'ack':
+                                            post_submit_verification = verify_live_submit(
+                                                repo_root=repo_root,
+                                                ctx=ctx,
+                                                repo=repo,
+                                                adapter=adapter,
+                                                intent=latest_intent,
+                                                external_order_id=submitted.external_order_id,
+                                            )
 
     post_result, post_detail = _run_reconcile_phase(repo_root=repo_root, ctx=ctx, adapter=adapter, phase='post')
     if latest_intent is not None:
@@ -336,6 +375,8 @@ def process_latest_signal(*, repo_root: str | Path = '.', config_path: str | Pat
         'blocked_reason': blocked_reason,
         'security_guard': security_guard.as_dict() if hasattr(security_guard, 'as_dict') else security_guard,
         'account_protection': account_protection.as_dict() if hasattr(account_protection, 'as_dict') else account_protection,
+        'execution_hardening': execution_hardening.as_dict() if hasattr(execution_hardening, 'as_dict') else execution_hardening,
+        'post_submit_verification': post_submit_verification.as_dict() if hasattr(post_submit_verification, 'as_dict') else post_submit_verification,
         'pre_reconcile': {'summary': pre_result.as_dict() if pre_result is not None else None, 'detail': pre_detail},
         'post_reconcile': {'summary': post_result.as_dict() if post_result is not None else None, 'detail': post_detail},
         'execution_summary': summary,
@@ -375,6 +416,10 @@ def reconcile_payload(*, repo_root: str | Path = '.', config_path: str | Path | 
 
 
 
+def execution_hardening_payload(*, repo_root: str | Path = '.', config_path: str | Path | None = None) -> dict[str, Any]:
+    return _execution_hardening_payload(repo_root=repo_root, config_path=config_path)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Package N execution layer helper')
     parser.add_argument('--repo-root', default='.')
@@ -389,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_status = sub.add_parser('check-order-status', aliases=['check_order_status'])
     sp_status.add_argument('--external-order-id', required=True)
     sp_status.add_argument('--no-refresh', action='store_true')
+    sub.add_parser('execution-hardening', aliases=['execution_hardening'])
     return parser
 
 
@@ -407,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
             external_order_id=ns.external_order_id,
             refresh=not bool(ns.no_refresh),
         )
+    elif cmd in {'execution-hardening', 'execution_hardening'}:
+        payload = execution_hardening_payload(repo_root=ns.repo_root, config_path=ns.config)
     else:
         payload = process_latest_signal(repo_root=ns.repo_root, config_path=ns.config)
     print(json.dumps(payload, indent=2, ensure_ascii=False, default=str) if ns.json else json.dumps(payload, ensure_ascii=False, default=str))
@@ -416,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     'build_parser',
     'check_order_status_payload',
+    'execution_hardening_payload',
     'main',
     'orders_payload',
     'precheck_reconcile_if_enabled',

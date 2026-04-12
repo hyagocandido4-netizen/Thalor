@@ -11,6 +11,7 @@ data:
   dataset_path: data/from_base.csv
 decision:
   gate_mode: cp
+  cp_bootstrap_fallback: auto
   meta_model: hgb
   thresh_on: ev
   threshold: 0.11
@@ -44,6 +45,7 @@ runtime_overrides:
   regime_mode: soft
   payout: 0.91
   market_open: false
+  cp_bootstrap_fallback: auto
 '''.strip()
 
 
@@ -65,11 +67,14 @@ def test_observer_surface_shares_cfg_and_env_bridge(tmp_path: Path) -> None:
     assert surface.legacy_env['CPREG_ENABLE'] == '1'
     assert surface.legacy_env['CPREG_SLOT2_MULT'] == '0.66'
     assert surface.legacy_env['MARKET_OPEN'] == '0'
+    assert surface.legacy_env['CP_BOOTSTRAP_FALLBACK'] == 'auto'
 
     updates = build_observer_environment(repo_root=tmp_path, config_path=modern, topk=5, lookback_candles=321)
     assert updates['THALOR_CONFIG_PATH'] == str(modern.resolve())
     assert updates['TOPK_K'] == '5'
     assert updates['LOOKBACK_CANDLES'] == '321'
     assert updates['THRESHOLD'] == '0.22'
+    assert updates['GATE_FAIL_CLOSED'] == '1'
+    assert updates['CP_BOOTSTRAP_FALLBACK'] == 'auto'
     assert 'EURUSD-OTC_300s' in str(updates['LIVE_SIGNALS_PATH'])
     assert 'EURUSD-OTC_300s' in str(updates['MARKET_CONTEXT_PATH'])

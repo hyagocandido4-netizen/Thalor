@@ -10,9 +10,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 from sklearn.isotonic import IsotonicRegression
-from sklearn.linear_model import LogisticRegression
-
 from ..config.compat_helpers import portable_path_str
+from ..ml_compat import build_binary_logreg
 from .slot_profile import slot_stats_for_ts
 
 
@@ -297,7 +296,7 @@ def fit_learned_gate(
     scales[scales <= 1e-9] = 1.0
     Xs = (X - means) / scales
 
-    model = LogisticRegression(max_iter=500, class_weight='balanced', random_state=42)
+    model = build_binary_logreg(max_iter=500, class_weight='balanced', random_state=42)
     model.fit(Xs, y)
     raw_probs = model.predict_proba(Xs)[:, 1].astype(float)
     raw_preds = (raw_probs >= 0.5).astype(int)

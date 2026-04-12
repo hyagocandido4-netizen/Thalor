@@ -11,6 +11,8 @@ class RuntimeAppConfig:
     timezone: str
     dataset_path: str
     config_path: str
+    transport_enabled: bool = False
+    request_metrics_enabled: bool = False
 
 
 @dataclass(frozen=True)

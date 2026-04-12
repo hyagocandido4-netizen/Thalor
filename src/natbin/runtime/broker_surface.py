@@ -7,6 +7,7 @@ from typing import Any
 from ..brokers import FakeBrokerAdapter, IQOptionAdapter
 from ..config.execution_mode import execution_mode_enabled, normalize_execution_mode
 from ..brokers.base import BrokerScope
+from .connectivity import request_metrics_settings_from_resolved, transport_settings_from_resolved
 
 
 def build_context(repo_root: str | Path = '.', config_path: str | Path | None = None):
@@ -128,6 +129,8 @@ def adapter_from_context(ctx, *, repo_root: str | Path):
         account_mode=current_account_mode,
         execution_mode=execution_mode,
         broker_config=broker,
+        transport_config=transport_settings_from_resolved(ctx.resolved_config),
+        request_metrics_config=request_metrics_settings_from_resolved(ctx.resolved_config),
         settle_grace_sec=int(reconcile.get('settle_grace_sec') or 30),
         history_limit=max(10, int(reconcile.get('history_lookback_sec') or 3600) // max(60, int(ctx.config.interval_sec))),
     )

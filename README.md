@@ -30,6 +30,9 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -U pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
+# opcional: instalar entrypoints de console do pacote
+.\.venv\Scripts\python.exe -m pip install -e .
+
 # ambiente local / toggles
 Copy-Item .env.example .env
 
@@ -40,6 +43,24 @@ Copy-Item .\config\broker_secrets.yaml.example .\config\broker_secrets.yaml
 ```
 
 > Dica: por padrão o bot usa `IQ_BALANCE_MODE=PRACTICE`.
+
+
+## Execução sem ativar `.venv`
+
+Você **não precisa ativar a `.venv` manualmente** para usar o control plane.
+No Windows/PowerShell use o wrapper canônico abaixo, que resolve automaticamente
+`\.venv\Scripts\python.exe` e injeta `src/` no `PYTHONPATH`:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts	ools\invoke_runtime_app.ps1 status --json
+pwsh -ExecutionPolicy Bypass -File .\scripts	ools\invoke_runtime_app.ps1 --config config\live_controlled_practice.yaml practice-preflight --json
+```
+
+Também existe uma rodada canônica do toolkit:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts	oolsun_diagnostic_toolkit.ps1 -Config config\live_controlled_practice.yaml -DryRun
+```
 
 ## Configuração
 
@@ -57,8 +78,11 @@ Defaults principais do escopo:
 Compatibilidade e precedência:
 
 - `.env` legado com `IQ_EMAIL` / `IQ_PASSWORD` / `IQ_BALANCE_MODE` continua suportado
-- overrides modernos `THALOR__*` têm precedência sobre `IQ_*` e sobre o YAML
+- process env `THALOR__*` continua com precedência total sobre `IQ_*` e sobre o YAML
+- o `.env` repo-local aplica por padrão apenas chaves modernas **seguras** (por exemplo `broker.*`, `security.*`, `notifications.*`, `production.*`)
+- se você quiser que o `.env` local volte a sobrescrever comportamento (`execution.*`, `decision.*`, `quota.*`, `runtime.*`, `multi_asset.*`, `intelligence.*`), exporte `THALOR_DOTENV_ALLOW_BEHAVIOR=1` no processo antes de iniciar
 - CLIs Python com `--repo-root` resolvem `config/base.yaml`, `config.yaml` e `.env` relativos à raiz informada
+- perfis YAML modernos suportam `extends: base.yaml` com merge recursivo de mapas e substituição de listas/escalars pelo filho
 
 ## Compartilhar um ZIP limpo (Package M1)
 
@@ -190,6 +214,31 @@ python scripts/tools/controlled_practice_round.py --repo-root . --config config/
 ```
 
 Docs: `docs/PRACTICE_OPS_1_CONTROLLED_ROUND.md`
+
+
+## Diagnostic toolkit canônico
+
+O toolkit canônico agora também está integrado ao `runtime_app`:
+
+```powershell
+python -m natbin.runtime_app diag-suite --repo-root . --config config/live_controlled_practice.yaml --json --include-practice --include-provider-probe
+python -m natbin.runtime_app transport-smoke --repo-root . --config config/live_controlled_practice.yaml --json
+python -m natbin.runtime_app module-smoke --repo-root . --config config/live_controlled_practice.yaml --json
+python -m natbin.runtime_app redaction-audit --repo-root . --config config/live_controlled_practice.yaml --json
+python -m natbin.runtime_app practice-preflight --repo-root . --config config/live_controlled_practice.yaml --json
+```
+
+Wrappers equivalentes em `scripts/tools/`:
+
+```powershell
+python scripts/tools/diag_suite.py --repo-root . --config config/live_controlled_practice.yaml --json --include-practice --include-provider-probe
+python scripts/tools/transport_smoke.py --repo-root . --config config/live_controlled_practice.yaml --json
+python scripts/tools/module_smoke.py --repo-root . --config config/live_controlled_practice.yaml --json
+python scripts/tools/redaction_audit.py --repo-root . --config config/live_controlled_practice.yaml --json
+python scripts/tools/practice_preflight.py --repo-root . --config config/live_controlled_practice.yaml --json
+```
+
+Docs: `docs/DIAGNOSTIC_TOOLKIT_CANONICAL.md`
 
 ## Comandos principais
 

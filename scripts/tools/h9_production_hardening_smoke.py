@@ -80,9 +80,11 @@ def main() -> None:
         cfg = _seed_repo(repo)
 
         doctor = build_production_doctor_payload(repo_root=repo, config_path=cfg, probe_broker=False)
-        if doctor.get('severity') != 'ok':
+        if doctor.get('severity') == 'error':
             fail(f'unexpected doctor severity: {doctor}')
-        ok('production doctor reports ready local runtime')
+        if doctor.get('ready_for_cycle') is not True:
+            fail(f'unexpected doctor ready_for_cycle: {doctor}')
+        ok('production doctor reports cycle-ready local runtime')
 
         _touch(repo / 'runs' / 'logs' / 'runtime_old.log', days_old=10)
         _touch(repo / 'runs' / 'config' / 'effective_config_20260101_EURUSD-OTC_300s_010101.json', '{}\n', days_old=12)

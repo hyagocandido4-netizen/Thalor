@@ -41,10 +41,10 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.isotonic import IsotonicRegression
 
-from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from ..config.env import env_float, env_int
+from ..ml_compat import build_binary_logreg
 
 
 
@@ -81,6 +81,15 @@ def _truthy(v: str) -> bool:
 
 def _gate_fail_closed_enabled() -> bool:
     return _truthy(os.getenv("GATE_FAIL_CLOSED", "1"))
+
+
+def _cp_bootstrap_fallback_mode() -> str:
+    raw = str(os.getenv('CP_BOOTSTRAP_FALLBACK', 'off') or 'off').strip().lower()
+    if raw in {'', '0', 'false', 'off', 'none', 'fail_closed'}:
+        return 'off'
+    if raw in {'auto', 'meta', 'meta_iso'}:
+        return raw
+    return 'off'
 
 
 def _clamp01(x: np.ndarray) -> np.ndarray:
@@ -462,7 +471,7 @@ def train_base_cal_iso_meta(
             mm = Pipeline(
                 steps=[
                     ("scaler", StandardScaler()),
-                    ("lr", LogisticRegression(max_iter=2000)),
+                    ("lr", build_binary_logreg(max_iter=2000)),
                 ]
             )
         mm.fit(X_m, correct_m)
@@ -610,6 +619,15 @@ def compute_scores(
 
             if gate_mode == "cp":
                 if cp_obj is None:
+                    fallback_mode = _cp_bootstrap_fallback_mode()
+                    if fallback_mode != 'off':
+                        # Keep the meta / meta_iso score alive during bootstrap
+                        # when the cache has a meta-model but still lacks a
+                        # conformal gate. This is intended for conservative
+                        # practice/canary envelopes that need to observe real
+                        # scoring behavior instead of failing closed forever.
+                        fallback_used = used if used in {'meta', 'meta_iso'} else 'meta'
+                        return proba, conf, s, f"cp_fallback_{fallback_used}"
                     if _gate_fail_closed_enabled():
                         return proba, conf, np.zeros_like(conf, dtype=float), f"cp_fail_closed_missing_cp_{used}"
                     return proba, conf, s, f"cp_fallback_{used}"

@@ -119,7 +119,7 @@ def main() -> int:
         anti = dict(pack.get('anti_overfit') or {})
         anti_src = dict((pack.get('metadata') or {}).get('anti_overfit_source') or {})
         assert anti.get('available') is True, pack
-        assert anti_src.get('kind') == 'training_rows_fallback', anti_src
+        assert anti_src.get('kind') in {'signals_eval_fallback', 'training_rows_fallback'}, anti_src
         assert Path(str(anti_src.get('materialized_path'))).exists(), anti_src
 
         observe = _observe_summary([

@@ -289,6 +289,7 @@ class ExecutionRepository:
         asset: str | None = None,
         scope_tag: str | None = None,
         cluster_key: str | None = None,
+        account_mode: str | None = None,
     ) -> str | None:
         sql = (
             'SELECT MAX(a.requested_at_utc) '
@@ -306,6 +307,9 @@ class ExecutionRepository:
         if cluster_key is not None:
             sql += ' AND i.cluster_key=?'
             params.append(str(cluster_key))
+        if account_mode is not None:
+            sql += ' AND i.account_mode=?'
+            params.append(str(account_mode))
         con = self._connect()
         try:
             row = con.execute(sql, tuple(params)).fetchone()
@@ -321,6 +325,8 @@ class ExecutionRepository:
         asset: str | None = None,
         scope_tag: str | None = None,
         cluster_key: str | None = None,
+        account_mode: str | None = None,
+        transport_statuses: Sequence[str] | None = None,
     ) -> int:
         sql = (
             'SELECT COUNT(*) '
@@ -338,6 +344,12 @@ class ExecutionRepository:
         if cluster_key is not None:
             sql += ' AND i.cluster_key=?'
             params.append(str(cluster_key))
+        if account_mode is not None:
+            sql += ' AND i.account_mode=?'
+            params.append(str(account_mode))
+        if transport_statuses:
+            sql += ' AND a.transport_status IN (' + ','.join('?' for _ in transport_statuses) + ')'
+            params.extend([str(s) for s in transport_statuses])
         con = self._connect()
         try:
             row = con.execute(sql, tuple(params)).fetchone()
@@ -400,6 +412,46 @@ class ExecutionRepository:
             ).fetchone()
             value = row[0] if row else None
             return int(value) if value is not None else None
+        finally:
+            con.close()
+
+
+    def count_transport_attempts_since(
+        self,
+        *,
+        since_utc: str,
+        account_mode: str | None = None,
+        transport_statuses: Sequence[str] | None = None,
+    ) -> int:
+        return self.count_submit_attempts_since(
+            since_utc=since_utc,
+            account_mode=account_mode,
+            transport_statuses=transport_statuses,
+        )
+
+    def count_pending_unknown_global(self, *, account_mode: str | None = None) -> int:
+        sql = 'SELECT COUNT(*) FROM order_intents WHERE intent_state=?'
+        params: list[Any] = ['submitted_unknown']
+        if account_mode is not None:
+            sql += ' AND account_mode=?'
+            params.append(str(account_mode))
+        con = self._connect()
+        try:
+            row = con.execute(sql, tuple(params)).fetchone()
+            return int((row[0] if row else 0) or 0)
+        finally:
+            con.close()
+
+    def count_open_positions_global(self, *, account_mode: str | None = None) -> int:
+        sql = 'SELECT COUNT(*) FROM order_intents WHERE intent_state=?'
+        params: list[Any] = ['accepted_open']
+        if account_mode is not None:
+            sql += ' AND account_mode=?'
+            params.append(str(account_mode))
+        con = self._connect()
+        try:
+            row = con.execute(sql, tuple(params)).fetchone()
+            return int((row[0] if row else 0) or 0)
         finally:
             con.close()
 

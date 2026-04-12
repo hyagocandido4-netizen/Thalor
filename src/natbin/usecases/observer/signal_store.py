@@ -116,9 +116,47 @@ def signal_pk(row: dict[str, Any]) -> tuple[str, str, int, int]:
     return day, asset, interval_sec, ts
 
 
+def _default_db_path(default: str | Path = 'runs/live_signals.sqlite3') -> Path:
+    p = Path(default)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return p
+
+
+def default_signals_db_path(default: str | Path = 'runs/live_signals.sqlite3') -> Path:
+    return _default_db_path(default)
+
+
+def _mirror_root_signals_enabled() -> bool:
+    raw = _env_path('THALOR_MIRROR_SIGNALS_TO_ROOT') or _env_path('MIRROR_SIGNALS_TO_ROOT')
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {'0', 'false', 'no', 'off'}
+
+
 def write_sqlite_signal(row: dict[str, Any], db_path: str = 'runs/live_signals.sqlite3') -> None:
-    repo = SignalsRepository(db_path=resolve_signals_db_path(db_path), default_interval=env_int('SIGNALS_INTERVAL_SEC', '300'))
+    primary_path = resolve_signals_db_path(db_path)
+    repo = SignalsRepository(db_path=primary_path, default_interval=env_int('SIGNALS_INTERVAL_SEC', '300'))
     repo.write_row(row)
+
+    if not _mirror_root_signals_enabled():
+        return
+
+    root_path = default_signals_db_path('runs/live_signals.sqlite3')
+    try:
+        same_target = primary_path.resolve() == root_path.resolve()
+    except Exception:
+        same_target = str(primary_path) == str(root_path)
+    if same_target:
+        return
+
+    try:
+        root_repo = SignalsRepository(db_path=root_path, default_interval=env_int('SIGNALS_INTERVAL_SEC', '300'))
+        root_repo.write_row(row)
+    except Exception:
+        pass
 
 
 def _default_live_signals_csv_path(row: dict[str, Any]) -> str:

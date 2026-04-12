@@ -17,6 +17,7 @@ from .compat_helpers import (
 
 LEGACY_OPTIONAL_ENV_FIELDS: dict[str, tuple[str, ...]] = {
     'cp_alpha': ('CP_ALPHA',),
+    'cp_bootstrap_fallback': ('CP_BOOTSTRAP_FALLBACK',),
     'cpreg_enable': ('CPREG_ENABLE',),
     'cpreg_alpha_start': ('CPREG_ALPHA_START',),
     'cpreg_alpha_end': ('CPREG_ALPHA_END',),
@@ -42,6 +43,7 @@ def fallback_legacy_payload() -> dict[str, Any]:
         'topk_k': safe_int(env_first('TOPK_K', 'THALOR__TOPK_K', default='3'), 3),
         'balance_mode': env_first('IQ_BALANCE_MODE', 'THALOR__BALANCE_MODE', default='PRACTICE'),
         'gate_mode': env_first('GATE_MODE', 'THALOR__GATE_MODE', default='cp'),
+        'fail_closed': safe_bool(env_first('GATE_FAIL_CLOSED', 'THALOR__DECISION__FAIL_CLOSED', default='1'), True),
         'meta_model': env_first('META_MODEL', 'THALOR__DECISION__META_MODEL', default='hgb'),
         'thresh_on': env_first('THRESH_ON', 'THALOR__DECISION__THRESH_ON', default='ev'),
         'threshold': safe_float(env_first('THRESHOLD', 'THALOR__THRESHOLD', default='0.02'), 0.02),
@@ -90,6 +92,11 @@ def resolved_to_legacy_payload(resolved: Any) -> dict[str, Any]:
         pull(resolved, 'decision', 'cpreg', 'enabled', default=None),
         env_first(*LEGACY_OPTIONAL_ENV_FIELDS['cpreg_enable']),
     )
+    cp_bootstrap_fallback_value = first_present(
+        pull(resolved, 'runtime_overrides', 'cp_bootstrap_fallback', default=None),
+        pull(resolved, 'decision', 'cp_bootstrap_fallback', default=None),
+        env_first(*LEGACY_OPTIONAL_ENV_FIELDS['cp_bootstrap_fallback']),
+    )
     cpreg_alpha_start_value = first_present(
         pull(resolved, 'runtime_overrides', 'cpreg_alpha_start', default=None),
         pull(resolved, 'decision', 'cpreg', 'alpha_start', default=None),
@@ -135,6 +142,7 @@ def resolved_to_legacy_payload(resolved: Any) -> dict[str, Any]:
         'topk_k': safe_int(env_first('TOPK_K', default='3'), 3),
         'balance_mode': str(pull(resolved, 'broker', 'balance_mode', default='PRACTICE')),
         'gate_mode': str(pull(resolved, 'decision', 'gate_mode', default='cp')),
+        'fail_closed': safe_bool(pull(resolved, 'decision', 'fail_closed', default=True), True),
         'meta_model': str(pull(resolved, 'decision', 'meta_model', default='hgb')),
         'thresh_on': str(pull(resolved, 'decision', 'thresh_on', default='ev')),
         'threshold': threshold,
@@ -150,6 +158,8 @@ def resolved_to_legacy_payload(resolved: Any) -> dict[str, Any]:
     }
     if cp_alpha_value is not None:
         out['cp_alpha'] = safe_float(cp_alpha_value, 0.05)
+    if cp_bootstrap_fallback_value is not None:
+        out['cp_bootstrap_fallback'] = str(cp_bootstrap_fallback_value).strip().lower() or 'off'
     if cpreg_enable_value is not None:
         out['cpreg_enable'] = safe_bool(cpreg_enable_value, False)
     if cpreg_alpha_start_value is not None:
@@ -180,12 +190,15 @@ def legacy_payload_to_env_map(payload: Mapping[str, Any]) -> dict[str, str]:
         'TOPK_K': str(payload.get('topk_k', 3)),
         'IQ_BALANCE_MODE': str(payload.get('balance_mode', 'PRACTICE')),
         'GATE_MODE': str(payload.get('gate_mode', 'cp')),
+        'GATE_FAIL_CLOSED': '1' if bool(payload.get('fail_closed', True)) else '0',
         'META_MODEL': str(payload.get('meta_model', 'hgb')),
         'THRESH_ON': str(payload.get('thresh_on', 'ev')),
         'THRESHOLD': str(payload.get('threshold', 0.02)),
     }
     if payload.get('cp_alpha') is not None:
         mapping['CP_ALPHA'] = str(payload.get('cp_alpha'))
+    if payload.get('cp_bootstrap_fallback') is not None:
+        mapping['CP_BOOTSTRAP_FALLBACK'] = str(payload.get('cp_bootstrap_fallback'))
     if payload.get('cpreg_enable') is not None:
         mapping['CPREG_ENABLE'] = '1' if bool(payload.get('cpreg_enable')) else '0'
     if payload.get('cpreg_alpha_start') is not None:

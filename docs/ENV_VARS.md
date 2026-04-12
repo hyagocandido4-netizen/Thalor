@@ -21,6 +21,13 @@ Se `THALOR_BROKER_EMAIL_FILE` / `THALOR_BROKER_PASSWORD_FILE` e
 - `IQ_PASSWORD`
 - `IQ_BALANCE_MODE` (`PRACTICE` | `REAL`) — recomendado `PRACTICE`
 
+### Loader / comportamento do `.env`
+
+- `THALOR_DOTENV_ALLOW_BEHAVIOR` (`1/0`) — quando `1`, permite que o `.env`
+  local volte a sobrescrever seções comportamentais (`execution.*`, `decision.*`,
+  `quota.*`, `runtime.*`, `multi_asset.*`, `intelligence.*`, etc.). Por padrão
+  isso fica desligado para evitar drift silencioso de comportamento.
+
 ## Security posture / guard (Package M6)
 
 - `THALOR__SECURITY__DEPLOYMENT_PROFILE` (`local` | `ci` | `live`)

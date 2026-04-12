@@ -127,10 +127,15 @@ def status_payload(
     current = _evaluate_precheck(ctx=ctx, topk=topk, sleep_align_offset_sec=3, enforce_market_context=False)
     intelligence_current = intelligence_payload(repo_root=ctx.repo_root, config_path=ctx.config.config_path)
     practice_current = practice_payload(repo_root=ctx.repo_root, config_path=ctx.config.config_path)
+    connectivity_artifact = read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='connectivity')
+    connectivity_source = 'artifact' if isinstance(connectivity_artifact, dict) else 'missing'
+
     payload['control'] = {
         'plan': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='plan'),
         'quota': current.get('quota_snapshot'),
         'precheck': current,
+        'connectivity': connectivity_artifact,
+        'connectivity_source': connectivity_source,
         'loop_status': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='loop_status'),
         'execution': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='execution'),
         'orders': read_control_artifact(repo_root=ctx.repo_root, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='orders'),
@@ -405,12 +410,15 @@ def practice_bootstrap_payload(
     repo_root: str | Path = '.',
     config_path: str | Path | None = None,
     lookback_candles: int = 2000,
-    soak_cycles: int = 3,
+    soak_cycles: int = 6,
     force_prepare: bool = False,
     force_soak: bool = False,
     skip_soak: bool = False,
     max_stake_amount: float = 5.0,
     soak_stale_after_sec: int | None = None,
+    clear_drain: bool = False,
+    reset_breaker: bool = False,
+    alerts_test: bool = False,
 ) -> dict[str, Any]:
     from ..ops.practice_bootstrap import build_practice_bootstrap_payload
 
@@ -424,6 +432,9 @@ def practice_bootstrap_payload(
         skip_soak=skip_soak,
         max_stake_amount=max_stake_amount,
         soak_stale_after_sec=soak_stale_after_sec,
+        clear_drain=clear_drain,
+        reset_breaker=reset_breaker,
+        alerts_test=alerts_test,
         write_artifact=True,
     )
 
@@ -500,23 +511,507 @@ def doctor_payload(
     *,
     repo_root: str | Path = '.',
     config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
     probe_broker: bool = False,
     relaxed: bool = False,
     market_context_max_age_sec: int | None = None,
     min_dataset_rows: int = 100,
+    heal_breaker: bool = True,
+    breaker_stale_after_sec: int | None = None,
+    heal_market_context: bool = False,
+    heal_control_freshness: bool = False,
 ) -> dict[str, Any]:
     from ..ops.production_doctor import build_production_doctor_payload
 
     return build_production_doctor_payload(
         repo_root=repo_root,
         config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
         probe_broker=probe_broker,
         strict_runtime_artifacts=not relaxed,
         market_context_max_age_sec=market_context_max_age_sec,
         min_dataset_rows=min_dataset_rows,
+        heal_breaker=heal_breaker,
+        breaker_stale_after_sec=breaker_stale_after_sec,
+        heal_market_context=heal_market_context,
+        heal_control_freshness=heal_control_freshness,
     )
 
 
+def provider_probe_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+    active: bool = True,
+    sample_candles: int = 3,
+    probe_market_context: bool = True,
+    market_context_max_age_sec: int | None = None,
+) -> dict[str, Any]:
+    from ..ops.provider_probe import build_provider_probe_payload
+
+    return build_provider_probe_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        active=active,
+        sample_candles=sample_candles,
+        probe_market_context=probe_market_context,
+        market_context_max_age_sec=market_context_max_age_sec,
+        write_artifact=True,
+    )
+
+
+def production_gate_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+    probe_provider: bool = True,
+    sample_candles: int = 3,
+    market_context_max_age_sec: int | None = None,
+    min_dataset_rows: int = 100,
+) -> dict[str, Any]:
+    from ..ops.production_gate import build_production_gate_payload
+
+    return build_production_gate_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        probe_provider=probe_provider,
+        sample_candles=sample_candles,
+        market_context_max_age_sec=market_context_max_age_sec,
+        min_dataset_rows=min_dataset_rows,
+        write_artifact=True,
+    )
+
+
+
+def evidence_window_scan_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = True,
+    active_provider_probe: bool = True,
+    sample_candles: int = 3,
+    market_context_max_age_sec: int | None = None,
+    min_dataset_rows: int = 100,
+    top_n: int = 3,
+) -> dict[str, Any]:
+    from ..ops.evidence_window_scan import build_evidence_window_scan_payload
+
+    return build_evidence_window_scan_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        active_provider_probe=active_provider_probe,
+        sample_candles=sample_candles,
+        market_context_max_age_sec=market_context_max_age_sec,
+        min_dataset_rows=min_dataset_rows,
+        top_n=top_n,
+        write_artifact=True,
+    )
+
+
+
+def provider_stability_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = True,
+    active_provider_probe: bool = True,
+    refresh_probe: bool = False,
+    sample_candles: int = 3,
+    market_context_max_age_sec: int | None = None,
+    recorded_event_limit: int = 200,
+) -> dict[str, Any]:
+    from ..ops.provider_stability import build_provider_stability_payload
+
+    return build_provider_stability_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        active_provider_probe=active_provider_probe,
+        refresh_probe=refresh_probe,
+        sample_candles=sample_candles,
+        market_context_max_age_sec=market_context_max_age_sec,
+        recorded_event_limit=recorded_event_limit,
+        write_artifact=True,
+    )
+
+
+
+def provider_session_governor_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = True,
+    active_provider_probe: bool = True,
+    refresh_stability: bool = False,
+    sample_candles: int = 3,
+    market_context_max_age_sec: int | None = None,
+    recorded_event_limit: int = 200,
+) -> dict[str, Any]:
+    from ..ops.provider_session_governor import build_provider_session_governor_payload
+
+    return build_provider_session_governor_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        active_provider_probe=active_provider_probe,
+        refresh_stability=refresh_stability,
+        sample_candles=sample_candles,
+        market_context_max_age_sec=market_context_max_age_sec,
+        recorded_event_limit=recorded_event_limit,
+        write_artifact=True,
+    )
+
+
+def signal_artifact_audit_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = True,
+    decision_max_age_sec: int = 3600,
+) -> dict[str, Any]:
+    from ..ops.signal_artifact_audit import build_signal_artifact_audit_payload
+
+    return build_signal_artifact_audit_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        decision_max_age_sec=decision_max_age_sec,
+        write_artifact=True,
+    )
+
+
+def config_provenance_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+) -> dict[str, Any]:
+    from ..ops.config_provenance import build_config_provenance_payload
+
+    return build_config_provenance_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        write_artifact=True,
+    )
+
+
+def support_bundle_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+    probe_provider: bool = True,
+    sample_candles: int = 3,
+    market_context_max_age_sec: int | None = None,
+    min_dataset_rows: int = 100,
+    include_logs: bool = True,
+    max_log_bytes: int = 1_000_000,
+    output_dir: str | Path | None = None,
+    bundle_prefix: str = 'support_bundle',
+) -> dict[str, Any]:
+    from ..ops.support_bundle import build_support_bundle_payload
+
+    return build_support_bundle_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        probe_provider=probe_provider,
+        sample_candles=sample_candles,
+        market_context_max_age_sec=market_context_max_age_sec,
+        min_dataset_rows=min_dataset_rows,
+        include_logs=include_logs,
+        max_log_bytes=max_log_bytes,
+        output_dir=output_dir,
+        bundle_prefix=bundle_prefix,
+        write_artifact=True,
+    )
+
+
+
+
+def runtime_artifact_audit_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+) -> dict[str, Any]:
+    from ..ops.runtime_artifact_audit import build_runtime_artifact_audit_payload
+
+    return build_runtime_artifact_audit_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        write_artifact=True,
+    )
+
+
+def guardrail_audit_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+) -> dict[str, Any]:
+    from ..ops.guardrail_audit import build_guardrail_audit_payload
+
+    return build_guardrail_audit_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        write_artifact=True,
+    )
+
+
+def dependency_audit_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+) -> dict[str, Any]:
+    from ..ops.dependency_audit import build_dependency_audit_payload
+
+    return build_dependency_audit_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        write_artifact=True,
+    )
+
+
+def state_db_audit_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+) -> dict[str, Any]:
+    from ..ops.state_db_audit import build_state_db_audit_payload
+
+    return build_state_db_audit_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        write_artifact=True,
+    )
+
+
+def diag_suite_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+    include_provider_probe: bool = False,
+    active_provider_probe: bool = False,
+    include_practice: bool = False,
+    include_support_bundle: bool = False,
+    probe_broker: bool = False,
+    sample_candles: int = 3,
+    market_context_max_age_sec: int | None = None,
+    min_dataset_rows: int = 100,
+    heal_breaker: bool = True,
+    breaker_stale_after_sec: int | None = None,
+    heal_market_context: bool = False,
+    heal_control_freshness: bool = False,
+    max_stake_amount: float = 5.0,
+    soak_stale_after_sec: int | None = None,
+    support_bundle_output_dir: str | Path | None = None,
+    max_log_bytes: int = 1_000_000,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from ..ops.diag_suite import build_diag_suite_payload
+
+    return build_diag_suite_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        include_provider_probe=include_provider_probe,
+        active_provider_probe=active_provider_probe,
+        include_practice=include_practice,
+        include_support_bundle=include_support_bundle,
+        probe_broker=probe_broker,
+        sample_candles=sample_candles,
+        market_context_max_age_sec=market_context_max_age_sec,
+        min_dataset_rows=min_dataset_rows,
+        heal_breaker=heal_breaker,
+        breaker_stale_after_sec=breaker_stale_after_sec,
+        heal_market_context=heal_market_context,
+        heal_control_freshness=heal_control_freshness,
+        max_stake_amount=max_stake_amount,
+        soak_stale_after_sec=soak_stale_after_sec,
+        support_bundle_output_dir=support_bundle_output_dir,
+        max_log_bytes=max_log_bytes,
+        dry_run=dry_run,
+    )
+
+
+def transport_smoke_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
+    all_scopes: bool = False,
+    active_healthchecks: bool = True,
+    only_unavailable: bool = False,
+    simulate_failures: int = 0,
+    operation: str = 'default',
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from ..ops.transport_smoke import build_transport_smoke_payload
+
+    return build_transport_smoke_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        asset=asset,
+        interval_sec=interval_sec,
+        all_scopes=all_scopes,
+        active_healthchecks=active_healthchecks,
+        only_unavailable=only_unavailable,
+        simulate_failures=simulate_failures,
+        operation=operation,
+        dry_run=dry_run,
+    )
+
+
+def redaction_audit_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    include_globs: list[str] | None = None,
+    exclude_globs: list[str] | None = None,
+    scan_source: bool = False,
+    max_file_bytes: int = 1_000_000,
+    limit_findings_per_file: int = 10,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from ..ops.redaction_audit import build_redaction_audit_payload
+
+    return build_redaction_audit_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
+        scan_source=scan_source,
+        max_file_bytes=max_file_bytes,
+        limit_findings_per_file=limit_findings_per_file,
+        dry_run=dry_run,
+    )
+
+
+def module_smoke_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from ..ops.module_smoke import build_module_smoke_payload
+
+    return build_module_smoke_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        dry_run=dry_run,
+    )
+
+
+def practice_preflight_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+    probe_broker: bool = False,
+    probe_provider: bool = True,
+    sample_candles: int = 3,
+    market_context_max_age_sec: int | None = None,
+    min_dataset_rows: int = 100,
+    max_stake_amount: float = 5.0,
+    soak_stale_after_sec: int | None = None,
+    allow_warnings: bool = False,
+    heal_breaker: bool = True,
+    breaker_stale_after_sec: int | None = None,
+    heal_market_context: bool = True,
+    heal_control_freshness: bool = True,
+    heal_soak: bool = False,
+    soak_cycles: int = 6,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    from ..ops.practice_preflight import build_practice_preflight_payload
+
+    return build_practice_preflight_payload(
+        repo_root=repo_root,
+        config_path=config_path,
+        probe_broker=probe_broker,
+        probe_provider=probe_provider,
+        sample_candles=sample_candles,
+        market_context_max_age_sec=market_context_max_age_sec,
+        min_dataset_rows=min_dataset_rows,
+        max_stake_amount=max_stake_amount,
+        soak_stale_after_sec=soak_stale_after_sec,
+        allow_warnings=allow_warnings,
+        heal_breaker=heal_breaker,
+        breaker_stale_after_sec=breaker_stale_after_sec,
+        heal_market_context=heal_market_context,
+        heal_control_freshness=heal_control_freshness,
+        heal_soak=heal_soak,
+        soak_cycles=soak_cycles,
+        dry_run=dry_run,
+    )
 
 def retention_payload(
     *,
@@ -772,6 +1267,16 @@ def execute_order_payload(
     from ..runtime.execution import process_latest_signal as _process_latest_signal
 
     return _process_latest_signal(repo_root=repo_root, config_path=config_path)
+
+
+def execution_hardening_payload(
+    *,
+    repo_root: str | Path = '.',
+    config_path: str | Path | None = None,
+) -> dict[str, Any]:
+    from ..runtime.execution import execution_hardening_payload as _execution_hardening_payload
+
+    return _execution_hardening_payload(repo_root=repo_root, config_path=config_path)
 
 
 def check_order_status_payload(

@@ -10,12 +10,12 @@ import pandas as pd
 from .dsio import read_dataset_csv
 
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from ..config.legacy import load_config
+from ..ml_compat import build_binary_logreg
 
 
 @dataclass
@@ -83,7 +83,7 @@ def main():
 
         base = Pipeline([
             ("scaler", StandardScaler()),
-            ("clf", LogisticRegression(max_iter=3000, solver="lbfgs")),
+            ("clf", build_binary_logreg(max_iter=3000)),
         ])
         base.fit(X_sub, y_sub)
 

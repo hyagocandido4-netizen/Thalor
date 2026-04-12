@@ -1,0 +1,31 @@
+{
+  "kind": "package_history_archive",
+  "repo_root": "/mnt/data/thalor_current/Thalor",
+  "archive_dir": "docs/package_history/legacy",
+  "moved": [
+    "README_PACKAGE_H10_APPEND.md",
+    "README_PACKAGE_H11_APPEND.md",
+    "README_PACKAGE_H7_APPEND.md",
+    "README_PACKAGE_H8_APPEND.md",
+    "README_PACKAGE_H9_1_APPEND.md",
+    "README_PACKAGE_H9_APPEND.md",
+    "README_PACKAGE_L_APPEND.md",
+    "README_PACKAGE_M1_APPEND.md",
+    "README_PACKAGE_M2_APPEND.md",
+    "README_PACKAGE_M3_APPEND.md",
+    "README_PACKAGE_M3_RUNTIME_HARDENING_APPEND.md",
+    "README_PACKAGE_M4B_APPEND.md",
+    "README_PACKAGE_M4B_FIX_APPEND.md",
+    "README_PACKAGE_M4_APPEND.md",
+    "README_PACKAGE_M4_PORTFOLIO_RISK_APPEND.md",
+    "README_PACKAGE_M5_APPEND.md",
+    "README_PACKAGE_M6_APPEND.md",
+    "README_PACKAGE_M7_1_APPEND.md",
+    "README_PACKAGE_M7_2_APPEND.md",
+    "README_PACKAGE_M7_APPEND.md",
+    "README_PACKAGE_STRICT_CLEANUP_APPEND.md"
+  ],
+  "kept": [
+    "README_PACKAGE_FINAL_FIX.md"
+  ]
+}

@@ -61,6 +61,8 @@ def load_runtime_app_config(
         timezone=str(rcfg.timezone),
         dataset_path=str(rcfg.data.dataset_path),
         config_path=str(path),
+        transport_enabled=bool(getattr(getattr(rcfg, 'network', None), 'transport', None) and getattr(rcfg.network.transport, 'enabled', False)),
+        request_metrics_enabled=bool(getattr(getattr(rcfg, 'observability', None), 'request_metrics', None) and getattr(rcfg.observability.request_metrics, 'enabled', False)),
     )
 
 
@@ -137,6 +139,8 @@ def build_context(
         timezone=str(rcfg.timezone),
         dataset_path=str(rcfg.data.dataset_path),
         config_path=str(cfg_path),
+        transport_enabled=bool(getattr(getattr(rcfg, 'network', None), 'transport', None) and getattr(rcfg.network.transport, 'enabled', False)),
+        request_metrics_enabled=bool(getattr(getattr(rcfg, 'observability', None), 'request_metrics', None) and getattr(rcfg.observability.request_metrics, 'enabled', False)),
     )
     scope_obj = build_scope(config.asset, config.interval_sec)
     scope = RuntimeScopeInfo(
@@ -186,6 +190,20 @@ def build_context(
         name='effective_config',
         payload=effective_payload,
     )
+
+    try:
+        from ..runtime.connectivity import build_runtime_connectivity_payload
+
+        connectivity_payload = build_runtime_connectivity_payload(resolved_config=rcfg, repo_root=root)
+        write_control_artifact(
+            repo_root=root,
+            asset=config.asset,
+            interval_sec=config.interval_sec,
+            name='connectivity',
+            payload=connectivity_payload,
+        )
+    except Exception:
+        pass
 
     try:
         from ..security.audit import audit_security_posture

@@ -56,7 +56,22 @@ autos:
   isoblend_enabled: true
   hourthr_enabled: true
 
+network:
+  transport:
+    enabled: true
+    endpoint_file: secrets/transport_endpoint
+    healthcheck_mode: http
+    healthcheck_url: https://iqoption.com/api/appinit
+    fail_open_when_exhausted: false
+    structured_log_path: runs/logs/network_transport.jsonl
+
 observability:
+  request_metrics:
+    enabled: true
+    timezone: America/Sao_Paulo
+    structured_log_path: runs/logs/request_metrics.jsonl
+    emit_request_events: true
+    emit_summary_every_requests: 25
   status_enable: true
   metrics_enable: false
   metrics_bind: 127.0.0.1:9108
@@ -181,6 +196,9 @@ multi_asset:
   partition_data_paths: true
   data_db_template: data/market_{scope_tag}.sqlite3
   dataset_path_template: data/datasets/{scope_tag}/dataset.csv
+  adaptive_prepare_enable: true
+  prepare_incremental_lookback_candles: 256
+  candidate_budget_rotation_enable: true
 
 intelligence:
   enabled: true
@@ -339,6 +357,20 @@ execution:
   limits:
     max_pending_unknown: 1
     max_open_positions: 1
+  real_guard:
+    enabled: true
+    require_env_allow_real: true
+    allow_multi_asset_live: false
+    serialize_submits: true
+    submit_lock_path: runs/runtime_execution.submit.lock
+    min_submit_spacing_sec: 20
+    max_pending_unknown_total: 1
+    max_open_positions_total: 1
+    recent_failure_window_sec: 300
+    max_recent_transport_failures: 2
+    post_submit_verify_enable: true
+    post_submit_verify_timeout_sec: 8
+    post_submit_verify_poll_sec: 0.5
   fake:
     state_path: runs/fake_broker_state.json
     submit_behavior: ack

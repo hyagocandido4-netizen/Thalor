@@ -17,7 +17,7 @@ TEXT_SUFFIXES = {
     '.py', '.ps1', '.md', '.yml', '.yaml', '.toml', '.cfg', '.ini', '.txt',
     '.json', '.sql', '.csv', '.psm1', '.psd1', '.bat', '.cmd', '.sh'
 }
-SKIP_DIRS = {'.git', '.venv', '__pycache__', 'runs', 'data', '.mypy_cache', '.pytest_cache'}
+SKIP_DIRS = {'.git', '.venv', '__pycache__', 'runs', 'data', '.mypy_cache', '.pytest_cache', 'diag_zips'}
 
 
 def is_text_candidate(path: Path) -> bool:

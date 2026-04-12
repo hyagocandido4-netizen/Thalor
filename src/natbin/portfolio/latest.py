@@ -155,6 +155,12 @@ def portfolio_payload_matches_context(
         return True
     if actual_profile and expected.get('runtime_profile') and actual_profile == expected.get('runtime_profile'):
         return True
+
+    # Backward compatibility: older legacy payloads did not persist any context
+    # metadata. When all three selectors are absent, treat the payload as matching
+    # so scoped readers can still hydrate existing rollups instead of dropping them.
+    if actual_key is None and actual_cfg is None and actual_profile is None:
+        return True
     return False
 
 

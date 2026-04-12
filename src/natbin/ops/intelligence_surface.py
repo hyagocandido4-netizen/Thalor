@@ -608,7 +608,11 @@ def _build_scope_surface(
         else:
             checks.append(_check('retrain_review', 'ok', 'Sem review operacional recente de retrain para o scope.'))
 
-        if bool(feedback_blocked):
+        normalized_block_reason = str(block_reason or '').strip().lower().replace('portfolio_feedback_block:', '')
+        informational_regime_block = bool(feedback_blocked) and normalized_block_reason == 'regime_block'
+        if informational_regime_block:
+            checks.append(_check('portfolio_feedback', 'ok', 'Portfolio feedback bloqueou o trade por regime atual; tratado como no-trade operacional.', reason=block_reason, retrain_state=retrain_state, retrain_priority=retrain_priority))
+        elif bool(feedback_blocked):
             checks.append(_check('portfolio_feedback', 'warn', 'Portfolio feedback está bloqueando o trade no scope.', reason=block_reason, retrain_state=retrain_state, retrain_priority=retrain_priority))
         elif str(retrain_priority or '').lower() == 'high' or str(retrain_state or '').lower() in {'queued', 'cooldown'}:
             checks.append(_check('portfolio_feedback', 'warn', 'Scope requer atenção de retrain / monitoramento.', retrain_state=retrain_state, retrain_priority=retrain_priority))

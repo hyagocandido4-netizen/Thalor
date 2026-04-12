@@ -91,7 +91,10 @@ class SignalsRepository:
             ).fetchone()
             if existing is not None and preserve_existing_trade(existing["action"], row.get("action")):
                 return {"written": False, "preserved_trade": True, "key": key}
-            cols = list(row.keys())
+            table_cols = {r[1] for r in con.execute("PRAGMA table_info(signals_v2)").fetchall()}
+            cols = [c for c in row.keys() if c in table_cols]
+            if not cols:
+                raise RuntimeError("signals_v2 has no writable columns for provided row")
             placeholders = ",".join(["?"] * len(cols))
             sql = f"INSERT OR REPLACE INTO signals_v2 ({','.join(cols)}) VALUES ({placeholders})"
             con.execute(sql, [row[c] for c in cols])

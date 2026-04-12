@@ -7,7 +7,9 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app/src
+    PYTHONPATH=/app/src \
+    THALOR__PRODUCTION__PROFILE=docker \
+    THALOR__SECURITY__DEPLOYMENT_PROFILE=docker
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends bash ca-certificates tini tzdata \
@@ -32,4 +34,4 @@ RUN pip install --no-cache-dir -e . \
 USER thalor
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker/entrypoint.sh"]
-CMD ["python", "-m", "natbin.runtime_app", "status", "--repo-root", ".", "--config", "config/multi_asset.yaml", "--json"]
+CMD ["bash", "/app/scripts/docker/runtime_status.sh"]

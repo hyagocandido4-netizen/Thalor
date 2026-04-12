@@ -16,7 +16,17 @@ from .commands import (
     backup_payload,
     check_order_status_payload,
     doctor_payload,
+    diag_suite_payload,
+    config_provenance_payload,
+    dependency_audit_payload,
     execute_order_payload,
+    module_smoke_payload,
+    execution_hardening_payload,
+    evidence_window_scan_payload,
+    provider_stability_payload,
+    provider_session_governor_payload,
+    signal_artifact_audit_payload,
+    guardrail_audit_payload,
     incidents_alert_payload,
     incidents_drill_payload,
     incidents_payload,
@@ -30,6 +40,12 @@ from .commands import (
     practice_payload,
     practice_bootstrap_payload,
     practice_round_payload,
+    production_gate_payload,
+    provider_probe_payload,
+    runtime_artifact_audit_payload,
+    state_db_audit_payload,
+    transport_smoke_payload,
+    support_bundle_payload,
     retrain_run_payload,
     retrain_status_payload,
     orders_payload,
@@ -37,9 +53,11 @@ from .commands import (
     portfolio_observe_payload,
     portfolio_plan_payload,
     portfolio_status_payload,
+    practice_preflight_payload,
     precheck_payload,
     protection_payload,
     quota_payload,
+    redaction_audit_payload,
     reconcile_payload,
     release_payload,
     retention_payload,
@@ -183,12 +201,208 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_intelligence_refresh.add_argument('--no-materialize-portfolio', action='store_true')
 
     sp_doctor = sub.add_parser('doctor', help='Emit H9 production doctor / live-readiness payload')
+    sp_doctor.set_defaults(heal_breaker=True)
     _add_common(sp_doctor)
     sp_doctor.add_argument('--json', action='store_true')
     sp_doctor.add_argument('--probe-broker', action='store_true')
     sp_doctor.add_argument('--relaxed', action='store_true')
     sp_doctor.add_argument('--market-context-max-age-sec', type=int, default=None)
     sp_doctor.add_argument('--min-dataset-rows', type=int, default=100)
+    sp_doctor.add_argument('--heal-breaker', dest='heal_breaker', action='store_true')
+    sp_doctor.add_argument('--no-heal-breaker', dest='heal_breaker', action='store_false')
+    sp_doctor.add_argument('--breaker-stale-after-sec', type=int, default=None)
+    sp_doctor.add_argument('--heal-market-context', action='store_true')
+    sp_doctor.add_argument('--heal-control-freshness', action='store_true')
+
+    sp_provider_probe = sub.add_parser('provider-probe', aliases=['provider_probe'], help='Probe the broker/provider path with passive + active diagnostics')
+    _add_common(sp_provider_probe)
+    sp_provider_probe.add_argument('--json', action='store_true')
+    sp_provider_probe.add_argument('--asset', default=None)
+    sp_provider_probe.add_argument('--interval-sec', type=int, default=None)
+    sp_provider_probe.add_argument('--all-scopes', action='store_true')
+    sp_provider_probe.add_argument('--passive', action='store_true')
+    sp_provider_probe.add_argument('--sample-candles', type=int, default=3)
+    sp_provider_probe.add_argument('--skip-market-context-remote', action='store_true')
+    sp_provider_probe.add_argument('--market-context-max-age-sec', type=int, default=None)
+
+    sp_production_gate = sub.add_parser('production-gate', aliases=['production_gate'], help='Consolidate provider, doctor and release into one operational production gate')
+    _add_common(sp_production_gate)
+    sp_production_gate.add_argument('--json', action='store_true')
+    sp_production_gate.add_argument('--asset', default=None)
+    sp_production_gate.add_argument('--interval-sec', type=int, default=None)
+    sp_production_gate.add_argument('--all-scopes', action='store_true')
+    sp_production_gate.add_argument('--probe-provider', action='store_true')
+    sp_production_gate.add_argument('--sample-candles', type=int, default=3)
+    sp_production_gate.add_argument('--market-context-max-age-sec', type=int, default=None)
+
+    sp_evidence_window_scan = sub.add_parser('evidence-window-scan', aliases=['evidence_window_scan'], help='Read-only canary scanner that ranks scopes/windows for safe evidence capture')
+    _add_common(sp_evidence_window_scan)
+    sp_evidence_window_scan.add_argument('--json', action='store_true')
+    sp_evidence_window_scan.add_argument('--asset', default=None)
+    sp_evidence_window_scan.add_argument('--interval-sec', type=int, default=None)
+    sp_evidence_window_scan.add_argument('--all-scopes', action='store_true')
+    sp_evidence_window_scan.add_argument('--active-provider-probe', action='store_true')
+    sp_evidence_window_scan.add_argument('--sample-candles', type=int, default=3)
+    sp_evidence_window_scan.add_argument('--market-context-max-age-sec', type=int, default=None)
+    sp_evidence_window_scan.add_argument('--min-dataset-rows', type=int, default=100)
+    sp_evidence_window_scan.add_argument('--top-n', type=int, default=3)
+    sp_provider_stability = sub.add_parser('provider-stability-report', aliases=['provider_stability_report'], help='Provider Session Shield: classify broker/provider noise vs structural blockers')
+    _add_common(sp_provider_stability)
+    sp_provider_stability.add_argument('--json', action='store_true')
+    sp_provider_stability.add_argument('--asset', default=None)
+    sp_provider_stability.add_argument('--interval-sec', type=int, default=None)
+    sp_provider_stability.add_argument('--all-scopes', action='store_true')
+    sp_provider_stability.add_argument('--active-provider-probe', action='store_true')
+    sp_provider_stability.add_argument('--refresh-probe', action='store_true')
+    sp_provider_stability.add_argument('--sample-candles', type=int, default=3)
+    sp_provider_stability.add_argument('--market-context-max-age-sec', type=int, default=None)
+    sp_provider_stability.add_argument('--recorded-event-limit', type=int, default=200)
+    sp_provider_governor = sub.add_parser('provider-session-governor', aliases=['provider_session_governor'], help='Govern the provider fan-out envelope using the latest Provider Session Shield state')
+    _add_common(sp_provider_governor)
+    sp_provider_governor.add_argument('--json', action='store_true')
+    sp_provider_governor.add_argument('--asset', default=None)
+    sp_provider_governor.add_argument('--interval-sec', type=int, default=None)
+    sp_provider_governor.add_argument('--all-scopes', action='store_true')
+    sp_provider_governor.add_argument('--active-provider-probe', action='store_true')
+    sp_provider_governor.add_argument('--refresh-stability', action='store_true')
+    sp_provider_governor.add_argument('--sample-candles', type=int, default=3)
+    sp_provider_governor.add_argument('--market-context-max-age-sec', type=int, default=None)
+    sp_provider_governor.add_argument('--recorded-event-limit', type=int, default=200)
+    sp_signal_artifact_audit = sub.add_parser('signal-artifact-audit', aliases=['signal_artifact_audit'], help='Audit decision artifacts across canary scopes without touching provider execution')
+    _add_common(sp_signal_artifact_audit)
+    sp_signal_artifact_audit.add_argument('--json', action='store_true')
+    sp_signal_artifact_audit.add_argument('--asset', default=None)
+    sp_signal_artifact_audit.add_argument('--interval-sec', type=int, default=None)
+    sp_signal_artifact_audit.add_argument('--all-scopes', action='store_true')
+    sp_signal_artifact_audit.add_argument('--decision-max-age-sec', type=int, default=3600)
+    sp_provenance = sub.add_parser('config-provenance-audit', aliases=['config_provenance_audit'], help='Audit config provenance, overrides and winning sources for critical fields')
+    _add_common(sp_provenance)
+    sp_provenance.add_argument('--json', action='store_true')
+    sp_provenance.add_argument('--asset', default=None)
+    sp_provenance.add_argument('--interval-sec', type=int, default=None)
+    sp_provenance.add_argument('--all-scopes', action='store_true')
+
+    sp_support_bundle = sub.add_parser('support-bundle', aliases=['support_bundle'], help='Generate a sanitized support bundle ZIP with diagnostics + artifacts')
+    _add_common(sp_support_bundle)
+    sp_support_bundle.add_argument('--json', action='store_true')
+    sp_support_bundle.add_argument('--asset', default=None)
+    sp_support_bundle.add_argument('--interval-sec', type=int, default=None)
+    sp_support_bundle.add_argument('--all-scopes', action='store_true')
+    sp_support_bundle.add_argument('--probe-provider', action='store_true')
+    sp_support_bundle.add_argument('--sample-candles', type=int, default=3)
+    sp_support_bundle.add_argument('--market-context-max-age-sec', type=int, default=None)
+    sp_support_bundle.add_argument('--min-dataset-rows', type=int, default=100)
+    sp_support_bundle.add_argument('--include-logs', action='store_true')
+    sp_support_bundle.add_argument('--max-log-bytes', type=int, default=1000000)
+    sp_support_bundle.add_argument('--output-dir', default=None)
+    sp_support_bundle.add_argument('--bundle-prefix', default='support_bundle')
+
+    sp_runtime_artifacts = sub.add_parser('runtime-artifact-audit', aliases=['runtime_artifact_audit'], help='Audit runtime/control artifacts freshness and availability by scope')
+    _add_common(sp_runtime_artifacts)
+    sp_runtime_artifacts.add_argument('--json', action='store_true')
+    sp_runtime_artifacts.add_argument('--asset', default=None)
+    sp_runtime_artifacts.add_argument('--interval-sec', type=int, default=None)
+    sp_runtime_artifacts.add_argument('--all-scopes', action='store_true')
+
+    sp_guardrail = sub.add_parser('guardrail-audit', aliases=['guardrail_audit'], help='Audit failsafes, precheck and execution hardening by scope')
+    _add_common(sp_guardrail)
+    sp_guardrail.add_argument('--json', action='store_true')
+    sp_guardrail.add_argument('--asset', default=None)
+    sp_guardrail.add_argument('--interval-sec', type=int, default=None)
+    sp_guardrail.add_argument('--all-scopes', action='store_true')
+
+    sp_dependency = sub.add_parser('dependency-audit', aliases=['dependency_audit'], help='Audit Python/broker/transport dependencies for the selected scope(s)')
+    _add_common(sp_dependency)
+    sp_dependency.add_argument('--json', action='store_true')
+    sp_dependency.add_argument('--asset', default=None)
+    sp_dependency.add_argument('--interval-sec', type=int, default=None)
+    sp_dependency.add_argument('--all-scopes', action='store_true')
+
+    sp_state_db = sub.add_parser('state-db-audit', aliases=['state_db_audit'], help='Audit runtime/data SQLite state for the selected scope(s)')
+    _add_common(sp_state_db)
+    sp_state_db.add_argument('--json', action='store_true')
+    sp_state_db.add_argument('--asset', default=None)
+    sp_state_db.add_argument('--interval-sec', type=int, default=None)
+    sp_state_db.add_argument('--all-scopes', action='store_true')
+
+    sp_diag_suite = sub.add_parser('diag-suite', aliases=['diag_suite'], help='Consolidated diagnostic suite for go/no-go decisions')
+    sp_diag_suite.set_defaults(heal_breaker=True, heal_market_context=True, heal_control_freshness=True)
+    _add_common(sp_diag_suite)
+    sp_diag_suite.add_argument('--json', action='store_true')
+    sp_diag_suite.add_argument('--asset', default=None)
+    sp_diag_suite.add_argument('--interval-sec', type=int, default=None)
+    sp_diag_suite.add_argument('--all-scopes', action='store_true')
+    sp_diag_suite.add_argument('--include-provider-probe', action='store_true')
+    sp_diag_suite.add_argument('--active-provider-probe', action='store_true')
+    sp_diag_suite.add_argument('--include-practice', action='store_true')
+    sp_diag_suite.add_argument('--include-support-bundle', action='store_true')
+    sp_diag_suite.add_argument('--probe-broker', action='store_true')
+    sp_diag_suite.add_argument('--sample-candles', type=int, default=3)
+    sp_diag_suite.add_argument('--market-context-max-age-sec', type=int, default=None)
+    sp_diag_suite.add_argument('--min-dataset-rows', type=int, default=100)
+    sp_diag_suite.add_argument('--heal-breaker', dest='heal_breaker', action='store_true')
+    sp_diag_suite.add_argument('--no-heal-breaker', dest='heal_breaker', action='store_false')
+    sp_diag_suite.add_argument('--breaker-stale-after-sec', type=int, default=None)
+    sp_diag_suite.add_argument('--heal-market-context', dest='heal_market_context', action='store_true')
+    sp_diag_suite.add_argument('--no-heal-market-context', dest='heal_market_context', action='store_false')
+    sp_diag_suite.add_argument('--heal-control-freshness', dest='heal_control_freshness', action='store_true')
+    sp_diag_suite.add_argument('--no-heal-control-freshness', dest='heal_control_freshness', action='store_false')
+    sp_diag_suite.add_argument('--max-stake-amount', type=float, default=5.0)
+    sp_diag_suite.add_argument('--soak-stale-after-sec', type=int, default=None)
+    sp_diag_suite.add_argument('--support-bundle-output-dir', default=None)
+    sp_diag_suite.add_argument('--max-log-bytes', type=int, default=1_000_000)
+    sp_diag_suite.add_argument('--dry-run', action='store_true')
+
+    sp_transport_smoke = sub.add_parser('transport-smoke', aliases=['transport_smoke'], help='Validate the Decodo / network transport plumbing end-to-end')
+    _add_common(sp_transport_smoke)
+    sp_transport_smoke.add_argument('--json', action='store_true')
+    sp_transport_smoke.add_argument('--asset', default=None)
+    sp_transport_smoke.add_argument('--interval-sec', type=int, default=None)
+    sp_transport_smoke.add_argument('--all-scopes', action='store_true')
+    sp_transport_smoke.add_argument('--no-active-healthchecks', action='store_true')
+    sp_transport_smoke.add_argument('--only-unavailable', action='store_true')
+    sp_transport_smoke.add_argument('--simulate-failures', type=int, default=0)
+    sp_transport_smoke.add_argument('--operation', default='default')
+    sp_transport_smoke.add_argument('--dry-run', action='store_true')
+
+    sp_redaction_audit = sub.add_parser('redaction-audit', aliases=['redaction_audit'], help='Scan runtime artifacts and sources for secret leakage')
+    _add_common(sp_redaction_audit)
+    sp_redaction_audit.add_argument('--json', action='store_true')
+    sp_redaction_audit.add_argument('--include-glob', action='append', default=None)
+    sp_redaction_audit.add_argument('--exclude-glob', action='append', default=None)
+    sp_redaction_audit.add_argument('--scan-source', action='store_true')
+    sp_redaction_audit.add_argument('--max-file-bytes', type=int, default=1_000_000)
+    sp_redaction_audit.add_argument('--limit-findings-per-file', type=int, default=10)
+    sp_redaction_audit.add_argument('--dry-run', action='store_true')
+
+    sp_module_smoke = sub.add_parser('module-smoke', aliases=['module_smoke'], help='Import/probe the critical Python modules used by the runtime')
+    _add_common(sp_module_smoke)
+    sp_module_smoke.add_argument('--json', action='store_true')
+    sp_module_smoke.add_argument('--dry-run', action='store_true')
+
+    sp_practice_preflight = sub.add_parser('practice-preflight', aliases=['practice_preflight'], help='Final zero-warning gate before a long PRACTICE session')
+    _add_common(sp_practice_preflight)
+    sp_practice_preflight.add_argument('--json', action='store_true')
+    sp_practice_preflight.add_argument('--probe-broker', action='store_true')
+    sp_practice_preflight.set_defaults(probe_provider=True, heal_breaker=True, heal_market_context=True, heal_control_freshness=True)
+    sp_practice_preflight.add_argument('--probe-provider', dest='probe_provider', action='store_true')
+    sp_practice_preflight.add_argument('--no-probe-provider', dest='probe_provider', action='store_false')
+    sp_practice_preflight.add_argument('--sample-candles', type=int, default=3)
+    sp_practice_preflight.add_argument('--market-context-max-age-sec', type=int, default=None)
+    sp_practice_preflight.add_argument('--min-dataset-rows', type=int, default=100)
+    sp_practice_preflight.add_argument('--heal-breaker', dest='heal_breaker', action='store_true')
+    sp_practice_preflight.add_argument('--no-heal-breaker', dest='heal_breaker', action='store_false')
+    sp_practice_preflight.add_argument('--breaker-stale-after-sec', type=int, default=None)
+    sp_practice_preflight.add_argument('--max-stake-amount', type=float, default=5.0)
+    sp_practice_preflight.add_argument('--soak-stale-after-sec', type=int, default=None)
+    sp_practice_preflight.add_argument('--heal-market-context', dest='heal_market_context', action='store_true')
+    sp_practice_preflight.add_argument('--no-heal-market-context', dest='heal_market_context', action='store_false')
+    sp_practice_preflight.add_argument('--heal-control-freshness', dest='heal_control_freshness', action='store_true')
+    sp_practice_preflight.add_argument('--no-heal-control-freshness', dest='heal_control_freshness', action='store_false')
+    sp_practice_preflight.add_argument('--heal-soak', action='store_true')
+    sp_practice_preflight.add_argument('--soak-cycles', type=int, default=6)
+    sp_practice_preflight.add_argument('--allow-warnings', action='store_true')
+    sp_practice_preflight.add_argument('--dry-run', action='store_true')
 
     sp_retention = sub.add_parser('retention', help='Preview/apply runtime artifact retention (H9)')
     _add_common(sp_retention)
@@ -212,12 +426,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_common(sp_practice_bootstrap)
     sp_practice_bootstrap.add_argument('--json', action='store_true')
     sp_practice_bootstrap.add_argument('--lookback-candles', type=int, default=2000)
-    sp_practice_bootstrap.add_argument('--soak-cycles', type=int, default=3)
+    sp_practice_bootstrap.add_argument('--soak-cycles', type=int, default=6)
     sp_practice_bootstrap.add_argument('--force-prepare', action='store_true')
     sp_practice_bootstrap.add_argument('--force-soak', action='store_true')
     sp_practice_bootstrap.add_argument('--skip-soak', action='store_true')
     sp_practice_bootstrap.add_argument('--max-stake-amount', type=float, default=5.0)
     sp_practice_bootstrap.add_argument('--soak-stale-after-sec', type=int, default=None)
+    sp_practice_bootstrap.add_argument('--clear-drain', action='store_true')
+    sp_practice_bootstrap.add_argument('--reset-breaker', action='store_true')
+    sp_practice_bootstrap.add_argument('--alerts-test', action='store_true')
 
     sp_practice_round = sub.add_parser('practice-round', help='Run the controlled operational round in PRACTICE mode')
     _add_common(sp_practice_round)
@@ -291,6 +508,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_execute_order = sub.add_parser('execute-order', aliases=['execute_order'], help='Create/submit one order from the latest trade signal (safe by default: PRACTICE unless explicitly configured otherwise)')
     _add_common(sp_execute_order)
     sp_execute_order.add_argument('--json', action='store_true')
+
+    sp_execution_hardening = sub.add_parser('execution-hardening', aliases=['execution_hardening'], help='Evaluate real multi-asset execution hardening gates for the current scope')
+    _add_common(sp_execution_hardening)
+    sp_execution_hardening.add_argument('--json', action='store_true')
 
     sp_check_order_status = sub.add_parser('check-order-status', aliases=['check_order_status'], help='Refresh and inspect one broker order snapshot by external order id')
     _add_common(sp_check_order_status)
@@ -384,25 +605,39 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp_ks = ops_sub.add_parser('killswitch', help='Kill-switch gate (blocks new trades)')
     ks_sub = sp_ks.add_subparsers(dest='op', required=True)
-    ks_sub.add_parser('status', help='Show status')
+    ks_status = ks_sub.add_parser('status', help='Show status')
+    ks_status.add_argument('--json', action='store_true')
     ks_on = ks_sub.add_parser('on', help='Enable kill-switch')
     ks_on.add_argument('--reason', default=None)
+    ks_on.add_argument('--json', action='store_true')
     ks_off = ks_sub.add_parser('off', help='Disable kill-switch')
     ks_off.add_argument('--reason', default=None)
+    ks_off.add_argument('--json', action='store_true')
 
     sp_dr = ops_sub.add_parser('drain', help='Drain mode (reconcile ok, no new submits)')
     dr_sub = sp_dr.add_subparsers(dest='op', required=True)
-    dr_sub.add_parser('status', help='Show status')
+    dr_status = dr_sub.add_parser('status', help='Show status')
+    dr_status.add_argument('--json', action='store_true')
     dr_on = dr_sub.add_parser('on', help='Enable drain mode')
     dr_on.add_argument('--reason', default=None)
+    dr_on.add_argument('--json', action='store_true')
     dr_off = dr_sub.add_parser('off', help='Disable drain mode')
     dr_off.add_argument('--reason', default=None)
+    dr_off.add_argument('--json', action='store_true')
+
+    sp_br = ops_sub.add_parser('breaker', help='Inspect/reset the runtime circuit breaker for the selected scope')
+    br_sub = sp_br.add_subparsers(dest='op', required=True)
+    br_status = br_sub.add_parser('status', help='Show breaker status')
+    br_status.add_argument('--json', action='store_true')
+    br_reset = br_sub.add_parser('reset', help='Reset breaker state to closed')
+    br_reset.add_argument('--reason', default=None)
+    br_reset.add_argument('--json', action='store_true')
 
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
-    known = {'status', 'plan', 'quota', 'precheck', 'health', 'healthcheck', 'backup', 'security', 'protection', 'monte-carlo', 'monte_carlo', 'sync', 'intelligence', 'doctor', 'retention', 'release', 'practice', 'practice-bootstrap', 'practice-round', 'retrain', 'incidents', 'alerts', 'observe', 'orders', 'execute-order', 'execute_order', 'check-order-status', 'check_order_status', 'reconcile', 'portfolio', 'asset', 'ops'}
+    known = {'status', 'plan', 'quota', 'precheck', 'health', 'healthcheck', 'backup', 'security', 'protection', 'monte-carlo', 'monte_carlo', 'sync', 'intelligence', 'intelligence-refresh', 'intelligence_refresh', 'doctor', 'diag-suite', 'diag_suite', 'transport-smoke', 'transport_smoke', 'redaction-audit', 'redaction_audit', 'module-smoke', 'module_smoke', 'practice-preflight', 'practice_preflight', 'provider-probe', 'provider_probe', 'production-gate', 'production_gate', 'evidence-window-scan', 'evidence_window_scan', 'provider-stability-report', 'provider_stability_report', 'provider-session-governor', 'provider_session_governor', 'signal-artifact-audit', 'signal_artifact_audit', 'config-provenance-audit', 'config_provenance_audit', 'support-bundle', 'support_bundle', 'runtime-artifact-audit', 'runtime_artifact_audit', 'guardrail-audit', 'guardrail_audit', 'dependency-audit', 'dependency_audit', 'state-db-audit', 'state_db_audit', 'retention', 'release', 'practice', 'practice-bootstrap', 'practice-round', 'retrain', 'incidents', 'alerts', 'observe', 'orders', 'execute-order', 'execute_order', 'execution-hardening', 'execution_hardening', 'check-order-status', 'check_order_status', 'reconcile', 'portfolio', 'asset', 'ops'}
     raw = list(sys.argv[1:] if argv is None else argv)
     if not raw:
         raw = ['status']
@@ -551,10 +786,270 @@ def main(argv: list[str] | None = None) -> int:
         payload = doctor_payload(
             repo_root=_common_repo_root(ns),
             config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
             probe_broker=bool(getattr(ns, 'probe_broker', False)),
             relaxed=bool(getattr(ns, 'relaxed', False)),
             market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
             min_dataset_rows=int(getattr(ns, 'min_dataset_rows', 100) or 100),
+            heal_breaker=bool(getattr(ns, 'heal_breaker', True)),
+            breaker_stale_after_sec=getattr(ns, 'breaker_stale_after_sec', None),
+            heal_market_context=bool(getattr(ns, 'heal_market_context', False)),
+            heal_control_freshness=bool(getattr(ns, 'heal_control_freshness', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'provider-probe', 'provider_probe'}:
+        payload = provider_probe_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            active=not bool(getattr(ns, 'passive', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 0),
+            probe_market_context=not bool(getattr(ns, 'skip_market_context_remote', False)),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'production-gate', 'production_gate'}:
+        payload = production_gate_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            probe_provider=bool(getattr(ns, 'probe_provider', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 0),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            min_dataset_rows=int(getattr(ns, 'min_dataset_rows', 100) or 100),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'evidence-window-scan', 'evidence_window_scan'}:
+        payload = evidence_window_scan_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            active_provider_probe=bool(getattr(ns, 'active_provider_probe', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 0),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            min_dataset_rows=int(getattr(ns, 'min_dataset_rows', 100) or 100),
+            top_n=int(getattr(ns, 'top_n', 3) or 3),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'provider-stability-report', 'provider_stability_report'}:
+        payload = provider_stability_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            active_provider_probe=bool(getattr(ns, 'active_provider_probe', False)),
+            refresh_probe=bool(getattr(ns, 'refresh_probe', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 0),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            recorded_event_limit=int(getattr(ns, 'recorded_event_limit', 200) or 200),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'provider-session-governor', 'provider_session_governor'}:
+        payload = provider_session_governor_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            active_provider_probe=bool(getattr(ns, 'active_provider_probe', False)),
+            refresh_stability=bool(getattr(ns, 'refresh_stability', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 0),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            recorded_event_limit=int(getattr(ns, 'recorded_event_limit', 200) or 200),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'signal-artifact-audit', 'signal_artifact_audit'}:
+        payload = signal_artifact_audit_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            decision_max_age_sec=int(getattr(ns, 'decision_max_age_sec', 3600) or 3600),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'config-provenance-audit', 'config_provenance_audit'}:
+        payload = config_provenance_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'support-bundle', 'support_bundle'}:
+        payload = support_bundle_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            probe_provider=bool(getattr(ns, 'probe_provider', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 0),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            min_dataset_rows=int(getattr(ns, 'min_dataset_rows', 100) or 100),
+            include_logs=bool(getattr(ns, 'include_logs', False)),
+            max_log_bytes=int(getattr(ns, 'max_log_bytes', 1000000) or 1000000),
+            output_dir=getattr(ns, 'output_dir', None),
+            bundle_prefix=str(getattr(ns, 'bundle_prefix', 'support_bundle') or 'support_bundle'),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok', False)) else 2
+
+    if ns.command in {'runtime-artifact-audit', 'runtime_artifact_audit'}:
+        payload = runtime_artifact_audit_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'guardrail-audit', 'guardrail_audit'}:
+        payload = guardrail_audit_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'dependency-audit', 'dependency_audit'}:
+        payload = dependency_audit_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'state-db-audit', 'state_db_audit'}:
+        payload = state_db_audit_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'diag-suite', 'diag_suite'}:
+        payload = diag_suite_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            include_provider_probe=bool(getattr(ns, 'include_provider_probe', False)),
+            active_provider_probe=bool(getattr(ns, 'active_provider_probe', False)),
+            include_practice=bool(getattr(ns, 'include_practice', False)),
+            include_support_bundle=bool(getattr(ns, 'include_support_bundle', False)),
+            probe_broker=bool(getattr(ns, 'probe_broker', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 3),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            min_dataset_rows=int(getattr(ns, 'min_dataset_rows', 100) or 100),
+            heal_breaker=bool(getattr(ns, 'heal_breaker', True)),
+            breaker_stale_after_sec=getattr(ns, 'breaker_stale_after_sec', None),
+            heal_market_context=bool(getattr(ns, 'heal_market_context', False)),
+            heal_control_freshness=bool(getattr(ns, 'heal_control_freshness', False)),
+            max_stake_amount=float(getattr(ns, 'max_stake_amount', 5.0) or 5.0),
+            soak_stale_after_sec=getattr(ns, 'soak_stale_after_sec', None),
+            support_bundle_output_dir=getattr(ns, 'support_bundle_output_dir', None),
+            max_log_bytes=int(getattr(ns, 'max_log_bytes', 1_000_000) or 1_000_000),
+            dry_run=bool(getattr(ns, 'dry_run', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'transport-smoke', 'transport_smoke'}:
+        payload = transport_smoke_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            asset=getattr(ns, 'asset', None),
+            interval_sec=getattr(ns, 'interval_sec', None),
+            all_scopes=bool(getattr(ns, 'all_scopes', False)),
+            active_healthchecks=not bool(getattr(ns, 'no_active_healthchecks', False)),
+            only_unavailable=bool(getattr(ns, 'only_unavailable', False)),
+            simulate_failures=int(getattr(ns, 'simulate_failures', 0) or 0),
+            operation=str(getattr(ns, 'operation', 'default') or 'default'),
+            dry_run=bool(getattr(ns, 'dry_run', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'redaction-audit', 'redaction_audit'}:
+        payload = redaction_audit_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            include_globs=list(getattr(ns, 'include_glob', None) or []) or None,
+            exclude_globs=list(getattr(ns, 'exclude_glob', None) or []) or None,
+            scan_source=bool(getattr(ns, 'scan_source', False)),
+            max_file_bytes=int(getattr(ns, 'max_file_bytes', 1_000_000) or 1_000_000),
+            limit_findings_per_file=int(getattr(ns, 'limit_findings_per_file', 10) or 10),
+            dry_run=bool(getattr(ns, 'dry_run', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'module-smoke', 'module_smoke'}:
+        payload = module_smoke_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            dry_run=bool(getattr(ns, 'dry_run', False)),
+        )
+        _print(payload, as_json=bool(ns.json))
+        return 0 if bool(payload.get('ok')) else 2
+
+    if ns.command in {'practice-preflight', 'practice_preflight'}:
+        payload = practice_preflight_payload(
+            repo_root=_common_repo_root(ns),
+            config_path=_common_config(ns),
+            probe_broker=bool(getattr(ns, 'probe_broker', False)),
+            probe_provider=bool(getattr(ns, 'probe_provider', False)),
+            sample_candles=int(getattr(ns, 'sample_candles', 3) or 3),
+            market_context_max_age_sec=getattr(ns, 'market_context_max_age_sec', None),
+            min_dataset_rows=int(getattr(ns, 'min_dataset_rows', 100) or 100),
+            max_stake_amount=float(getattr(ns, 'max_stake_amount', 5.0) or 5.0),
+            soak_stale_after_sec=getattr(ns, 'soak_stale_after_sec', None),
+            allow_warnings=bool(getattr(ns, 'allow_warnings', False)),
+            heal_breaker=bool(getattr(ns, 'heal_breaker', True)),
+            breaker_stale_after_sec=getattr(ns, 'breaker_stale_after_sec', None),
+            heal_market_context=bool(getattr(ns, 'heal_market_context', True)),
+            heal_control_freshness=bool(getattr(ns, 'heal_control_freshness', True)),
+            heal_soak=bool(getattr(ns, 'heal_soak', False)),
+            soak_cycles=int(getattr(ns, 'soak_cycles', 6) or 6),
+            dry_run=bool(getattr(ns, 'dry_run', False)),
         )
         _print(payload, as_json=bool(ns.json))
         return 0 if bool(payload.get('ok')) else 2
@@ -591,12 +1086,15 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=_common_repo_root(ns),
             config_path=_common_config(ns),
             lookback_candles=int(getattr(ns, 'lookback_candles', 2000) or 2000),
-            soak_cycles=int(getattr(ns, 'soak_cycles', 3) or 3),
+            soak_cycles=int(getattr(ns, 'soak_cycles', 6) or 6),
             force_prepare=bool(getattr(ns, 'force_prepare', False)),
             force_soak=bool(getattr(ns, 'force_soak', False)),
             skip_soak=bool(getattr(ns, 'skip_soak', False)),
             max_stake_amount=float(getattr(ns, 'max_stake_amount', 5.0) or 5.0),
             soak_stale_after_sec=getattr(ns, 'soak_stale_after_sec', None),
+            clear_drain=bool(getattr(ns, 'clear_drain', False)),
+            reset_breaker=bool(getattr(ns, 'reset_breaker', False)),
+            alerts_test=bool(getattr(ns, 'alerts_test', False)),
         )
         _print(payload, as_json=bool(ns.json))
         return 0 if bool(payload.get('round_eligible')) else 2
@@ -605,7 +1103,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = practice_round_payload(
             repo_root=_common_repo_root(ns),
             config_path=_common_config(ns),
-            soak_cycles=int(getattr(ns, 'soak_cycles', 3) or 3),
+            soak_cycles=int(getattr(ns, 'soak_cycles', 6) or 6),
             force_soak=bool(getattr(ns, 'force_soak', False)),
             skip_soak=bool(getattr(ns, 'skip_soak', False)),
             max_stake_amount=float(getattr(ns, 'max_stake_amount', 5.0) or 5.0),
@@ -711,6 +1209,11 @@ def main(argv: list[str] | None = None) -> int:
         _print(payload, as_json=bool(ns.json))
         return 0
 
+    if ns.command in {'execution-hardening', 'execution_hardening'}:
+        payload = execution_hardening_payload(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+        _print(payload, as_json=bool(ns.json))
+        return 0
+
     if ns.command in {'check-order-status', 'check_order_status'}:
         payload = check_order_status_payload(
             repo_root=_common_repo_root(ns),
@@ -791,6 +1294,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if ns.command == 'ops':
         from .ops import (
+            breaker_reset,
+            breaker_status,
             drain_mode_off,
             drain_mode_on,
             gate_status,
@@ -826,6 +1331,22 @@ def main(argv: list[str] | None = None) -> int:
                 payload = gate_status(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
             _print(payload, as_json=True)
             return 0
+        if cmd == 'breaker':
+            if op == 'reset':
+                payload = breaker_reset(
+                    repo_root=_common_repo_root(ns),
+                    config_path=_common_config(ns),
+                    reason=getattr(ns, 'reason', None),
+                )
+            else:
+                payload = breaker_status(repo_root=_common_repo_root(ns), config_path=_common_config(ns))
+            _print(payload, as_json=True)
+            return 0
         raise SystemExit(f'unknown ops cmd: {cmd!r}')
 
     raise SystemExit(f'unknown command: {ns.command!r}')
+
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

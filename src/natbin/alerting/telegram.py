@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover
     yaml = None
 
 from ..security.redaction import collect_sensitive_values, sanitize_payload
+from ..security.secrets import resolve_secret_bundle_path
 
 
 def _now_utc() -> str:
@@ -51,6 +52,40 @@ def _read_text(path: Path) -> str | None:
     except Exception:
         return None
     return value or None
+
+
+def _probe_parent_write(path: Path) -> tuple[bool, str | None]:
+    parent = path.parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        probe = parent / f'.thalor_alert_probe_{os.getpid()}.tmp'
+        probe.write_text('', encoding='utf-8')
+        try:
+            probe.unlink(missing_ok=True)
+        except TypeError:  # pragma: no cover - Python < 3.8 defensive fallback
+            if probe.exists():
+                probe.unlink()
+        return True, None
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {exc}'
+
+
+def _is_placeholder_secret(value: str | None) -> bool:
+    text = str(value or '').strip()
+    if not text:
+        return True
+    upper = text.upper()
+    placeholders = {
+        'TELEGRAM_BOT_TOKEN_HERE',
+        'TELEGRAM_CHAT_ID_HERE',
+        'YOUR_TELEGRAM_BOT_TOKEN',
+        'YOUR_TELEGRAM_CHAT_ID',
+        '<TELEGRAM_BOT_TOKEN>',
+        '<TELEGRAM_CHAT_ID>',
+    }
+    if upper in placeholders:
+        return True
+    return 'PLACEHOLDER' in upper or upper.endswith('_HERE')
 
 
 def _read_bundle(path: Path) -> dict[str, Any]:
@@ -191,47 +226,67 @@ def resolve_telegram_credentials(*, repo_root: str | Path, resolved_config: Any)
                 updates['bot_token'] = token_cfg.get_secret_value()
             else:
                 updates['bot_token'] = str(token_cfg).strip()
-            trace.append('telegram:config:bot_token')
+            if not _is_placeholder_secret(updates.get('bot_token')):
+                trace.append('telegram:config:bot_token')
+            else:
+                updates.pop('bot_token', None)
         except Exception:
             pass
     chat_cfg = telegram.get('chat_id')
     if chat_cfg not in (None, ''):
         updates['chat_id'] = str(chat_cfg).strip()
-        trace.append('telegram:config:chat_id')
+        if _is_placeholder_secret(updates.get('chat_id')):
+            updates.pop('chat_id', None)
+        else:
+            trace.append('telegram:config:chat_id')
 
-    bundle_path = _resolve_path(repo_root, os.getenv(str(security.get('secrets_file_env_var') or 'THALOR_SECRETS_FILE')) or security.get('secrets_file'))
+    bundle_path = resolve_secret_bundle_path(repo_root=repo_root, security=security)
     if bundle_path is not None and bundle_path.exists():
         bundle = _read_bundle(bundle_path)
         token = _bundle_get(bundle, ('telegram', 'bot_token'), ('TELEGRAM_BOT_TOKEN',), ('bot_token',))
         chat_id = _bundle_get(bundle, ('telegram', 'chat_id'), ('TELEGRAM_CHAT_ID',), ('chat_id',))
-        if token not in (None, ''):
-            updates['bot_token'] = str(token).strip()
+        token_text = str(token).strip() if token not in (None, '') else None
+        chat_text = str(chat_id).strip() if chat_id not in (None, '') else None
+        if token_text and not _is_placeholder_secret(token_text):
+            updates['bot_token'] = token_text
             trace.append(f'telegram:bundle:bot_token:{bundle_path.name}')
-        if chat_id not in (None, ''):
-            updates['chat_id'] = str(chat_id).strip()
+        if chat_text and not _is_placeholder_secret(chat_text):
+            updates['chat_id'] = chat_text
             trace.append(f'telegram:bundle:chat_id:{bundle_path.name}')
 
     token_env = os.getenv(str(telegram.get('bot_token_env_var') or 'THALOR_TELEGRAM_BOT_TOKEN'))
     if str(token_env or '').strip():
         updates['bot_token'] = str(token_env).strip()
-        trace.append('telegram:env:bot_token')
+        if _is_placeholder_secret(updates.get('bot_token')):
+            updates.pop('bot_token', None)
+        else:
+            trace.append('telegram:env:bot_token')
     chat_env = os.getenv(str(telegram.get('chat_id_env_var') or 'THALOR_TELEGRAM_CHAT_ID'))
     if str(chat_env or '').strip():
         updates['chat_id'] = str(chat_env).strip()
-        trace.append('telegram:env:chat_id')
+        if _is_placeholder_secret(updates.get('chat_id')):
+            updates.pop('chat_id', None)
+        else:
+            trace.append('telegram:env:chat_id')
 
     token_file = _resolve_path(repo_root, os.getenv(str(telegram.get('bot_token_file_env_var') or 'THALOR_TELEGRAM_BOT_TOKEN_FILE')))
     if token_file is not None and token_file.exists():
         token = _read_text(token_file)
         if token:
             updates['bot_token'] = token
-            trace.append(f'telegram:file:bot_token:{token_file.name}')
+            if _is_placeholder_secret(updates.get('bot_token')):
+                updates.pop('bot_token', None)
+            else:
+                trace.append(f'telegram:file:bot_token:{token_file.name}')
     chat_file = _resolve_path(repo_root, os.getenv(str(telegram.get('chat_id_file_env_var') or 'THALOR_TELEGRAM_CHAT_ID_FILE')))
     if chat_file is not None and chat_file.exists():
         chat_id = _read_text(chat_file)
         if chat_id:
             updates['chat_id'] = chat_id
-            trace.append(f'telegram:file:chat_id:{chat_file.name}')
+            if _is_placeholder_secret(updates.get('chat_id')):
+                updates.pop('chat_id', None)
+            else:
+                trace.append(f'telegram:file:chat_id:{chat_file.name}')
 
     return TelegramCredentials(bot_token=updates.get('bot_token'), chat_id=updates.get('chat_id'), trace=trace)
 
@@ -403,14 +458,26 @@ def alerts_status_payload(*, repo_root: str | Path = '.', resolved_config: Any, 
         status = str(((item.get('delivery') or {}).get('status') or 'queued'))
         counts[status] = counts.get(status, 0) + 1
     state = _load_state(state_path)
+    notifications_enabled = bool(notifications.get('enabled', True))
+    telegram_enabled = bool(telegram.get('enabled', False))
+    send_enabled = bool(telegram.get('send_enabled', False))
+    outbox_ready, outbox_reason = _probe_parent_write(outbox)
+    state_ready, state_reason = _probe_parent_write(state_path)
+    external_ready = bool(notifications_enabled and telegram_enabled and send_enabled and creds.present)
+    local_durable_ready = bool(notifications_enabled and outbox_ready and state_ready)
+    selected_contract = 'disabled'
+    if external_ready:
+        selected_contract = 'external_realtime'
+    elif local_durable_ready:
+        selected_contract = 'local_durable'
     return {
         'at_utc': _now_utc(),
         'kind': 'alerts_status',
-        'enabled': bool(notifications.get('enabled', True)),
+        'enabled': notifications_enabled,
         'history_limit': int(notifications.get('history_limit') or 200),
         'telegram': {
-            'enabled': bool(telegram.get('enabled', False)),
-            'send_enabled': bool(telegram.get('send_enabled', False)),
+            'enabled': telegram_enabled,
+            'send_enabled': send_enabled,
             'credentials_present': creds.present,
             'credential_trace': list(creds.trace),
             'outbox_path': str(outbox),
@@ -418,6 +485,30 @@ def alerts_status_payload(*, repo_root: str | Path = '.', resolved_config: Any, 
             'recent_counts': counts,
             'recent': recent,
             'state': state,
+        },
+        'readiness': {
+            'notifications_enabled': notifications_enabled,
+            'external_ready': external_ready,
+            'external_reason': None if external_ready else (
+                'telegram_disabled'
+                if not telegram_enabled
+                else 'telegram_send_disabled'
+                if not send_enabled
+                else 'telegram_credentials_missing'
+                if not creds.present
+                else None
+            ),
+            'local_durable_ready': local_durable_ready,
+            'local_durable_reason': None if local_durable_ready else {
+                'outbox': outbox_reason,
+                'state': state_reason,
+            },
+            'practice_ready': bool(external_ready or local_durable_ready),
+            'real_ready': external_ready,
+            'recent_activity_present': bool(recent),
+            'selected_contract': selected_contract,
+            'outbox_writeable': outbox_ready,
+            'state_writeable': state_ready,
         },
     }
 

@@ -64,11 +64,19 @@ runs_*/
 exports/
 backups/
 artifacts/
+test_battery/
+diag_zips/
 temp_*/
 tmp_*/
 
 # Common artifacts
 *.log
+.coverage
+coverage.xml
+coverage-*.xml
+pytest*.xml
+junit*.xml
+diag_bundle_*.zip
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm

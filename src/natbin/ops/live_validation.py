@@ -160,7 +160,8 @@ def build_validation_plan(
             [
                 ValidationSpec("runtime_security", _rt_cmd("security", repo_root=root_str), note="Secrets/redaction posture"),
                 ValidationSpec("runtime_health", _rt_cmd("health", repo_root=root_str), note="Runtime health snapshot"),
-                ValidationSpec("runtime_release", _rt_cmd("release", repo_root=root_str), note="Production checklist"),
+                ValidationSpec("runtime_doctor", _rt_cmd("doctor", repo_root=root_str), note="Local/runtime doctor for the current workspace"),
+                ValidationSpec("runtime_release", _rt_cmd("release", repo_root=root_str), required=False, note="Production checklist snapshot (informational in baseline)"),
                 ValidationSpec("incidents_status", _rt_cmd("incidents", "status", repo_root=root_str), note="Incident posture / recent feed"),
                 ValidationSpec("incidents_drill", _rt_cmd("incidents", "drill", "--scenario", "broker_down", repo_root=root_str), note="Incident runbook drill"),
                 ValidationSpec("alerts_status", _rt_cmd("alerts", "status", repo_root=root_str), required=False, note="Telegram/outbox visibility"),

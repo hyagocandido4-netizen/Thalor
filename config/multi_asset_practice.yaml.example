@@ -36,6 +36,9 @@ multi_asset:
   partition_data_paths: true
   data_db_template: data/market_{scope_tag}.sqlite3
   dataset_path_template: data/datasets/{scope_tag}/dataset.csv
+  adaptive_prepare_enable: true
+  prepare_incremental_lookback_candles: 256
+  candidate_budget_rotation_enable: true
 
 security:
   enabled: true

@@ -27,13 +27,41 @@ Base settings resolution now follows:
 
 1. process `THALOR__*` / init overrides
 2. process compatibility keys (`IQ_*`, `ASSET`, `INTERVAL_SEC`, `TIMEZONE`)
-3. YAML (`config/base.yaml` preferred, `config.yaml` fallback, including explicit profile files)
-4. repo-local `.env` `THALOR__*`
+3. repo-local `.env` `THALOR__*` **safe keys only** (for example `broker.*`,
+   `security.*`, `notifications.*`, `production.*`)
+4. YAML (`config/base.yaml` preferred, `config.yaml` fallback, including explicit profile files)
 5. repo-local `.env` compatibility keys (`IQ_*`, `ASSET`, `INTERVAL_SEC`, `TIMEZONE`)
 
-This means an explicit profile file such as `config/live_controlled_practice.yaml`
-can define its own `execution:` block without being silently shadowed by a stale
-`.env` toggle like `THALOR__EXECUTION__ENABLED=0`.
+Trading-behaviour sections such as `execution.*`, `decision.*`, `quota.*`,
+`runtime.*`, `multi_asset.*`, `intelligence.*` and `runtime_overrides.*` are
+filtered out of the repo-local `.env` by default. This keeps profile YAMLs such
+as `config/live_controlled_practice.yaml` authoritative for behaviour, while the
+`.env` remains useful for secrets, account mode and deployment posture.
+
+If you intentionally want the historical behaviour where repo-local `.env`
+`THALOR__*` can override any field, export this flag in the **process** before
+starting the app:
+
+```powershell
+$env:THALOR_DOTENV_ALLOW_BEHAVIOR="1"
+```
+
+## Profile inheritance (`extends`)
+
+Modern YAML profiles can now inherit from one or more parent files:
+
+```yaml
+extends: base.yaml
+runtime:
+  profile: multi
+execution:
+  enabled: true
+  mode: paper
+```
+
+Merge semantics are recursive for nested mappings. Lists and scalar values are
+replaced by the child config. The effective `source_trace` keeps the full YAML
+chain (base -> child), which improves auditability in control-plane payloads.
 
 ### External secrets overlay (Package M6)
 
@@ -418,3 +446,17 @@ production:
 ```
 
 Os comandos associados são `runtime_app backup` e `runtime_app healthcheck`.
+
+
+## execution.real_guard
+
+Package 3.2 adds `execution.real_guard` for live/REAL hardening.
+
+Key fields:
+- `require_env_allow_real`: requires `THALOR_EXECUTION_ALLOW_REAL=1` before REAL submits
+- `allow_multi_asset_live`: explicit opt-in for REAL + `multi_asset.enabled=true`
+- `serialize_submits`: serializes REAL submits with a cross-process file lock
+- `min_submit_spacing_sec`: global spacing between REAL submits
+- `max_pending_unknown_total` / `max_open_positions_total`: global limits before new submit
+- `recent_failure_window_sec` + `max_recent_transport_failures`: cooldown on recent transport failures
+- `post_submit_verify_*`: short verification poll after ACK

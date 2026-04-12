@@ -12,6 +12,45 @@ from ...config.env import env_int
 from ...state.summary_paths import sanitize_asset
 
 
+def _normalize_gate_mode(value: Any) -> str:
+    gate_mode = str(value or 'meta').strip().lower()
+    if gate_mode in ('cp_meta_iso', 'cp_meta', 'cp-meta-iso'):
+        return 'cp'
+    if gate_mode in {'meta', 'iso', 'conf', 'cp'}:
+        return gate_mode
+    return 'meta'
+
+
+def cache_supports_gate(payload: dict[str, Any] | None, gate_mode: str) -> bool:
+    """Return whether a cached observer model payload supports the requested gate.
+
+    Older caches can legitimately miss pieces that newer runtime profiles expect,
+    especially CP metadata for ``gate_mode=cp``. Treat that as incompatible so the
+    caller can rebuild the cache instead of running fail-closed forever.
+    """
+
+    if not isinstance(payload, dict):
+        return False
+    gate = _normalize_gate_mode(gate_mode)
+    cal = payload.get('cal')
+    if cal is None:
+        return False
+    if gate == 'conf':
+        return True
+    if gate == 'iso':
+        return payload.get('iso') is not None
+    meta_pack = payload.get('meta_model')
+    if meta_pack is None:
+        return False
+    if gate == 'meta':
+        model = getattr(meta_pack, 'model', meta_pack)
+        return model is not None
+    if gate == 'cp':
+        cp_obj = getattr(meta_pack, 'cp', None)
+        return cp_obj is not None
+    return True
+
+
 def get_model_version() -> str:
     try:
         import subprocess
@@ -101,6 +140,7 @@ def should_retrain(
 
 __all__ = [
     'cache_paths',
+    'cache_supports_gate',
     'feat_hash',
     'get_model_version',
     'load_cache',

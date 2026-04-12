@@ -9,6 +9,7 @@ from typing import Any
 
 from ..config.execution_mode import execution_mode_uses_broker_submit
 
+from ..alerting.telegram import alerts_status_payload
 from ..control.plan import build_context
 from ..runtime.failsafe import CircuitBreakerPolicy, RuntimeFailsafe
 from ..runtime.broker_surface import adapter_from_context
@@ -16,6 +17,8 @@ from ..runtime.perf import load_json_cached
 from ..security.audit import audit_security_posture
 from ..state.control_repo import RuntimeControlRepository, read_control_artifact, write_control_artifact
 from .artifact_retention import build_retention_payload
+from .diagnostic_utils import load_selected_scopes, resolve_scope_paths
+from .safe_refresh import maybe_heal_breaker, maybe_heal_control_freshness, maybe_heal_market_context
 
 
 def _now_utc() -> datetime:
@@ -135,15 +138,29 @@ def build_production_doctor_payload(
     *,
     repo_root: str | Path = '.',
     config_path: str | Path | None = None,
+    asset: str | None = None,
+    interval_sec: int | None = None,
     probe_broker: bool = False,
     strict_runtime_artifacts: bool = True,
     enforce_live_broker_prereqs: bool = True,
     market_context_max_age_sec: int | None = None,
     min_dataset_rows: int = 100,
+    heal_breaker: bool = False,
+    breaker_stale_after_sec: int | None = None,
+    heal_market_context: bool = False,
+    heal_control_freshness: bool = False,
     write_artifact: bool = True,
 ) -> dict[str, Any]:
-    ctx = build_context(repo_root=repo_root, config_path=config_path, dump_snapshot=False)
+    ctx = build_context(repo_root=repo_root, config_path=config_path, asset=asset, interval_sec=interval_sec, dump_snapshot=False)
     repo = Path(ctx.repo_root).resolve()
+    _, _, cfg, scopes = load_selected_scopes(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        asset=ctx.config.asset,
+        interval_sec=int(ctx.config.interval_sec),
+        all_scopes=False,
+    )
+    scope_obj = scopes[0] if scopes else None
     checks: list[dict[str, Any]] = []
     now_utc = _now_utc()
     exec_cfg = dict(ctx.resolved_config.get('execution') or {})
@@ -158,15 +175,18 @@ def build_production_doctor_payload(
         resolved_config=ctx.resolved_config,
         source_trace=list(ctx.source_trace),
     )
-    security_errors = [item for item in list(security.get('checks') or []) if str(item.get('status')) == 'error']
-    only_missing_broker_creds = (
+    security_checks = list(security.get('checks') or [])
+    security_errors = [item for item in security_checks if str(item.get('status')) == 'error']
+    broker_credential_items = [item for item in security_checks if str(item.get('name')) == 'broker_credentials_present']
+    missing_broker_creds_non_live = (
         not execution_live
-        and security_errors
+        and broker_credential_items
+        and all(str(item.get('status')) in {'warn', 'error'} for item in broker_credential_items)
         and all(str(item.get('name')) == 'broker_credentials_present' for item in security_errors)
     )
-    if bool(security.get('blocked')) and not only_missing_broker_creds:
+    if bool(security.get('blocked')) and not missing_broker_creds_non_live:
         checks.append(_check('security_posture', 'error', 'Security posture bloqueia operação', severity=security.get('severity')))
-    elif only_missing_broker_creds:
+    elif missing_broker_creds_non_live:
         checks.append(_check('security_posture', 'ok', 'Security posture aceita ausência de credenciais fora do modo live', severity='ok'))
     elif str(security.get('severity') or 'ok') == 'warn':
         checks.append(_check('security_posture', 'warn', 'Security posture com avisos', severity=security.get('severity')))
@@ -185,6 +205,16 @@ def build_production_doctor_payload(
     else:
         checks.append(_check('failsafe_drain_mode', 'ok', 'Drain mode desligado'))
 
+    breaker_repair = maybe_heal_breaker(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        asset=str(ctx.config.asset),
+        interval_sec=int(ctx.config.interval_sec),
+        enabled=bool(heal_breaker),
+        dry_run=False,
+        stale_after_sec=breaker_stale_after_sec,
+    )
+
     control_repo = RuntimeControlRepository(repo / 'runs' / 'runtime_control.sqlite3')
     breaker = control_repo.load_breaker(str(ctx.config.asset), int(ctx.config.interval_sec))
     breaker = fs.evaluate_circuit(breaker, now_utc)
@@ -195,6 +225,19 @@ def build_production_doctor_payload(
     else:
         checks.append(_check('circuit_breaker', 'ok', 'Circuit breaker fechado'))
 
+    breaker_artifact = read_control_artifact(repo_root=repo, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='breaker')
+    if isinstance(breaker_artifact, dict):
+        primary_cause = breaker_artifact.get('primary_cause') if isinstance(breaker_artifact.get('primary_cause'), dict) else {}
+        connectivity = breaker_artifact.get('connectivity') if isinstance(breaker_artifact.get('connectivity'), dict) else {}
+        primary_cause_code = str(primary_cause.get('code') or 'none')
+        last_transport_error = breaker_artifact.get('last_transport_error') or connectivity.get('last_transport_error')
+        diag_status = 'warn' if primary_cause_code not in {'', 'none'} else 'ok'
+        if str(breaker.state) == 'open' and primary_cause_code not in {'', 'none'}:
+            diag_status = 'error'
+        checks.append(_check('circuit_breaker_diagnostics', diag_status, 'Diagnóstico enriquecido do circuit breaker disponível', primary_cause_code=primary_cause_code, symptom_code=((breaker_artifact.get('symptom') or {}).get('code') if isinstance(breaker_artifact.get('symptom'), dict) else None), last_transport_error=last_transport_error))
+    else:
+        checks.append(_check('circuit_breaker_diagnostics', 'ok', 'Diagnóstico enriquecido do circuit breaker indisponível'))
+
     runs_ok, runs_err = _ensure_writeable(repo / 'runs')
     control_ok, control_err = _ensure_writeable(repo / 'runs' / 'control')
     logs_ok, logs_err = _ensure_writeable(repo / 'runs' / 'logs')
@@ -203,7 +246,15 @@ def build_production_doctor_payload(
     else:
         checks.append(_check('runtime_paths_writeable', 'error', 'Falha ao gravar em paths de runtime', errors=[err for err in [runs_err, control_err, logs_err] if err]))
 
-    dataset_path = _resolve_path(repo, ((ctx.resolved_config.get('data') or {}).get('dataset_path') if isinstance(ctx.resolved_config, dict) else None)) or _resolve_path(repo, ctx.config.dataset_path)
+    dataset_path = None
+    if scope_obj is not None:
+        try:
+            scope_paths = resolve_scope_paths(repo_root=repo, cfg=cfg, scope=scope_obj)
+            dataset_path = Path(str(scope_paths['data'].dataset_path))
+        except Exception:
+            dataset_path = None
+    if dataset_path is None:
+        dataset_path = _resolve_path(repo, ((ctx.resolved_config.get('data') or {}).get('dataset_path') if isinstance(ctx.resolved_config, dict) else None)) or _resolve_path(repo, ctx.config.dataset_path)
     dataset_rows = _count_csv_rows(dataset_path) if dataset_path is not None else None
     if dataset_path is None or not dataset_path.exists():
         checks.append(_check('dataset_ready', _status_error_or_skip(strict_runtime_artifacts), 'Dataset ausente', dataset_path=str(dataset_path) if dataset_path is not None else None))
@@ -214,9 +265,28 @@ def build_production_doctor_payload(
     else:
         checks.append(_check('dataset_ready', 'ok', 'Dataset pronto', dataset_path=str(dataset_path), rows=int(dataset_rows)))
 
+    max_age = int(market_context_max_age_sec or max(int(ctx.config.interval_sec) * 3, 600))
+    freshness_limit = max(int(ctx.config.interval_sec) * 4, 900)
+    market_context_repair = maybe_heal_market_context(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        asset=str(ctx.config.asset),
+        interval_sec=int(ctx.config.interval_sec),
+        max_age_sec=max_age,
+        enabled=bool(heal_market_context),
+        dry_run=False,
+    )
+    control_freshness_repair = maybe_heal_control_freshness(
+        repo_root=repo,
+        config_path=ctx.config.config_path,
+        asset=str(ctx.config.asset),
+        interval_sec=int(ctx.config.interval_sec),
+        freshness_limit_sec=int(freshness_limit),
+        enabled=bool(heal_control_freshness),
+        dry_run=False,
+    )
     market_path = Path(ctx.scoped_paths.get('market_context') or '') if ctx.scoped_paths.get('market_context') else None
     market_payload = load_json_cached(str(market_path)) if market_path is not None and market_path.exists() else None
-    max_age = int(market_context_max_age_sec or max(int(ctx.config.interval_sec) * 3, 600))
     if market_path is None or not market_path.exists() or not isinstance(market_payload, dict):
         checks.append(_check('market_context', _status_error_or_skip(strict_runtime_artifacts), 'Market context ausente', max_age_sec=max_age))
     else:
@@ -227,7 +297,7 @@ def build_production_doctor_payload(
         elif age_sec > max_age:
             checks.append(_check('market_context', _status_error_or_skip(strict_runtime_artifacts), 'Market context stale', path=str(market_path), age_sec=round(age_sec, 3), max_age_sec=max_age, open_source=market_payload.get('open_source')))
         elif market_payload.get('market_open') is False:
-            checks.append(_check('market_context', 'warn', 'Market context válido, porém mercado fechado', path=str(market_path), age_sec=round(age_sec, 3), open_source=market_payload.get('open_source')))
+            checks.append(_check('market_context', 'ok', 'Market context fresco; mercado fechado no instante atual', path=str(market_path), age_sec=round(age_sec, 3), open_source=market_payload.get('open_source'), market_open=False, no_trade_window=True))
         else:
             checks.append(_check('market_context', 'ok', 'Market context fresco', path=str(market_path), age_sec=round(age_sec, 3), open_source=market_payload.get('open_source')))
 
@@ -244,7 +314,6 @@ def build_production_doctor_payload(
     health = read_control_artifact(repo_root=repo, asset=ctx.config.asset, interval_sec=ctx.config.interval_sec, name='health')
     loop_age = _control_artifact_age_sec(loop_status)
     health_age = _control_artifact_age_sec(health)
-    freshness_limit = max(int(ctx.config.interval_sec) * 4, 900)
     if loop_age is None or health_age is None:
         checks.append(_check('control_freshness', 'skip' if not strict_runtime_artifacts else 'warn', 'Artifacts de loop/health ainda não emitidos', freshness_limit_sec=freshness_limit))
     elif loop_age > freshness_limit or health_age > freshness_limit:
@@ -269,6 +338,27 @@ def build_production_doctor_payload(
         checks.append(_check('intelligence_surface', 'warn', 'Surface de intelligence com avisos operacionais.', warnings=intelligence.get('warnings') or []))
     else:
         checks.append(_check('intelligence_surface', 'ok', 'Surface de intelligence pronta.', summary=intelligence.get('summary') or {}))
+
+    alerts = alerts_status_payload(repo_root=repo, resolved_config=ctx.resolved_config, limit=20)
+    tg = dict(alerts.get('telegram') or {})
+    alerting = dict(alerts.get('readiness') or {})
+    external_ready = bool(alerting.get('external_ready'))
+    practice_alerts_ready = bool(alerting.get('practice_ready'))
+    selected_contract = str(alerting.get('selected_contract') or 'disabled')
+    real_account = execution_live and (execution_account_mode == 'REAL' or broker_balance_mode == 'REAL')
+    if real_account and not external_ready:
+        checks.append(_check('alerting_ready', 'error', 'Conta REAL exige canal externo de alertas pronto', enabled=bool(tg.get('enabled')), send_enabled=bool(tg.get('send_enabled')), credentials_present=bool(tg.get('credentials_present')), credential_trace=tg.get('credential_trace'), alerting_contract=selected_contract, readiness=alerting))
+    elif real_account and external_ready:
+        checks.append(_check('alerting_ready', 'ok', 'Canal externo de alertas pronto para conta REAL', credential_trace=tg.get('credential_trace'), contract='external_realtime'))
+    elif execution_live and practice_alerts_ready:
+        if external_ready:
+            checks.append(_check('alerting_ready', 'ok', 'Telegram pronto para incidentes/alertas operacionais', credential_trace=tg.get('credential_trace'), contract='external_realtime'))
+        else:
+            checks.append(_check('alerting_ready', 'ok', 'Pipeline de alertas pronto via sink local durável para PRACTICE', alerting_contract=selected_contract, readiness=alerting))
+    elif execution_live:
+        checks.append(_check('alerting_ready', 'error', 'Pipeline de alertas obrigatório para execução live e não está pronto', enabled=bool(tg.get('enabled')), send_enabled=bool(tg.get('send_enabled')), credentials_present=bool(tg.get('credentials_present')), credential_trace=tg.get('credential_trace'), alerting_contract=selected_contract, readiness=alerting))
+    else:
+        checks.append(_check('alerting_ready', 'ok', 'Alerting não obrigatório para este modo de execução'))
 
     if not bool(exec_cfg.get('enabled')):
         checks.append(_check('broker_preflight', 'ok', 'Execução desabilitada; preflight live não requerido', execution_mode=exec_cfg.get('mode'), provider=exec_cfg.get('provider')))
@@ -318,7 +408,10 @@ def build_production_doctor_payload(
     if 'dataset_ready' in blockers:
         actions.append('Execute natbin.collect_recent e natbin.make_dataset para reconstruir o dataset.')
     if 'market_context' in blockers:
-        actions.append('Execute natbin.refresh_market_context ou runtime_app observe --once para regenerar o market_context.')
+        if bool((market_context_repair or {}).get('attempted')):
+            actions.append('Revise o resultado de repairs.market_context; a regeneração segura do market_context não resolveu completamente o frescor do scope.')
+        else:
+            actions.append('Execute natbin.refresh_market_context ou runtime_app observe --once para regenerar o market_context.')
     if 'broker_preflight' in blockers:
         actions.append('Verifique THALOR_SECRETS_FILE / arquivos de credenciais e rode runtime_app doctor --probe-broker.')
     if 'failsafe_kill_switch' in blockers:
@@ -363,6 +456,11 @@ def build_production_doctor_payload(
         'blockers': blockers,
         'warnings': warnings,
         'actions': actions,
+        'repairs': {
+            'circuit_breaker': breaker_repair,
+            'market_context': market_context_repair,
+            'control_freshness': control_freshness_repair,
+        },
         'broker_health': broker_health,
         'intelligence': {
             'enabled': intelligence.get('enabled'),
@@ -384,12 +482,18 @@ def build_production_doctor_payload(
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description='Build a production-hardening doctor payload for the current scope')
+    ap.set_defaults(heal_breaker=True)
     ap.add_argument('--repo-root', default='.')
     ap.add_argument('--config', default=None)
     ap.add_argument('--probe-broker', action='store_true')
     ap.add_argument('--relaxed', action='store_true', help='Downgrade missing runtime artifacts to skip instead of error')
     ap.add_argument('--market-context-max-age-sec', type=int, default=None)
     ap.add_argument('--min-dataset-rows', type=int, default=100)
+    ap.add_argument('--heal-breaker', dest='heal_breaker', action='store_true')
+    ap.add_argument('--no-heal-breaker', dest='heal_breaker', action='store_false')
+    ap.add_argument('--breaker-stale-after-sec', type=int, default=None)
+    ap.add_argument('--heal-market-context', action='store_true')
+    ap.add_argument('--heal-control-freshness', action='store_true')
     ap.add_argument('--json', action='store_true')
     ns = ap.parse_args(argv)
     payload = build_production_doctor_payload(
@@ -399,6 +503,10 @@ def main(argv: list[str] | None = None) -> int:
         strict_runtime_artifacts=not bool(ns.relaxed),
         market_context_max_age_sec=ns.market_context_max_age_sec,
         min_dataset_rows=int(ns.min_dataset_rows),
+        heal_breaker=bool(ns.heal_breaker),
+        breaker_stale_after_sec=ns.breaker_stale_after_sec,
+        heal_market_context=bool(ns.heal_market_context),
+        heal_control_freshness=bool(ns.heal_control_freshness),
         write_artifact=True,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2 if ns.json else None))

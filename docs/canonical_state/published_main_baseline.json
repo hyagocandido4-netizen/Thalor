@@ -1,21 +1,21 @@
 {
   "kind": "published_main_baseline",
   "schema_version": 1,
-  "generated_at_utc": "2026-03-26T12:14:34+00:00",
+  "generated_at_utc": "2026-03-23T19:56:49+00:00",
   "origin_url": "https://github.com/hyagocandido4-netizen/Thalor.git",
   "published_ref_source": "origin/main",
   "published_ref": {
-    "sha": "88d9dd9b35c9ef756bc1dcff59ee841795629d05",
-    "short_sha": "88d9dd9",
-    "subject": "fix(ci): restore legacy observer helper export for regression smoke",
-    "committed_at_utc": "2026-03-24T13:29:02-03:00",
+    "sha": "e6e97fed83690448ec882d275ff553a9b88ed7e3",
+    "short_sha": "e6e97fe",
+    "subject": "feat: phase 1 intelligence H10 and H11",
+    "committed_at_utc": "2026-03-19T17:23:18-03:00",
     "rev": "origin/main"
   },
   "head_at_freeze": {
-    "sha": "88d9dd9b35c9ef756bc1dcff59ee841795629d05",
-    "short_sha": "88d9dd9",
-    "subject": "fix(ci): restore legacy observer helper export for regression smoke",
-    "committed_at_utc": "2026-03-24T13:29:02-03:00",
+    "sha": "e6e97fed83690448ec882d275ff553a9b88ed7e3",
+    "short_sha": "e6e97fe",
+    "subject": "feat: phase 1 intelligence H10 and H11",
+    "committed_at_utc": "2026-03-19T17:23:18-03:00",
     "rev": "HEAD"
   },
   "head_matches_published_ref": true,

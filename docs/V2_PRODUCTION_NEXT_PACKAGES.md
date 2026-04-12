@@ -215,3 +215,21 @@ Next recommended package in the Phase 2 sequence:
 - **Package 5 – Preparação para Produção**
 
 - Package 5 — Production prep: DONE
+
+
+## PHASE3-COLLECT-FIX-1 — IQ asset resolution for multi-asset collect_recent
+
+Status: **done**
+
+Delivered:
+
+- dynamic IQ asset catalog refresh in `IQClient`
+- generic alias resolution without per-asset hardcodes
+- reconnect guard when websocket flag is stale but `api` is missing
+- six-asset smoke for `collect_recent`
+
+
+## Phase 3 progress
+
+- Package 3.1: collect_recent + IQ client OTC compatibility fix
+- Package 3.2: real multi-asset execution hardening

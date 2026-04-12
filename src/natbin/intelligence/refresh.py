@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,47 @@ from ..runtime.scope import decision_latest_path
 from .fit import fit_intelligence_pack
 from .paths import latest_eval_path, pack_path, retrain_plan_path, retrain_status_path
 from .runtime import enrich_candidate
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=UTC).isoformat(timespec='seconds')
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
+
+
+def _write_latest_eval_placeholder(
+    *,
+    repo_root: Path,
+    artifact_dir: str | Path,
+    scope: PortfolioScope,
+    pack_payload: dict[str, Any] | None,
+    eval_out: Path,
+    decision_path: Path,
+    status: str,
+    reason: str | None,
+) -> dict[str, Any]:
+    metadata = dict((pack_payload or {}).get('metadata') or {}) if isinstance(pack_payload, dict) else {}
+    payload = {
+        'kind': 'intelligence_eval',
+        'schema_version': 'phase1-intelligence-eval-v3',
+        'evaluated_at_utc': _now_iso(),
+        'scope_tag': scope.scope_tag,
+        'asset': scope.asset,
+        'interval_sec': int(scope.interval_sec),
+        'pack_available': bool(pack_payload is not None),
+        'status': str(status or 'decision_missing'),
+        'allow_trade': False,
+        'reason': reason,
+        'decision_path': str(decision_path),
+        'pack_path': str(pack_path(repo_root=repo_root, scope_tag=scope.scope_tag, artifact_dir=artifact_dir)),
+        'pack_training_rows': int(metadata.get('training_rows') or 0),
+        'pack_training_strategy': metadata.get('training_strategy'),
+    }
+    _write_json(eval_out, payload)
+    return payload
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -146,7 +188,20 @@ def refresh_config_intelligence(
                     }
                 )
                 continue
-        eval_payload = _read_json(eval_out)
+            eval_payload = _read_json(eval_out)
+        else:
+            placeholder_status = 'decision_missing' if decision_payload is None else 'intelligence_disabled'
+            placeholder_reason = 'decision_artifact_missing' if decision_payload is None else 'intelligence_disabled'
+            eval_payload = _write_latest_eval_placeholder(
+                repo_root=root,
+                artifact_dir=artifact_dir,
+                scope=scope,
+                pack_payload=pack_payload,
+                eval_out=eval_out,
+                decision_path=decision_path,
+                status=placeholder_status,
+                reason=placeholder_reason,
+            )
         if decision_payload is not None:
             materialize_pairs.append((scope, candidate))
 

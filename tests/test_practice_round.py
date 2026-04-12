@@ -407,13 +407,13 @@ def test_practice_round_allows_warn_only_intelligence_after_soak(tmp_path: Path,
 
     payload = build_practice_round_payload(repo_root=tmp_path, config_path=cfg, soak_cycles=1)
     assert payload['blocked_reason'] is None
-    assert payload['severity'] == 'warn'
+    assert payload['severity'] == 'ok'
     assert payload['ok'] is True
     assert payload['round_ok'] is True
     assert payload['soak']['action'] == 'ran'
     assert payload['validation']['required_passed'] is True
     assert payload['validation']['observe']['intent_created'] is False
     assert payload['validation']['observe']['blocked_reason'] == 'regime_block'
-    assert payload['post_practice']['ready_for_practice'] is False
+    assert payload['post_practice']['ready_for_practice'] is True
     assert payload['post_practice']['round_eligible'] is True
     assert 'retrain recomendado' in (payload['recommended_next_steps'][0]).lower()

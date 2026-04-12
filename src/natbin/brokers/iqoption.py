@@ -33,7 +33,7 @@ from ..config.env import env_bool
 
 
 class IQExecutionClient(Protocol):
-    def connect(self, retries: int | None = None, sleep_s: float | None = None) -> None: ...
+    def connect(self, retries: int | None = None, sleep_s: float | None = None, connect_timeout_s: float | None = None) -> None: ...
 
     def ensure_connection(self) -> None: ...
 
@@ -148,6 +148,8 @@ class IQOptionAdapter:
         account_mode: str = 'PRACTICE',
         execution_mode: str = 'live',
         broker_config: dict[str, Any] | None = None,
+        transport_config: dict[str, Any] | None = None,
+        request_metrics_config: dict[str, Any] | None = None,
         state_path: str | Path | None = None,
         settle_grace_sec: int = 30,
         history_limit: int = 20,
@@ -158,6 +160,8 @@ class IQOptionAdapter:
         self.account_mode = str(account_mode or 'PRACTICE').upper()
         self.execution_mode = normalize_execution_mode(execution_mode or 'live', default='live')
         self.broker_config = dict(broker_config or {})
+        self.transport_config = dict(transport_config or {})
+        self.request_metrics_config = dict(request_metrics_config or {})
         self.path = Path(state_path) if state_path is not None else (self.repo_root / 'runs' / 'iqoption_bridge_state.json')
         if not self.path.is_absolute():
             self.path = self.repo_root / self.path
@@ -208,10 +212,51 @@ class IQOptionAdapter:
         password = self._extract_secret(self.broker_config.get('password')) or (os.getenv('IQ_PASSWORD') or '').strip() or None
         return email, password
 
+    def _transport_manager(self):
+        payload = dict(self.transport_config or {})
+        if not payload:
+            return None
+        try:
+            from ..utils.network_transport import NetworkTransportConfig, NetworkTransportManager
+        except Exception:
+            return None
+        for key in ('endpoint_file', 'endpoints_file', 'structured_log_path'):
+            raw = payload.get(key)
+            if raw in (None, ''):
+                continue
+            candidate = Path(str(raw))
+            if not candidate.is_absolute():
+                candidate = self.repo_root / candidate
+            payload[key] = str(candidate)
+        config = NetworkTransportConfig.from_sources(payload)
+        return NetworkTransportManager(config)
+
+    def _request_metrics(self):
+        payload = dict(self.request_metrics_config or {})
+        if not payload:
+            return None
+        try:
+            from ..utils.request_metrics import RequestMetrics, RequestMetricsConfig
+        except Exception:
+            return None
+        raw = payload.get('structured_log_path')
+        if raw not in (None, ''):
+            candidate = Path(str(raw))
+            if not candidate.is_absolute():
+                candidate = self.repo_root / candidate
+            payload['structured_log_path'] = candidate
+        config = RequestMetricsConfig.from_sources(payload)
+        return RequestMetrics.from_config(config)
+
     def _dependency_status(self) -> dict[str, Any]:
         try:
             from ..adapters.iq_client import iqoption_dependency_status
-            return iqoption_dependency_status()
+            transport_manager = None
+            try:
+                transport_manager = self._transport_manager()
+            except Exception:
+                transport_manager = None
+            return iqoption_dependency_status(transport_manager=transport_manager)
         except Exception as exc:
             return {'available': False, 'reason': f'{type(exc).__name__}: {exc}'}
 
@@ -232,8 +277,24 @@ class IQOptionAdapter:
             raise RuntimeError('iqoption_missing_credentials')
         IQClient, IQConfig = self._import_client_classes()
         balance_mode = self._extract_secret(self.broker_config.get('balance_mode')) or self.account_mode
-        cfg = IQConfig(email=email, password=password, balance_mode=str(balance_mode or self.account_mode).upper())
-        return IQClient(cfg)
+        cfg = IQConfig(
+            email=email,
+            password=password,
+            balance_mode=str(balance_mode or self.account_mode).upper(),
+            transport=self.transport_config or None,
+            connect_timeout_s=float(self.broker_config.get('timeout_connect_s') or 25),
+        )
+        transport_manager = None
+        request_metrics = None
+        try:
+            transport_manager = self._transport_manager()
+        except Exception:
+            transport_manager = None
+        try:
+            request_metrics = self._request_metrics()
+        except Exception:
+            request_metrics = None
+        return IQClient(cfg, transport_manager=transport_manager, request_metrics=request_metrics)
 
     def _client(self) -> IQExecutionClient:
         if self._backend is None:
@@ -243,11 +304,14 @@ class IQOptionAdapter:
     def _connect_kwargs(self) -> dict[str, Any]:
         retries = self._as_int(self.broker_config.get('connect_retries'))
         sleep_s = self._as_float(self.broker_config.get('connect_sleep_s'))
+        timeout_s = self._as_float(self.broker_config.get('timeout_connect_s'))
         out: dict[str, Any] = {}
         if retries is not None:
             out['retries'] = retries
         if sleep_s is not None:
             out['sleep_s'] = sleep_s
+        if timeout_s is not None:
+            out['connect_timeout_s'] = timeout_s
         return out
 
     @contextmanager
@@ -255,6 +319,8 @@ class IQOptionAdapter:
         updates: dict[str, str] = {}
         if self._as_float(self.broker_config.get('connect_sleep_max_s')) is not None:
             updates['IQ_CONNECT_SLEEP_MAX_S'] = str(float(self.broker_config.get('connect_sleep_max_s')))
+        if self._as_float(self.broker_config.get('timeout_connect_s')) is not None:
+            updates['IQ_CONNECT_TIMEOUT_S'] = str(float(self.broker_config.get('timeout_connect_s')))
         if self._as_float(self.broker_config.get('api_throttle_min_interval_s')) is not None:
             updates['IQ_THROTTLE_MIN_INTERVAL_S'] = str(float(self.broker_config.get('api_throttle_min_interval_s')))
         if self._as_float(self.broker_config.get('api_throttle_jitter_s')) is not None:

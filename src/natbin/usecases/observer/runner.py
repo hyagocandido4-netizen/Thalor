@@ -18,7 +18,7 @@ from ...runtime.observability import (
     write_latest_decision_snapshot,
 )
 from .config import load_cfg
-from .model_cache import feat_hash, get_model_version, load_cache, save_cache, should_retrain
+from .model_cache import cache_supports_gate, feat_hash, get_model_version, load_cache, save_cache, should_retrain
 from .selection import make_regime_mask, resolve_observer_settings
 from .signal_store import (
     already_executed,
@@ -35,6 +35,45 @@ from .summary import write_daily_summary
 
 
 REQUIRED_COLUMNS = ('ts', 'y_open_close', 'f_vol48', 'f_bb_width20', 'f_atr14')
+
+
+def _cache_refresh_payload(
+    *,
+    asset: str,
+    interval_sec: int,
+    settings,
+    cal: object,
+    iso: object,
+    meta_model: object,
+    train_rows: int,
+    train_end_ts: int,
+    best_source: str,
+    fhash: str,
+    refresh_reason: str,
+) -> dict[str, object]:
+    cp_available = bool(getattr(meta_model, 'cp', None) is not None) if meta_model is not None else False
+    meta_iso_available = bool(getattr(meta_model, 'iso', None) is not None) if meta_model is not None else False
+    return {
+        'cal': cal,
+        'iso': iso,
+        'meta_model': meta_model,
+        'meta': {
+            'asset': asset,
+            'interval_sec': int(interval_sec),
+            'created_at': datetime.now(tz=ZoneInfo('UTC')).isoformat(timespec='seconds'),
+            'train_rows': int(train_rows),
+            'train_end_ts': int(train_end_ts),
+            'best_source': best_source,
+            'feat_hash': fhash,
+            'gate_version': GATE_VERSION,
+            'meta_model': settings.meta_model_type,
+            'model_version': get_model_version(),
+            'gate_mode_requested': settings.gate_mode_requested,
+            'cp_available': bool(cp_available),
+            'meta_iso_available': bool(meta_iso_available),
+            'refresh_reason': str(refresh_reason or 'schedule'),
+        },
+    }
 
 
 def _load_dataset(dataset_path: str) -> pd.DataFrame:
@@ -71,11 +110,14 @@ def _normalize_gate_fail_closed(
         if gate_mode_requested == 'meta':
             legit = gate_used_s in ('meta', 'meta_iso')
         elif gate_mode_requested == 'cp':
+            cp_bootstrap_fallback_allowed = str(os.getenv('CP_BOOTSTRAP_FALLBACK', 'off') or 'off').strip().lower() not in ('', '0', 'false', 'off', 'none', 'fail_closed')
             legit = (
                 gate_used_s.startswith('cp_')
                 and (not gate_used_s.startswith('cp_fallback'))
                 and (not gate_used_s.startswith('cp_fail_closed'))
             )
+            if gate_used_s.startswith('cp_fallback') and cp_bootstrap_fallback_allowed:
+                legit = True
         if not legit:
             gate_fail_closed_active = True
             gate_fail_detail = gate_used_s or 'unknown'
@@ -116,8 +158,13 @@ def main() -> None:
     os.environ.setdefault('SIGNALS_INTERVAL_SEC', str(interval_sec))
     cache = load_cache(asset, interval_sec)
     meta = (cache or {}).get('meta') if cache else None
-
-    if should_retrain(
+    cache_gate_compatible = cache_supports_gate(cache, settings.gate_mode_requested)
+    refresh_reason = ''
+    if cache is None:
+        refresh_reason = 'cache_missing'
+    elif not cache_gate_compatible:
+        refresh_reason = f'cache_incompatible_gate:{settings.gate_mode_requested}'
+    elif should_retrain(
         meta,
         train_end_ts=train_end_ts,
         best_source=best_source,
@@ -125,32 +172,33 @@ def main() -> None:
         interval_sec=interval_sec,
         meta_model_type=settings.meta_model_type,
     ):
+        refresh_reason = 'schedule'
+
+    if refresh_reason:
         cal, iso, meta_model = train_base_cal_iso_meta(
             train_df=train,
             feat_cols=feat,
             tz=tz,
             meta_model_type=settings.meta_model_type,
         )
-        payload = {
-            'cal': cal,
-            'iso': iso,
-            'meta_model': meta_model,
-            'meta': {
-                'asset': asset,
-                'interval_sec': int(interval_sec),
-                'created_at': datetime.now(tz=tz).isoformat(timespec='seconds'),
-                'train_rows': train_rows,
-                'train_end_ts': train_end_ts,
-                'best_source': best_source,
-                'feat_hash': fhash,
-                'gate_version': GATE_VERSION,
-                'meta_model': settings.meta_model_type,
-                'model_version': get_model_version(),
-            },
-        }
+        payload = _cache_refresh_payload(
+            asset=asset,
+            interval_sec=interval_sec,
+            settings=settings,
+            cal=cal,
+            iso=iso,
+            meta_model=meta_model,
+            train_rows=train_rows,
+            train_end_ts=train_end_ts,
+            best_source=best_source,
+            fhash=fhash,
+            refresh_reason=refresh_reason,
+        )
+        payload['meta']['created_at'] = datetime.now(tz=tz).isoformat(timespec='seconds')
         save_cache(asset, interval_sec, payload)
         cache = payload
         meta = payload['meta']
+        print(f'[P31] observer_cache_refresh reason={refresh_reason}')
 
     if cache is None:
         raise RuntimeError('observer_cache_unavailable')
@@ -342,6 +390,9 @@ def main() -> None:
         'meta_model': settings.meta_model_type,
         'market_context_stale': int(1 if market_context_stale_now else 0),
         'market_context_fail_closed': int(1 if settings.market_context_fail_closed else 0),
+        'cp_bootstrap_fallback': str(os.getenv('CP_BOOTSTRAP_FALLBACK', '')).strip().lower() or None,
+        'cp_bootstrap_fallback_active': int(1 if str(gate_used or '').startswith('cp_fallback') else 0),
+        'cp_available': int(1 if bool(meta.get('cp_available')) else 0) if meta else None,
     }
 
     write_sqlite_signal(row)

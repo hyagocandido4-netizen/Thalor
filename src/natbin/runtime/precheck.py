@@ -55,6 +55,7 @@ def run_precheck(
     env: dict[str, str] | None = None,
     now_utc: datetime | None = None,
     enforce_market_context: bool = True,
+    allow_drain_mode: bool = False,
 ) -> PrecheckDecision:
     """Bridge the M4 failsafe kernel into runtime prechecks.
 
@@ -81,6 +82,7 @@ def run_precheck(
         quota_hard_block=bool(quota_hard_block),
         quota_reason=quota_reason,
         env=env or {},
+        allow_drain_mode=bool(allow_drain_mode),
     )
 
     if breaker.as_dict() != before:

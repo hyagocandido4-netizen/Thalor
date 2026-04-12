@@ -171,11 +171,23 @@ def audit_security_posture(
     else:
         _add('embedded_credentials', 'ok', 'Nenhuma credencial embutida encontrada no YAML canônico')
 
+    require_credentials_when_execution_enabled = bool(security.get('live_require_credentials', True))
+    execution_enabled = bool(execution.get('enabled'))
+
     if broker_email and broker_password:
         _add('broker_credentials_present', 'ok', 'Credenciais do broker resolvidas com sucesso', credential_source=credential_source)
     else:
-        status = 'error' if execution_live or bool(security.get('live_require_credentials', True)) else 'warn'
-        _add('broker_credentials_present', status, 'Credenciais do broker ausentes ou incompletas', credential_source=credential_source)
+        creds_blocking = bool(execution_live or (execution_enabled and require_credentials_when_execution_enabled))
+        status = 'error' if creds_blocking else 'warn'
+        _add(
+            'broker_credentials_present',
+            status,
+            'Credenciais do broker ausentes ou incompletas',
+            credential_source=credential_source,
+            execution_enabled=execution_enabled,
+            execution_live=execution_live,
+            live_require_credentials=require_credentials_when_execution_enabled,
+        )
 
     if execution_live and bool(security.get('live_require_external_credentials', False)) and credential_source != 'external_secret_file':
         _add('live_external_credentials', 'error', 'Modo live exige external secret file, mas a fonte atual não é externa')

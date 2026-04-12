@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .observer import load_cfg, write_daily_summary
+from ..state.migrations import ensure_signals_v2
 
 
 def _target_days(*, tz: ZoneInfo, days: int) -> list[str]:
@@ -26,6 +27,7 @@ def _existing_signal_days(db_path: str, wanted: list[str], asset: str, interval_
     con = sqlite3.connect(str(p))
     try:
         try:
+            ensure_signals_v2(con, default_interval=int(interval_sec))
             con.execute("SELECT 1 FROM signals_v2 LIMIT 1").fetchone()
         except Exception:
             return set()

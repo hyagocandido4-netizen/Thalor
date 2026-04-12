@@ -26,6 +26,11 @@ __all__ = [
     'derive_scoped_paths',
     'detect_capabilities',
     'load_runtime_app_config',
+    'build_runtime_network_transport_config',
+    'build_runtime_network_transport_manager',
+    'build_runtime_request_metrics_config',
+    'build_runtime_request_metrics',
+    'build_runtime_connectivity_payload',
     'main',
     'to_json_dict',
 ]
@@ -48,6 +53,14 @@ _PLAN_EXPORTS = {
     'to_json_dict',
 }
 
+_CONNECTIVITY_EXPORTS = {
+    'build_runtime_network_transport_config',
+    'build_runtime_network_transport_manager',
+    'build_runtime_request_metrics_config',
+    'build_runtime_request_metrics',
+    'build_runtime_connectivity_payload',
+}
+
 
 def __getattr__(name: str) -> Any:
     if name == 'main':
@@ -62,6 +75,10 @@ def __getattr__(name: str) -> Any:
         from .control import plan as control_plan
 
         return getattr(control_plan, name)
+    if name in _CONNECTIVITY_EXPORTS:
+        from .runtime import connectivity as runtime_connectivity
+
+        return getattr(runtime_connectivity, name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 

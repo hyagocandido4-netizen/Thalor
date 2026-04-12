@@ -1,0 +1,90 @@
+version: "2.0"
+
+# Example profile for real multi-asset execution.
+# Safety-first defaults: the profile remains blocked until the operator
+# explicitly enables execution.real_guard.allow_multi_asset_live=true and exports
+# THALOR_EXECUTION_ALLOW_REAL=1 in the process environment.
+
+runtime:
+  profile: multi_asset_live_real
+
+broker:
+  provider: iqoption
+  balance_mode: REAL
+
+multi_asset:
+  enabled: true
+  max_parallel_assets: 3
+  stagger_sec: 1.0
+  execution_stagger_sec: 2.0
+  portfolio_topk_total: 3
+  portfolio_hard_max_positions: 2
+  portfolio_hard_max_positions_per_cluster: 1
+  correlation_filter_enable: true
+  partition_data_paths: true
+
+execution:
+  enabled: true
+  mode: live
+  provider: iqoption
+  account_mode: REAL
+  fail_closed: true
+  client_order_prefix: thalor
+  stake:
+    amount: 2.0
+    currency: BRL
+  submit:
+    grace_sec: 2
+    max_latency_ms: 1500
+    retry_on_reject: false
+    retry_on_timeout: false
+  reconcile:
+    poll_interval_sec: 5
+    history_lookback_sec: 3600
+    orphan_lookback_sec: 7200
+    not_found_grace_sec: 20
+    settle_grace_sec: 30
+    scan_without_pending: false
+  limits:
+    max_pending_unknown: 1
+    max_open_positions: 1
+  real_guard:
+    enabled: true
+    require_env_allow_real: true
+    allow_multi_asset_live: false
+    serialize_submits: true
+    submit_lock_path: runs/runtime_execution.submit.lock
+    min_submit_spacing_sec: 20
+    max_pending_unknown_total: 1
+    max_open_positions_total: 1
+    recent_failure_window_sec: 300
+    max_recent_transport_failures: 2
+    post_submit_verify_enable: true
+    post_submit_verify_timeout_sec: 8
+    post_submit_verify_poll_sec: 0.5
+
+assets:
+  - asset: EURUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    cluster_key: fx
+  - asset: GBPUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    cluster_key: fx
+  - asset: AUDUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    cluster_key: fx
+  - asset: USDJPY-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    cluster_key: fx
+  - asset: BTCUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    cluster_key: crypto
+  - asset: XAUUSD-OTC
+    interval_sec: 300
+    timezone: America/Sao_Paulo
+    cluster_key: metals

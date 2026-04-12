@@ -140,3 +140,50 @@ def test_incident_report_alert_and_drill(tmp_path: Path) -> None:
     assert drill['kind'] == 'incident_drill'
     assert drill['scenario'] == 'db_lock'
     assert drill['commands']
+
+
+def test_incident_status_payload_uses_non_conflicting_health_and_loop_keys(tmp_path: Path, monkeypatch) -> None:
+    cfg_path = _write_repo(tmp_path, send_enabled=False)
+
+    monkeypatch.setattr(
+        'natbin.incidents.reporting.build_release_readiness_payload',
+        lambda **kwargs: {'severity': 'ok', 'ready_for_live': False, 'execution_live': False},
+    )
+    monkeypatch.setattr(
+        'natbin.incidents.reporting.alerts_status_payload',
+        lambda **kwargs: {'telegram': {'enabled': False, 'send_enabled': False, 'credentials_present': False, 'recent_counts': {}, 'recent': []}},
+    )
+    monkeypatch.setattr('natbin.incidents.reporting.gate_status', lambda **kwargs: {'kill_switch': {'active': False}, 'drain_mode': {'active': False}})
+    monkeypatch.setattr(
+        'natbin.incidents.reporting.audit_security_posture',
+        lambda **kwargs: {'blocked': False, 'severity': 'ok', 'credential_source': 'external_secret_file'},
+    )
+    monkeypatch.setattr(
+        'natbin.incidents.reporting.build_intelligence_surface_payload',
+        lambda **kwargs: {'enabled': True, 'severity': 'ok', 'warnings': [], 'summary': {}, 'allocation': {}, 'execution': {'missing_fields': []}},
+    )
+
+    from natbin.runtime.hardening import RuntimeHardeningReport
+
+    monkeypatch.setattr(
+        'natbin.incidents.reporting.inspect_runtime_freshness',
+        lambda **kwargs: RuntimeHardeningReport(
+            scope_tag='EURUSD-OTC_300s',
+            checked_at_utc=datetime.now(tz=UTC).isoformat(timespec='seconds'),
+            stale_after_sec=900,
+            lock={},
+            artifacts=[],
+            stale_artifacts=[],
+            actions=[],
+            mode='inspect',
+        ),
+    )
+    monkeypatch.setattr('natbin.incidents.reporting._health_summary', lambda *args, **kwargs: {'state': 'blocked', 'message': 'circuit_open'})
+    monkeypatch.setattr('natbin.incidents.reporting._loop_summary', lambda *args, **kwargs: {'phase': 'failed', 'message': 'portfolio_cycle_failure'})
+    monkeypatch.setattr('natbin.incidents.reporting.load_recent_scope_incidents', lambda **kwargs: [])
+    monkeypatch.setattr('natbin.incidents.reporting._summarize_incidents', lambda recent: {'total': 0, 'by_type': {}, 'by_severity': {}, 'latest': None})
+
+    payload = incident_status_payload(repo_root=tmp_path, config_path=cfg_path, write_artifact=False)
+    issues = {item['code']: item for item in payload['open_issues']}
+    assert issues['health_not_ok']['health_message'] == 'circuit_open'
+    assert issues['loop_failure_recent']['loop_message'] == 'portfolio_cycle_failure'

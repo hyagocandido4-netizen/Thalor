@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -101,13 +102,14 @@ def main() -> None:
             fail("market_context file was not written")
         ok("refresh_market_context falls back without iqoptionapi")
 
-        adapter = IQOptionAdapter(
-            repo_root=tdp,
-            account_mode="PRACTICE",
-            execution_mode="live",
-            broker_config={"email": "demo@example.com", "password": "secret"},
-        )
-        health = adapter.healthcheck()
+        with patch.dict(os.environ, {"THALOR_FORCE_IQOPTIONAPI_MISSING": "1"}, clear=False):
+            adapter = IQOptionAdapter(
+                repo_root=tdp,
+                account_mode="PRACTICE",
+                execution_mode="live",
+                broker_config={"email": "demo@example.com", "password": "secret"},
+            )
+            health = adapter.healthcheck()
         if health.reason != "iqoption_dependency_missing":
             fail(f"unexpected adapter health reason: {health.reason!r}")
         ok("IQOptionAdapter reports explicit dependency-missing health")

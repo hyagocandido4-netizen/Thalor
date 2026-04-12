@@ -15,7 +15,7 @@ supporting both the new THALOR__* settings and the old IQ_* scope keys.
 from pathlib import Path
 from typing import Any, Mapping
 
-from pydantic_settings import EnvSettingsSource, YamlConfigSettingsSource
+from pydantic_settings import EnvSettingsSource
 from pydantic_settings.sources import InitSettingsSource
 from pydantic_settings.sources.providers.env import parse_env_vars
 
@@ -25,8 +25,8 @@ from .sources import (
     build_source_trace,
     compat_dotenv_source,
     compat_process_env_source,
-    legacy_yaml_to_model_dict,
     modern_dotenv_env_map,
+    resolve_yaml_config_source,
 )
 
 
@@ -53,17 +53,7 @@ def load_thalor_config(
     root = resolve_repo_root(repo_root=repo_root, config_path=config_path)
     path = resolve_config_path(repo_root=root, config_path=config_path)
     env_file = resolve_env_path(repo_root=root, env_path=env_path, config_path=path)
-
-    class _ThalorYamlSource(YamlConfigSettingsSource):
-        def __call__(self) -> dict[str, Any]:  # type: ignore[override]
-            raw = super().__call__()
-            if not raw:
-                return {}
-            if isinstance(raw, dict) and ("assets" in raw or "runtime" in raw or "broker" in raw):
-                return raw
-            if isinstance(raw, dict):
-                return legacy_yaml_to_model_dict(raw)
-            return {}
+    yaml_result = resolve_yaml_config_source(path)
 
     class _Settings(ThalorConfig):
         @classmethod
@@ -75,24 +65,23 @@ def load_thalor_config(
             dotenv_settings,
             file_secret_settings,
         ):
-            yaml_src = _ThalorYamlSource(settings_cls, yaml_file=path, yaml_file_encoding="utf-8")
+            yaml_src = InitSettingsSource(settings_cls, init_kwargs=yaml_result.data)
             compat_process_src = InitSettingsSource(settings_cls, init_kwargs=compat_process_env_source())
             dotenv_env_src = MappingEnvSettingsSource(settings_cls, env_mapping=modern_dotenv_env_map(env_path=env_file))
             compat_dotenv_src = InitSettingsSource(settings_cls, init_kwargs=compat_dotenv_source(env_path=env_file))
             # Precedence is left-to-right in pydantic-settings.
             #
-            # Keep explicit process-level overrides above YAML, but treat the
-            # repo-local `.env` as a defaults layer below the selected config
-            # file. This allows profile YAMLs like
-            # `config/live_controlled_practice.yaml` to express the effective
-            # execution block without being silently shadowed by a stale
-            # `.env` toggle such as `THALOR__EXECUTION__ENABLED=0`.
+            # The repo-local `.env` may still override *safe* non-behavioural
+            # keys (for example broker balance mode or deployment posture), but
+            # trading-behaviour sections such as `execution.*` are filtered by
+            # default unless the operator explicitly exports
+            # `THALOR_DOTENV_ALLOW_BEHAVIOR=1` in the process environment.
             return (
                 init_settings,
                 env_settings,
                 compat_process_src,
-                yaml_src,
                 dotenv_env_src,
+                yaml_src,
                 compat_dotenv_src,
                 file_secret_settings,
             )
@@ -114,6 +103,7 @@ def load_thalor_config(
             cfg.runtime_overrides = cfg.runtime_overrides.model_copy(update=updates)
     try:
         object.__setattr__(cfg, '_secret_source_trace', list(secret_trace))
+        object.__setattr__(cfg, '_yaml_source_paths', list(yaml_result.source_paths))
     except Exception:
         pass
     return cfg
@@ -156,7 +146,8 @@ def load_resolved_config(
                     chosen = a
                     break
 
-    trace = build_source_trace(config_path=Path(cfg.config_path), env_path=env_file)
+    yaml_paths = [Path(item) for item in list(getattr(cfg, '_yaml_source_paths', []) or [])]
+    trace = build_source_trace(config_path=Path(cfg.config_path), env_path=env_file, config_paths=yaml_paths or None)
     extra_trace = list(getattr(cfg, '_secret_source_trace', []) or [])
     for item in extra_trace:
         if item not in trace:
@@ -172,6 +163,7 @@ def load_resolved_config(
         decision=cfg.decision,
         quota=cfg.quota,
         autos=cfg.autos,
+        network=cfg.network,
         observability=cfg.observability,
         dashboard=cfg.dashboard,
         monte_carlo=cfg.monte_carlo,
