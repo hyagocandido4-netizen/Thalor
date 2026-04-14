@@ -118,7 +118,7 @@ REQUIRED_RELEASE_FILES = (
     "docs/DIAGRAMS_M7.md",
     "docs/INCIDENT_RUNBOOKS_M71.md",
     "docs/LIVE_OPS_HARDENING_M71.md",
-    "README_PACKAGE_M7_1_APPEND.md",
+    "docs/history/package_legacy/README_PACKAGE_M7_1_APPEND.md",
     "src/natbin/runtime_app.py",
     "src/natbin/incidents/reporting.py",
     "scripts/tools/release_bundle.py",

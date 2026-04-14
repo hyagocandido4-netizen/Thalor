@@ -21,7 +21,7 @@ def _write_m7_required(repo: Path) -> None:
     _write(repo / "docs" / "DIAGRAMS_M7.md", "# diagrams\n")
     _write(repo / "docs" / "INCIDENT_RUNBOOKS_M71.md", "# incidents\n")
     _write(repo / "docs" / "LIVE_OPS_HARDENING_M71.md", "# live ops\n")
-    _write(repo / "README_PACKAGE_M7_1_APPEND.md", "# m71\n")
+    _write(repo / "docs/history/package_legacy/README_PACKAGE_M7_1_APPEND.md", "# m71\n")
     _write(repo / "src" / "natbin" / "incidents" / "reporting.py", "# placeholder\n")
     _write(repo / "scripts" / "tools" / "incident_ops_smoke.py", "# placeholder\n")
 

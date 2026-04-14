@@ -53,7 +53,7 @@ def _write_repo(repo: Path) -> Path:
         'LIVE_OPS_HARDENING_M71.md',
     ]:
         _touch(repo / 'docs' / name, f'# {name}\n')
-    _touch(repo / 'README_PACKAGE_M7_1_APPEND.md', '# m71\n')
+    _touch(repo / 'docs/history/package_legacy/README_PACKAGE_M7_1_APPEND.md', '# m71\n')
     (repo / 'secrets').mkdir(parents=True, exist_ok=True)
     (repo / 'secrets' / 'bundle.yaml').write_text(
         '\n'.join(

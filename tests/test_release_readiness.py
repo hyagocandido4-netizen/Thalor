@@ -23,7 +23,7 @@ def _write_repo(repo: Path) -> Path:
     _touch(repo / 'src' / 'natbin' / 'incidents' / 'reporting.py', '# placeholder\n')
     _touch(repo / 'scripts' / 'tools' / 'release_bundle.py', '# placeholder\n')
     _touch(repo / 'scripts' / 'tools' / 'incident_ops_smoke.py', '# placeholder\n')
-    _touch(repo / 'README_PACKAGE_M7_1_APPEND.md', '# m71\n')
+    _touch(repo / 'docs/history/package_legacy/README_PACKAGE_M7_1_APPEND.md', '# m71\n')
     _touch(repo / 'Dockerfile', 'FROM python:3.12-slim\n')
     _touch(repo / 'docker-compose.yml', 'services: {}\n')
     _touch(repo / 'docker-compose.prod.yml', 'services: {}\n')
